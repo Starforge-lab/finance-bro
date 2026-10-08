@@ -9,7 +9,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors, Fonts, Radius, Shadow, Spacing, Stroke, Type } from '@/constants/theme';
 import { accountTypes, categoryKinds } from '@/db/schema';
-import { getLedger, type DataLayer, type NewAccount, type NewCategory } from '@/db';
+import { getLedger, getLedgerClient, type DataLayer, type NewAccount, type NewCategory } from '@/db';
 import { useTheme } from '@/hooks/use-theme';
 import { indiaDate } from '@/utils/display';
 import { saveCsv } from '@/exports/save-csv';
@@ -52,6 +52,7 @@ export default function SettingsScreen() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [confirmRemoveDemo, setConfirmRemoveDemo] = useState(false);
   const operationGuard = useRef(false);
 
   const refresh = useCallback(async (isCurrent: () => boolean = () => true) => {
@@ -211,6 +212,38 @@ export default function SettingsScreen() {
       operationGuard.current = false;
     }
   }, []);
+
+  const demoAction = useCallback(async (action: 'load' | 'remove') => {
+    // Development builds only: the folded-away branch keeps the fixture out of release bundles.
+    if (__DEV__) {
+      if (operationGuard.current) return;
+      operationGuard.current = true;
+      setPending(`demo:${action}`);
+      setNotice(null);
+      try {
+        const { seedDemoLedger, removeDemoLedger, LedgerNotEmptyError } = await import('@/dev/seed-demo');
+        const [ledger, client] = await Promise.all([getLedger(), getLedgerClient()]);
+        if (action === 'load') {
+          try {
+            const loaded = await seedDemoLedger(client, ledger, new Date());
+            setNotice({ text: loaded ? 'Test data loaded: three months for a fresher in Noida.' : 'Test data is already loaded.' });
+          } catch (error) {
+            setNotice({ text: error instanceof LedgerNotEmptyError ? error.message : 'Could not load test data. Nothing was added.', error: true });
+          }
+        } else {
+          const removed = await removeDemoLedger(client);
+          setConfirmRemoveDemo(false);
+          setNotice({ text: removed ? `Removed ${removed} test records. Your own entries were kept.` : 'There was no test data to remove.' });
+        }
+        await refresh();
+      } catch {
+        setNotice({ text: 'Could not change test data. Your ledger is unchanged.', error: true });
+      } finally {
+        setPending(null);
+        operationGuard.current = false;
+      }
+    }
+  }, [refresh]);
 
   const activeAccounts = accounts.filter((account) => !account.archived);
   const archivedAccounts = accounts.filter((account) => account.archived);
@@ -407,6 +440,27 @@ export default function SettingsScreen() {
             </SettingsGroup>
             <ThemedText style={[Type.note, styles.exportNote]}>Local file · not encrypted.</ThemedText>
           </View>
+
+          {__DEV__ ? <View style={styles.section}>
+            <SectionHeading title="Test data" detail="Development builds only" theme={theme} />
+            <SettingsGroup theme={theme}>
+              <View style={styles.inlinePanel}>
+                <ThemedText style={Type.note}>
+                  Three months of fictional entries, budgets and bills for a fresher in Noida. Loads only into an empty ledger.
+                </ThemedText>
+              </View>
+              {confirmRemoveDemo ? <View style={styles.inlinePanel}>
+                <ThemedText style={Type.note}>Remove every test record? Entries you added yourself stay.</ThemedText>
+                <View style={styles.demoActions}>
+                  <LedgerButton label={pending === 'demo:remove' ? 'Removing…' : 'Remove'} disabled={busy} onPress={() => void demoAction('remove')} />
+                  <LedgerButton label="Keep" disabled={busy} onPress={() => setConfirmRemoveDemo(false)} />
+                </View>
+              </View> : <View style={styles.rowActions}>
+                <LedgerButton label={pending === 'demo:load' ? 'Loading…' : 'Load test data'} primary disabled={busy || loading} onPress={() => void demoAction('load')} />
+                <LedgerButton label="Remove test data" disabled={busy || loading} onPress={() => setConfirmRemoveDemo(true)} />
+              </View>}
+            </SettingsGroup>
+          </View> : null}
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
@@ -689,6 +743,7 @@ const styles = StyleSheet.create({
   emptyCopy: { paddingHorizontal: 16, paddingVertical: 16 },
   editor: { marginHorizontal: 16, marginVertical: 10, paddingTop: 14, borderTopWidth: StyleSheet.hairlineWidth, gap: 12 },
   inlinePanel: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12, gap: 8 },
+  demoActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   inlineHint: { paddingHorizontal: 16, paddingBottom: 8 },
   destructiveButton: { minHeight: 44, minWidth: 48, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 14, borderWidth: Stroke.ink, borderRadius: Radius.pill },
   destructiveText: { fontFamily: 'BricolageGrotesque_600SemiBold' },

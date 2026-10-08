@@ -4,12 +4,14 @@ import { ledgerMigrations } from './migrations';
 import { getFingerprinter } from '../imports/fingerprint-store';
 
 let opening: Promise<DataLayer> | undefined;
+let openClient: SQLite.SQLiteDatabase | undefined;
 
 async function openLedger(): Promise<DataLayer> {
   const client = await SQLite.openDatabaseAsync('finance-bro.db', { enableChangeListener: true });
   const ledger = createDataLayer(client, ledgerMigrations, getFingerprinter);
   try {
     await ledger.migrateLedger();
+    openClient = client;
     return ledger;
   } catch (error) {
     await client.closeAsync().catch(() => {});
@@ -23,6 +25,12 @@ export function getLedger(): Promise<DataLayer> {
     throw error;
   });
   return opening;
+}
+
+/** The open database, for development fixtures that need a transaction around many calls. */
+export async function getLedgerClient(): Promise<SQLite.SQLiteDatabase> {
+  await getLedger();
+  return openClient!;
 }
 
 export { createLedger, migrateLedger, assertValidAmountPaise } from './ledger';
