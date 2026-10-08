@@ -65,7 +65,7 @@ it('puts only Shopping over budget, and only in the festive-sale month', async (
   } finally { sqlite.close(); }
 });
 
-it('loads once, keeps edits, refuses to mix with real data, and removes only demo rows', async () => {
+it('loads once, keeps edits, refuses to mix with real data, and preserves real budget categories on removal', async () => {
   const { sqlite, client, ledger } = await seeded();
   try {
     const [first] = await ledger.listTransactions();
@@ -74,14 +74,23 @@ it('loads once, keeps edits, refuses to mix with real data, and removes only dem
     assert.equal((await ledger.listTransactions()).find((row) => row.id === first!.id)!.amountPaise, 12_345);
 
     await ledger.createCategory({ id: 'real-food', name: 'Food', kind: 'expense' });
+    await ledger.createCategory({ id: 'demo-v2-budget-parent', name: 'Budget parent', kind: 'expense' });
+    await ledger.createCategory({ id: 'demo-v2-budget-child', name: 'Budget child', kind: 'expense' });
+    await client.execAsync("UPDATE categories SET parent_id = 'demo-v2-budget-parent' WHERE id = 'demo-v2-budget-child'");
+    await ledger.setBudget({ id: 'real-budget', categoryId: 'demo-v2-budget-child', month: '2026-12', amountPaise: 100_000 });
     await ledger.createTransaction({
       id: 'real-1', amountPaise: 5_000, direction: 'debit', kind: 'expense', status: 'posted', source: 'manual',
       categoryId: 'real-food', accountId: 'demo-v2-sbi', counterparty: 'Real tea', occurredAt: NOW,
     });
-    assert.ok(await removeDemoLedger(client) > 100);
+    const plan = buildDemoPlan(NOW);
+    const removed = await removeDemoLedger(client);
     const left = await ledger.listTransactions();
     assert.deepEqual(left.map((row) => [row.id, row.accountId]), [['real-1', null]]);
-    assert.deepEqual((await ledger.listCategories()).map((row) => row.id), ['real-food']);
+    const categories = await ledger.listCategories();
+    assert.deepEqual(categories.map((row) => row.id).sort(), ['demo-v2-budget-child', 'demo-v2-budget-parent', 'real-food']);
+    assert.equal(categories.find((row) => row.id === 'demo-v2-budget-child')?.parentId, 'demo-v2-budget-parent');
+    assert.deepEqual(await ledger.listBudgets('2026-12'), [{ id: 'real-budget', categoryId: 'demo-v2-budget-child', month: '2026-12', amountPaise: 100_000 }]);
+    assert.equal(removed, plan.accounts.length + plan.categories.length + plan.budgets.length + plan.bills.length + plan.transactions.length);
     assert.equal((await ledger.listAccounts(true)).length, 0);
     await assert.rejects(seedDemoLedger(client, ledger, NOW), LedgerNotEmptyError);
   } finally { sqlite.close(); }

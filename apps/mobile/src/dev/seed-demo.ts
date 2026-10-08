@@ -259,7 +259,7 @@ export async function seedDemoLedger(client: LedgerSQLiteClient, ledger: DataLay
   return inserted;
 }
 
-/** Hard-deletes every demo record of any fixture version, and nothing else. Returns how many rows went. */
+/** Removes demo records while retaining categories used by real budgets. Returns the number deleted. */
 export async function removeDemoLedger(client: LedgerSQLiteClient): Promise<number> {
   let removed = 0;
   await client.withTransactionAsync(async () => {
@@ -272,13 +272,24 @@ export async function removeDemoLedger(client: LedgerSQLiteClient): Promise<numb
       UPDATE transactions SET category_id = NULL WHERE ${demoIds('category_id')} AND NOT ${demoIds('id')};
       UPDATE transactions SET account_id = NULL WHERE ${demoIds('account_id')} AND NOT ${demoIds('id')};
       UPDATE transactions SET linked_txn_id = NULL WHERE ${demoIds('linked_txn_id')} AND NOT ${demoIds('id')};
-      UPDATE categories SET parent_id = NULL WHERE ${demoIds('parent_id')} AND NOT ${demoIds('id')};
       DELETE FROM transactions WHERE ${demoIds('id')};
       DELETE FROM bills WHERE ${demoIds('id')};
-      DELETE FROM budgets WHERE ${demoIds('id')} OR ${demoIds('category_id')};
-      DELETE FROM categories WHERE ${demoIds('id')};
+      DELETE FROM budgets WHERE ${demoIds('id')};
+      WITH RECURSIVE budget_categories(id) AS (
+        SELECT category_id FROM budgets WHERE NOT ${demoIds('id')}
+        UNION
+        SELECT categories.parent_id
+        FROM categories JOIN budget_categories ON categories.id = budget_categories.id
+        WHERE categories.parent_id IS NOT NULL
+      )
+      DELETE FROM categories
+      WHERE ${demoIds('id')} AND id NOT IN (SELECT id FROM budget_categories);
       DELETE FROM accounts WHERE ${demoIds('id')};
     `);
+    for (const table of TABLES) {
+      const row = await client.getFirstAsync<{ n: number }>(`SELECT count(*) AS n FROM ${table} WHERE ${demoIds('id')}`);
+      removed -= Number(row?.n ?? 0);
+    }
   });
   return removed;
 }
