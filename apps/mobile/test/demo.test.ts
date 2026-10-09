@@ -16,6 +16,10 @@ async function seeded(now = NOW) {
   return { ...fixture, ledger };
 }
 
+const cardStatementPaise = (plan: ReturnType<typeof buildDemoPlan>, month: string) => plan.transactions
+  .filter((t) => t.accountId === 'demo-v2-card' && t.status === 'posted' && t.kind !== 'transfer' && indiaDate(t.occurredAt).startsWith(month))
+  .reduce((sum, t) => sum + (t.direction === 'debit' ? t.amountPaise : -t.amountPaise), 0);
+
 it('plans the same fixture for the same moment, and earlier months ignore today', () => {
   assert.deepEqual(buildDemoPlan(NOW), buildDemoPlan(NOW));
   const later = buildDemoPlan(new Date('2026-10-20T13:00:00Z'));
@@ -29,6 +33,28 @@ it('covers three full months plus this month, with nothing in the future', () =>
   assert.ok(plan.transactions.every((t) => t.occurredAt <= NOW && indiaDate(t.occurredAt) >= '2026-07-01'));
   assert.equal(new Set(plan.transactions.map((t) => t.id)).size, plan.transactions.length);
   assert.equal(plan.transactions.filter((t) => indiaDate(t.occurredAt) === '2026-10-08').length, 3);
+});
+
+it('settles and bills signed card statements exactly in integer paise', () => {
+  const plan = buildDemoPlan(new Date('2026-10-20T13:00:00Z'));
+  const fractionalPurchase = plan.transactions.find((t) => t.counterparty === 'Myntra' && t.kind === 'expense');
+  const fractionalRefund = plan.transactions.find((t) => t.counterparty === 'Myntra' && t.kind === 'refund');
+  assert.equal(fractionalPurchase?.amountPaise, 129_975);
+  assert.equal(fractionalRefund?.amountPaise, 129_975);
+  assert.equal(plan.transactions.find((t) => t.counterparty === 'Flipkart' && t.kind === 'expense')?.amountPaise, 149_999);
+  assert.equal(cardStatementPaise(plan, '2026-09'), 853_599);
+
+  for (const [index, paymentMonth] of MONTHS.entries()) {
+    const expected = index === 0 ? 284_600 : cardStatementPaise(plan, MONTHS[index - 1]!);
+    const payment = plan.transactions.filter((t) => t.kind === 'transfer' && t.counterparty === 'SBI Card bill payment' && indiaDate(t.occurredAt).startsWith(paymentMonth));
+    assert.equal(payment.length, 2, paymentMonth);
+    assert.equal(payment.find((t) => t.accountId === 'demo-v2-sbi' && t.direction === 'debit')?.amountPaise, expected, paymentMonth);
+    assert.equal(payment.find((t) => t.accountId === 'demo-v2-card' && t.direction === 'credit')?.amountPaise, expected, paymentMonth);
+  }
+
+  const beforePaymentDate = buildDemoPlan(NOW);
+  assert.equal(beforePaymentDate.bills.find((bill) => bill.id === 'demo-v2-bill-card')?.amountPaise, 853_599);
+  assert.equal(plan.bills.find((bill) => bill.id === 'demo-v2-bill-card')?.amountPaise, cardStatementPaise(plan, '2026-10'));
 });
 
 it('totals match the ledger rules: failed, pending, excluded and transfers never count', async () => {

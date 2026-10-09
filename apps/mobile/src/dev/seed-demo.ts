@@ -91,28 +91,30 @@ export function buildDemoPlan(now: Date): DemoPlan {
   const chance = (p: number) => rng() < p;
   const pick = <T,>(items: readonly T[]) => items[Math.floor(rng() * items.length)]!;
   const upiRef = () => `${between(100_000, 999_999)}${between(100_000, 999_999)}`;
-  const add = (when: Date, rupees: number, fields: Partial<Txn> & Pick<Txn, 'counterparty'>) => {
+  const addPaise = (when: Date, amountPaise: number, fields: Partial<Txn> & Pick<Txn, 'counterparty'>) => {
     if (when.getTime() > now.getTime()) return undefined;
     const txn: Txn = {
-      id: id(`t${String(++serial).padStart(4, '0')}`), amountPaise: Math.round(rupees * 100),
+      id: id(`t${String(++serial).padStart(4, '0')}`), amountPaise,
       direction: 'debit', kind: 'expense', status: 'posted', accountId: acct.sbi, categoryId: null,
       occurredAt: when, createdAt: when, ...fields,
     };
     transactions.push(txn);
     return txn;
   };
+  const add = (when: Date, rupees: number, fields: Partial<Txn> & Pick<Txn, 'counterparty'>) =>
+    addPaise(when, Math.round(rupees * 100), fields);
   const spend = (when: Date, rupees: number, category: CategoryKey, counterparty: string, account: string, extra: Partial<Txn> = {}) =>
     add(when, rupees, { categoryId: id(category), counterparty, accountId: account, upiRef: account === acct.sbi ? upiRef() : null, ...extra });
   const income = (when: Date, rupees: number, category: CategoryKey, counterparty: string, account: string = acct.sbi, note: string | null = null) =>
     add(when, rupees, { direction: 'credit', kind: 'income', categoryId: id(category), counterparty, accountId: account, note });
   /** Both legs of a move between own accounts; neither counts as spending or income. */
-  const transfer = (when: Date, rupees: number, from: string, to: string, label: string) => {
-    if (!add(when, rupees, { kind: 'transfer', accountId: from, counterparty: label, upiRef: upiRef() })) return;
-    add(new Date(when.getTime() + MINUTE), rupees, { kind: 'transfer', direction: 'credit', accountId: to, counterparty: label });
+  const transfer = (when: Date, amountPaise: number, from: string, to: string, label: string) => {
+    if (!addPaise(when, amountPaise, { kind: 'transfer', accountId: from, counterparty: label, upiRef: upiRef() })) return;
+    addPaise(new Date(when.getTime() + MINUTE), amountPaise, { kind: 'transfer', direction: 'credit', accountId: to, counterparty: label });
   };
 
   // Each month's card bill pays the previous month's card spend; the first pays an opening statement.
-  const statements: number[] = [2_846];
+  const statements: number[] = [284_600];
   let jioDue = at(`${months[0]}-05`, 11).getTime();
 
   months.forEach((month, index) => {
@@ -124,12 +126,12 @@ export function buildDemoPlan(now: Date): DemoPlan {
 
     income(at(date(1), 9, 12), 32_000, 'salary', 'Brightlane Technologies Pvt Ltd', acct.sbi, 'Salary credit');
     spend(at(date(2), 10, 15), 9_500, 'rent', 'Shree Balaji PG, Sector 62', acct.sbi, { note: 'PG rent with meals, twin sharing' });
-    transfer(at(date(3), 20, 40), 3_000, acct.sbi, acct.kotak, 'Monthly savings to Kotak 811');
-    transfer(at(date(4), 8, 55), 1_000, acct.sbi, acct.lite, 'UPI Lite top-up');
+    transfer(at(date(3), 20, 40), 300_000, acct.sbi, acct.kotak, 'Monthly savings to Kotak 811');
+    transfer(at(date(4), 8, 55), 100_000, acct.sbi, acct.lite, 'UPI Lite top-up');
     add(at(date(6), 19, 5), 2_000, { kind: 'cash_withdrawal', counterparty: 'SBI ATM, Sector 62' });
     transfer(at(date(12), 21, 10), statements.at(-1)!, acct.sbi, acct.card, 'SBI Card bill payment');
     spend(at(date(14), 6, 2), 139, 'bills', 'Spotify', acct.card, { note: 'Premium Individual' });
-    transfer(at(date(18), 9, 20), 1_000, acct.sbi, acct.lite, 'UPI Lite top-up');
+    transfer(at(date(18), 9, 20), 100_000, acct.sbi, acct.lite, 'UPI Lite top-up');
     spend(at(date(21), 6, 4), 149, 'bills', 'Netflix', acct.card, { note: 'Mobile plan' });
     spend(at(date(25), 20, 30), 250, 'bills', 'Dhobi, Sector 62', acct.cash, { note: 'Monthly ironing' });
     const monthEnd = at(date(daysIn(month)), 23, 59).getTime();
@@ -178,7 +180,7 @@ export function buildDemoPlan(now: Date): DemoPlan {
     if (index === 1) {
       spend(at(date(10), 23, 15), 2_370, 'travel', 'IRCTC', acct.card, { note: 'Train home, 3A both ways' });
       income(at(date(19), 16, 40), 6_000, 'freelance', 'Pixelnest Studio', acct.sbi, 'Landing page for a café');
-      transfer(at(date(20), 9, 0), 5_000, acct.sbi, acct.kotak, 'Freelance money to savings');
+      transfer(at(date(20), 9, 0), 500_000, acct.sbi, acct.kotak, 'Freelance money to savings');
       spend(at(date(24), 13, 0), 1_099, 'shopping', 'Amazon', acct.card, { note: 'Gift for sister' });
       spend(at(date(27), 17, 35), 486, 'travel', 'Uber', acct.sbi, { note: 'PG to New Delhi station' });
       spend(at(date(31), 7, 10), 431, 'travel', 'Uber', acct.sbi, { note: 'Station back to PG' });
@@ -189,12 +191,12 @@ export function buildDemoPlan(now: Date): DemoPlan {
     if (index === 2) {
       // A festive sale week pushes Shopping well past its limit; one return comes back as a refund.
       spend(at(date(10), 10, 45), 640, 'travel', 'Uber', acct.sbi, { excludeFromStats: true, note: 'Client visit, Gurugram. Office reimburses.' });
-      spend(at(date(23), 0, 12), 1_499, 'shopping', 'Flipkart', acct.card, { note: 'boAt earbuds, sale price' });
-      const kurta = spend(at(date(23), 0, 40), 1_299, 'shopping', 'Myntra', acct.card, { note: 'Kurta for the festive season' });
+      addPaise(at(date(23), 0, 12), 149_999, { categoryId: id('shopping'), counterparty: 'Flipkart', accountId: acct.card, note: 'boAt earbuds, sale price' });
+      const kurta = spend(at(date(23), 0, 40), 1_299.75, 'shopping', 'Myntra', acct.card, { note: 'Kurta for the festive season' });
       spend(at(date(24), 19, 5), 1_799, 'shopping', 'Flipkart', acct.card, { note: 'Sneakers' });
       spend(at(date(26), 14, 20), 999, 'shopping', 'Amazon', acct.card, { note: 'Laptop backpack' });
       spend(at(date(27), 22, 0), 1_099, 'shopping', 'Amazon', acct.card, { note: 'Power bank' });
-      if (kurta) add(at(date(29), 15, 30), 1_299, { kind: 'refund', direction: 'credit', categoryId: id('shopping'), counterparty: 'Myntra', accountId: acct.card, linkedTxnId: kurta.id, note: 'Returned, size too small' });
+      if (kurta) addPaise(at(date(29), 15, 30), kurta.amountPaise, { kind: 'refund', direction: 'credit', categoryId: id('shopping'), counterparty: 'Myntra', accountId: acct.card, linkedTxnId: kurta.id, note: 'Returned, size too small' });
       income(at(date(30), 23, 50), 58, 'interest', 'SBI savings interest');
       income(at(date(30), 23, 55), 37, 'interest', 'Kotak 811 interest', acct.kotak);
     }
@@ -203,7 +205,7 @@ export function buildDemoPlan(now: Date): DemoPlan {
     }
 
     statements.push(transactions.slice(monthStart).reduce((sum, t) => t.accountId !== acct.card || t.status !== 'posted' || t.kind === 'transfer' ? sum
-      : sum + (t.direction === 'debit' ? t.amountPaise : -t.amountPaise) / 100, 0));
+      : sum + (t.direction === 'debit' ? t.amountPaise : -t.amountPaise), 0));
   });
 
   // Three entries from earlier today fill Home's fanned cards.
@@ -218,7 +220,7 @@ export function buildDemoPlan(now: Date): DemoPlan {
   const cardPaid = Number(today.slice(8)) >= 12;
   plan.bills = [
     {
-      id: id('bill-card'), label: 'SBI Card bill', amountPaise: Math.round(statements.at(cardPaid ? -1 : -2)! * 100),
+      id: id('bill-card'), label: 'SBI Card bill', amountPaise: statements.at(cardPaid ? -1 : -2)!,
       dueDate: `${cardPaid ? shiftMonth(current, 1) : current}-12`,
     },
     { id: id('bill-rent'), label: 'PG rent', amountPaise: 950_000, dueDate: `${shiftMonth(current, 1)}-02` },
