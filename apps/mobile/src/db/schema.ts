@@ -55,6 +55,8 @@ export const categories = sqliteTable(
     kind: text('kind', { enum: categoryKinds }).notNull(),
     isSystem: integer('is_system', { mode: 'boolean' }).notNull().default(false),
     sortOrder: integer('sort_order').notNull().default(0),
+    /** Rent, EMIs, subscriptions: the same every month, so pace views set it apart from flexible spend. */
+    isFixed: integer('is_fixed', { mode: 'boolean' }).notNull().default(false),
   },
   (table) => [
     check('categories_kind_check', sql`${table.kind} in ('expense', 'income')`),

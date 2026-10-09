@@ -1,0 +1,1 @@
+ALTER TABLE `categories` ADD `is_fixed` integer DEFAULT false NOT NULL;

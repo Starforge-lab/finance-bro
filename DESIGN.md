@@ -257,7 +257,7 @@ Soft-cornered paper with drawn edges. Cards are 18px, hero cards 22px, controls 
 
 ### Progress Bars
 - **Budget bar:** 10px tall (14px in a hero), track grey, ink fill, 5px ends. A 3–4px highlighter tick marks where spending would be on pace. Fixed costs have no pace tick. Over budget turns the fill and the note over-red.
-- **Shelves:** one row per category; the row's bar is split into one ink chip per entry, sized by amount, with a muted ghost tick for last month.
+- **Month pace chart (Home → Chart):** a running-total line for this month (2.5px ink, ink dot on today) over last month's (1.5px dashed secondary ink), one shared rupee axis with two recessive gridlines, and a two-item legend. The step a fixed-cost category makes (rent) is labelled "Rent · fixed", and the sentence above compares *flexible* spend with last month on the same day. Dragging the line shows that day's figures; screen readers step days with the adjust gesture. Below it, the three biggest categories plus "Other" as budget bars; a bar with no budget is muted and scaled to the largest unbudgeted spend. Tapping a category bar filters the entries; "Other" groups the remaining categories and is informational only, not tappable.
 
 ### Lists
 - Rows with a 10px stamp dot or a 44px date tile on the left, a Row Title, a Note beneath, and the amount in Space Mono on the right. 1.5px rules between rows, none after the last.

@@ -32,6 +32,8 @@ const id = (name: string) => `${PREFIX}${name}`;
 const acct = { sbi: id('sbi'), kotak: id('kotak'), card: id('card'), lite: id('upi-lite'), cash: id('cash') } as const;
 const expenseNames = ['Food', 'Rent', 'Groceries', 'Shopping', 'Travel', 'Bills', 'Health', 'Fun'] as const;
 const incomeNames = ['Salary', 'Freelance', 'Interest', 'Cashback'] as const;
+/** Same amount every month, so the Home pace chart keeps them out of the flexible line. */
+const fixedNames: ReadonlySet<string> = new Set(['Rent', 'Bills']);
 type CategoryKey = Lowercase<typeof expenseNames[number] | typeof incomeNames[number]>;
 
 /** Monthly limits in rupees. Total ₹26,700 of ₹32,000 take-home. */
@@ -74,7 +76,7 @@ export function buildDemoPlan(now: Date): DemoPlan {
       { id: acct.cash, name: 'Cash', type: 'cash' },
     ],
     categories: [
-      ...expenseNames.map((name, sortOrder) => ({ id: id(name.toLowerCase()), name, kind: 'expense' as const, sortOrder })),
+      ...expenseNames.map((name, sortOrder) => ({ id: id(name.toLowerCase()), name, kind: 'expense' as const, sortOrder, isFixed: fixedNames.has(name) })),
       ...incomeNames.map((name, sortOrder) => ({ id: id(name.toLowerCase()), name, kind: 'income' as const, sortOrder })),
     ],
     budgets: months.flatMap((month, index) => Object.entries(limits).map(([key, rupees]) => ({

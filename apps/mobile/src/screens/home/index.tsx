@@ -3,12 +3,14 @@ import { useCallback, useEffect, useRef, useState, type ComponentRef } from 'rea
 import { Platform, Pressable, ScrollView, StyleSheet, useColorScheme, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LedgerButton, MonthNavigation } from '@/components/ledger-controls';
+import { MonthPaceChart } from '@/components/month-pace-chart';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Categories, Fonts, Radius, Shadow, Spacing, Type } from '@/constants/theme';
 import { getLedger, type DataLayer } from '@/db';
 import { useTheme } from '@/hooks/use-theme';
 import { indiaDate, money } from '@/utils/display';
+import { buildMonthPace, shiftMonth, topCategoryBars } from '@/utils/month-pace';
 import { EntryForm } from './entry-form';
 import { PasteForm } from './paste-form';
 
@@ -16,6 +18,7 @@ type Row = Awaited<ReturnType<DataLayer['listTransactions']>>[number];
 type Summary = Awaited<ReturnType<DataLayer['getMonthlySummary']>>;
 type Category = Awaited<ReturnType<DataLayer['listCategories']>>[number];
 type Account = Awaited<ReturnType<DataLayer['listAccounts']>>[number];
+type Budget = Awaited<ReturnType<DataLayer['getBudgetSummary']>>[number];
 
 export function Home() {
   const colors = useTheme();
@@ -24,6 +27,8 @@ export function Home() {
   const [ledger, setLedger] = useState<DataLayer>();
   const [month, setMonth] = useState(() => indiaDate().slice(0, 7));
   const [rows, setRows] = useState<Row[]>([]);
+  const [previousRows, setPreviousRows] = useState<Row[]>([]);
+  const [budgets, setBudgets] = useState<Budget[]>([]);
   const [summary, setSummary] = useState<Summary>();
   const [categories, setCategories] = useState<Category[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -53,11 +58,13 @@ export function Home() {
     let active = true;
     setLoading(true); setError('');
     void getLedger().then(async (data) => {
-      const [entries, totals, stamps, bankAccounts] = await Promise.all([
+      const [entries, totals, stamps, bankAccounts, lastMonth, limits] = await Promise.all([
         data.listTransactions({ month }), data.getMonthlySummary(month), data.listCategories(), data.listAccounts(true),
+        data.listTransactions({ month: shiftMonth(month, -1) }), data.getBudgetSummary(month),
       ]);
       if (!active) return;
       setLedger(data); setRows(entries); setSummary(totals); setCategories(stamps); setAccounts(bankAccounts);
+      setPreviousRows(lastMonth); setBudgets(limits);
     }).catch(() => {
       if (active) setError('Couldn’t load your entries. Try again.');
     }).finally(() => { if (active) setLoading(false); });
@@ -88,6 +95,7 @@ export function Home() {
   const visibleRows = rows.filter((row) => (categoryId === undefined || row.categoryId === categoryId)
     && (!direction || row.direction === direction) && (!accountId || row.accountId === accountId));
   const monthName = new Intl.DateTimeFormat('en-IN', { month: 'long', timeZone: 'UTC' }).format(new Date(`${month}-01T00:00:00Z`));
+  const previousMonthName = new Intl.DateTimeFormat('en-IN', { month: 'long', timeZone: 'UTC' }).format(new Date(`${shiftMonth(month, -1)}-01T00:00:00Z`));
   const spendingRows = rows.filter((row) => row.status === 'posted' && !row.excludeFromStats
     && (row.direction === 'debit' && row.kind === 'expense' || row.direction === 'credit' && (row.kind === 'refund' || row.kind === 'reversal')));
   const stampOrder = ['food', 'rent', 'groceries', 'shopping', 'travel', 'bills'];
@@ -180,14 +188,13 @@ export function Home() {
                 <ThemedText themeColor="textSecondary" style={Type.amountSmall}>×{spendingRows.filter((row) => row.categoryId === stamp.categoryId).length}</ThemedText></View>
             </Pressable>)}
           </View> : <View style={[styles.chart, { backgroundColor: colors.backgroundElement, borderColor: colors.border }]}>
-            {stamps.map((stamp) => {
-              const entries = rows.filter((row) => row.categoryId === stamp.categoryId && row.status === 'posted' && !row.excludeFromStats && row.direction === 'debit' && row.kind === 'expense');
-              return <View key={stamp.categoryId ?? 'uncategorized'} style={styles.section}>
-                <View style={styles.row}><View style={[styles.dot, { backgroundColor: dot(stamp.categoryName) }]} /><ThemedText style={[Type.rowTitle, styles.headingWords]}>{stamp.categoryName ?? 'Uncategorized'}</ThemedText><ThemedText style={Type.amountSmall}>{money(stamp.expensePaise)}</ThemedText></View>
-                <View style={[styles.shelf, { borderColor: colors.border }]}>{entries.map((entry) => <View key={entry.id} style={{ flex: entry.amountPaise, minWidth: 0, height: 8, borderRadius: 2, backgroundColor: colors.fill }} />)}</View>
-              </View>;
-            })}
-            <ThemedText themeColor="textSecondary" style={Type.note}>Each chip is an expense.</ThemedText>
+            <MonthPaceChart
+              pace={buildMonthPace({ month, today: indiaDate(), rows, previousRows, categories })}
+              bars={topCategoryBars({ spending: stamps, budgets, categories })}
+              monthName={monthName} previousName={previousMonthName} hasFixed={categories.some((category) => category.isFixed)}
+              selectedCategoryId={categoryId}
+              onSelectCategory={(id) => { setCategoryId(id); if (id !== undefined) showEntries(); }}
+            />
           </View> : !loading && !error ? <ThemedText themeColor="textSecondary">No spending recorded this month.</ThemedText> : null}
         </View>
         <View style={styles.toolbar}>
@@ -234,7 +241,7 @@ const styles = StyleSheet.create({
   section: { gap: 12 }, toolbar: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', alignItems: 'center' },
   tiles: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, tile: { width: '31%', minWidth: 95, borderWidth: 2, borderRadius: Radius.control, padding: 10, gap: 8 },
   tileHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 4 }, dot: { width: 10, height: 10, borderRadius: 5 },
-  chart: { borderWidth: 2, borderRadius: Radius.card, padding: 16, gap: 16 }, shelf: { flexDirection: 'row', borderWidth: 2, borderRadius: Radius.bar, padding: 3, gap: 2, minHeight: 18 },
+  chart: { borderWidth: 2, borderRadius: Radius.card, padding: 16, gap: 16 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   entryRow: { paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: 12, flexWrap: 'wrap' }, dateTile: { width: 44, height: 44, borderWidth: 2, borderRadius: Radius.tile, justifyContent: 'center', alignItems: 'center' },
   empty: { padding: 16, borderWidth: 2, borderStyle: 'dashed', borderRadius: Radius.card, gap: 12, minHeight: 216, justifyContent: 'center' },

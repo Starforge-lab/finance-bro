@@ -35,6 +35,14 @@ it('covers three full months plus this month, with nothing in the future', () =>
   assert.equal(plan.transactions.filter((t) => indiaDate(t.occurredAt) === '2026-10-08').length, 3);
 });
 
+it('marks only Rent and Bills as fixed spending', async () => {
+  const { sqlite, ledger } = await seeded();
+  try {
+    const fixed = (await ledger.listCategories()).filter((category) => category.isFixed).map((category) => category.name);
+    assert.deepEqual(fixed.sort(), ['Bills', 'Rent']);
+  } finally { sqlite.close(); }
+});
+
 it('settles and bills signed card statements exactly in integer paise', () => {
   const plan = buildDemoPlan(new Date('2026-10-20T13:00:00Z'));
   const fractionalPurchase = plan.transactions.find((t) => t.counterparty === 'Myntra' && t.kind === 'expense');

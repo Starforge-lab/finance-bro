@@ -20,7 +20,7 @@ type Category = Awaited<ReturnType<DataLayer['listCategories']>>[number];
 type AccountKind = typeof accountTypes[number];
 type CategoryKind = typeof categoryKinds[number];
 type AccountFields = Pick<NewAccount, 'name' | 'type'> & { institution?: string | null; last4?: string | null };
-type CategoryFields = Pick<NewCategory, 'name' | 'kind'>;
+type CategoryFields = Pick<NewCategory, 'name' | 'kind' | 'isFixed'>;
 type Theme = ReturnType<typeof useTheme>;
 
 const accountLabels: Record<AccountKind, string> = {
@@ -32,6 +32,8 @@ const accountLabels: Record<AccountKind, string> = {
 };
 
 const categoryLabels: Record<CategoryKind, string> = { expense: 'Expense', income: 'Income' };
+const costTypes = ['flexible', 'fixed'] as const;
+const costLabels: Record<typeof costTypes[number], string> = { flexible: 'Changes month to month', fixed: 'Fixed each month' };
 
 export default function SettingsScreen() {
   const theme = useTheme();
@@ -580,6 +582,7 @@ function CategoryRow({ category, theme, expanded, editing, confirmingDelete, pen
       <View style={styles.rowCopy}>
         <ThemedText style={Type.rowTitle}>{category.name}</ThemedText>
         {category.isSystem ? <ThemedText style={[Type.note, { color: theme.textSecondary }]}>Built-in</ThemedText> : null}
+        {category.isFixed ? <ThemedText style={[Type.note, { color: theme.textSecondary }]}>Fixed each month</ThemedText> : null}
       </View>
       <ThemedText style={[Type.label, { color: theme.textSecondary }]}>{expanded ? 'Actions' : 'Manage'}</ThemedText>
     </Pressable>
@@ -656,6 +659,7 @@ function CategoryEditor({ category, theme, pending, disabled = false, onCancel, 
 }) {
   const [name, setName] = useState(category?.name ?? '');
   const [kind, setKind] = useState<CategoryKind | null>(category?.kind ?? null);
+  const [fixed, setFixed] = useState(category?.isFixed ?? false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const createId = useRef<string | null>(null);
@@ -672,7 +676,7 @@ function CategoryEditor({ category, theme, pending, disabled = false, onCancel, 
         createId.current ??= Crypto.randomUUID();
         stableCreateId = createId.current;
       }
-      const issue = await onSave({ name: cleanName, kind }, stableCreateId);
+      const issue = await onSave({ name: cleanName, kind, isFixed: kind === 'expense' && fixed }, stableCreateId);
       if (issue) setError(issue); else onCancel();
     } finally { setSaving(false); }
   };
@@ -682,6 +686,11 @@ function CategoryEditor({ category, theme, pending, disabled = false, onCancel, 
     <Field label="Category name" value={name} onChangeText={setName} theme={theme} placeholder="For example, groceries" editable={!locked} />
     <ThemedText style={[Type.label, styles.fieldLabel]}>Use for</ThemedText>
     <ChoiceList values={categoryKinds} selected={kind} labels={categoryLabels} onSelect={setKind} disabled={locked} />
+    {kind === 'expense' ? <>
+      <ThemedText style={[Type.label, styles.fieldLabel]}>Spending pattern</ThemedText>
+      <ChoiceList values={costTypes} selected={fixed ? 'fixed' : 'flexible'} labels={costLabels} onSelect={(value) => setFixed(value === 'fixed')} disabled={locked} />
+      <ThemedText style={[Type.note, { color: theme.textSecondary }]}>Fixed costs like rent or EMIs are set apart when Home compares your pace with last month.</ThemedText>
+    </> : null}
     {error ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: theme.over }]}>{error}</ThemedText> : null}
     <View style={styles.rowActions}>
       <LedgerButton label="Cancel" disabled={locked} onPress={onCancel} />
