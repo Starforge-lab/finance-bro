@@ -1,5 +1,6 @@
 import { createLedger, type LedgerMigrations, type LedgerSQLiteClient } from './ledger';
 import { createPlanning } from './planning';
+import { createPreferences } from './preferences';
 import { createLedgerQueries } from './queries';
 import { createLedgerCsvExporter } from '../exports/csv';
 import { saveManualEntry, type ManualEntry } from './manual';
@@ -29,6 +30,7 @@ export function createDataLayer(client: LedgerSQLiteClient, migrations: LedgerMi
     ...manualLedger,
     ...queries,
     ...planning,
+    ...createPreferences(db),
     ...createLedgerCsvExporter(db),
     saveManualEntry: (input: ManualEntry) => saveManualEntry(ledger, input),
     async preparePaste(raw: RawSms) {

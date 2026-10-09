@@ -69,8 +69,10 @@ export function daysInMonth(month: string): number {
 }
 
 export function shiftMonth(month: string, delta: number): string {
-  const date = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1 + delta, 1));
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+  const [year, value] = month.split('-').map(Number);
+  const total = year! * 12 + value! - 1 + delta;
+  const shiftedYear = Math.floor(total / 12);
+  return `${String(shiftedYear).padStart(4, '0')}-${String(total - shiftedYear * 12 + 1).padStart(2, '0')}`;
 }
 
 function cumulative(rows: PaceRow[], month: string, days: number, include: (row: PaceRow) => boolean) {

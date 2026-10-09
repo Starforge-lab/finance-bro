@@ -4,7 +4,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
 import * as Crypto from 'expo-crypto';
 
-import { LedgerButton } from '@/components/ledger-controls';
+import { Icon, accountIcon, categoryIcon } from '@/components/icon';
+import { LedgerButton, Segmented } from '@/components/ledger-controls';
+import { useThemePreference } from '@/hooks/appearance';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors, Fonts, Radius, Shadow, Spacing, Stroke, Type } from '@/constants/theme';
@@ -37,6 +39,7 @@ const costLabels: Record<typeof costTypes[number], string> = { flexible: 'Change
 
 export default function SettingsScreen() {
   const theme = useTheme();
+  const { preference: themePreference, setPreference: setThemePreference } = useThemePreference();
   const dark = theme.background === Colors.dark.background;
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -265,7 +268,7 @@ export default function SettingsScreen() {
           }]}>
             <ThemedText style={[styles.heroTitle, { color: theme.heroText }]}>Your money stays here.</ThemedText>
             <ThemedText style={[Type.body, { color: theme.heroTextSecondary }]}>
-              Stored on this device; pasted message text is never saved.
+              On this device only. Message text is never saved.
             </ThemedText>
             <View style={[styles.stats, { borderColor: theme.heroRule }]}>
               <Stat label="Entries" value={entryCount === null ? '—' : String(entryCount)} theme={theme} />
@@ -282,11 +285,9 @@ export default function SettingsScreen() {
           {notice ? <ThemedText accessibilityRole="alert" style={[Type.note, styles.message, { color: notice.error ? theme.over : theme.text }]}>{notice.text}</ThemedText> : null}
 
           <View style={styles.section}>
-            <SectionHeading title="Sources" theme={theme} />
-            <SettingsGroup theme={theme}>
-              <StaticRow title="Add manually" detail="Add an expense or income." theme={theme} />
-              <StaticRow last title="Paste a message" detail="Check details before saving." theme={theme} />
-            </SettingsGroup>
+            <SectionHeading title="Appearance" theme={theme} />
+            <Segmented label="Theme" value={themePreference} onChange={(value) => { setNotice(null); void setThemePreference(value).catch(() => setNotice({ text: 'Theme changed for now but couldn’t be saved. It may reset next time.', error: true })); }}
+              options={[{ value: 'system', label: 'Auto', icon: 'system' }, { value: 'light', label: 'Light', icon: 'light' }, { value: 'dark', label: 'Dark', icon: 'dark' }]} />
           </View>
 
           <View style={styles.section}>
@@ -434,13 +435,12 @@ export default function SettingsScreen() {
               >
                 <View style={styles.rowCopy}>
                   <ThemedText style={Type.rowTitle}>Export to CSV</ThemedText>
-                  <ThemedText style={Type.note}>{Platform.OS === 'ios' ? 'Not available on iOS yet' : `${entryCount ?? '—'} entries`}</ThemedText>
+                  <ThemedText style={[Type.label, { color: theme.textSecondary }]}>{Platform.OS === 'ios' ? 'Not available on iOS yet' : `${entryCount ?? '—'} entries · unencrypted file`}</ThemedText>
                 </View>
                 {pending === 'export' ? <ActivityIndicator color={theme.textSecondary} /> : null}
               </Pressable>
               {exportError ? <ThemedText accessibilityRole="alert" style={[Type.note, styles.exportError, { color: theme.over }]}>{exportError}</ThemedText> : null}
             </SettingsGroup>
-            <ThemedText style={[Type.note, styles.exportNote]}>Local file · not encrypted.</ThemedText>
           </View>
 
           {__DEV__ ? <View style={styles.section}>
@@ -521,7 +521,8 @@ function DisclosureRow({ title, detail, expanded, theme, onPress, last = false }
     style={({ pressed }) => [styles.disclosureRow, !last && { borderBottomColor: theme.rule, borderBottomWidth: StyleSheet.hairlineWidth }, { opacity: pressed ? 0.72 : 1 }]}
   >
     <ThemedText style={[Type.rowTitle, styles.disclosureTitle]}>{title}</ThemedText>
-    <ThemedText style={[Type.note, { color: theme.textSecondary }]}>{expanded ? 'Hide' : detail}</ThemedText>
+    <ThemedText style={[Type.amountSmall, { color: theme.textSecondary }]}>{detail}</ThemedText>
+    <Icon name={expanded ? 'expand' : 'next'} size={20} color={theme.textSecondary} />
   </Pressable>;
 }
 
@@ -544,14 +545,15 @@ function AccountRow({ account, theme, archived = false, expanded, editing, confi
       onPress={onToggle}
       style={({ pressed }) => [styles.dataRow, !last && { borderBottomColor: theme.rule, borderBottomWidth: StyleSheet.hairlineWidth }, { opacity: pressed ? 0.72 : 1 }]}
     >
+      <View style={[styles.rowGlyph, { borderColor: theme.border }]}><Icon name={accountIcon(account.type)} size={18} color={theme.text} /></View>
       <View style={styles.rowCopy}>
         <ThemedText style={Type.rowTitle}>{account.name}</ThemedText>
         <ThemedText style={[Type.note, { color: theme.textSecondary }]}>{archived ? `${info} · Archived` : info}</ThemedText>
       </View>
-      <ThemedText style={[Type.label, { color: theme.textSecondary }]}>{expanded ? 'Actions' : 'Manage'}</ThemedText>
+      <Icon name={expanded ? 'expand' : 'next'} size={20} color={theme.textSecondary} />
     </Pressable>
     {expanded && !editing && !confirmingArchive ? <View style={styles.rowActions}>
-      <LedgerButton label="Edit account" disabled={disabled} onPress={onEdit} />
+      <LedgerButton label="Edit" icon="edit" disabled={disabled} onPress={onEdit} />
       {!archived ? <DestructiveButton label="Archive" disabled={disabled} theme={theme} onPress={onAskArchive} /> : null}
     </View> : null}
     {confirmingArchive ? <View style={styles.inlinePanel}>
@@ -579,15 +581,15 @@ function CategoryRow({ category, theme, expanded, editing, confirmingDelete, pen
       onPress={onToggle}
       style={({ pressed }) => [styles.dataRow, !last && { borderBottomColor: theme.rule, borderBottomWidth: StyleSheet.hairlineWidth }, { opacity: pressed ? 0.72 : 1 }]}
     >
+      <View style={[styles.rowGlyph, { borderColor: theme.border }]}><Icon name={categoryIcon(category.name)} size={18} color={theme.text} /></View>
       <View style={styles.rowCopy}>
         <ThemedText style={Type.rowTitle}>{category.name}</ThemedText>
-        {category.isSystem ? <ThemedText style={[Type.note, { color: theme.textSecondary }]}>Built-in</ThemedText> : null}
-        {category.isFixed ? <ThemedText style={[Type.note, { color: theme.textSecondary }]}>Fixed each month</ThemedText> : null}
+        {category.isSystem || category.isFixed ? <ThemedText style={[Type.label, { color: theme.textSecondary }]}>{[category.isSystem ? 'Built-in' : null, category.isFixed ? 'Fixed each month' : null].filter(Boolean).join(' · ')}</ThemedText> : null}
       </View>
-      <ThemedText style={[Type.label, { color: theme.textSecondary }]}>{expanded ? 'Actions' : 'Manage'}</ThemedText>
+      <Icon name={expanded ? 'expand' : 'next'} size={20} color={theme.textSecondary} />
     </Pressable>
     {expanded && !editing && !confirmingDelete ? <View style={styles.rowActions}>
-      <LedgerButton label="Edit category" disabled={disabled} onPress={onEdit} />
+      <LedgerButton label="Edit" icon="edit" disabled={disabled} onPress={onEdit} />
       <DestructiveButton label={category.isSystem ? 'Built-in' : 'Remove'} disabled={disabled || category.isSystem} theme={theme} onPress={onAskDelete} />
     </View> : null}
     {category.isSystem && expanded ? <ThemedText style={[Type.note, styles.inlineHint]}>Built-in categories can’t be removed.</ThemedText> : null}
@@ -741,6 +743,7 @@ const styles = StyleSheet.create({
   staticRow: { minHeight: 72, paddingHorizontal: 16, paddingVertical: 12, justifyContent: 'center' },
   dataRow: { minHeight: 68, paddingHorizontal: 16, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   rowCopy: { flex: 1, gap: 2 },
+  rowGlyph: { width: 36, height: 36, borderWidth: 2, borderRadius: Radius.tile, alignItems: 'center', justifyContent: 'center' },
   disclosureRow: { minHeight: 64, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   disclosureTitle: { flex: 1 },
   rowActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingVertical: 10 },

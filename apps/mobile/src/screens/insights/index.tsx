@@ -1,9 +1,11 @@
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, useColorScheme, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useColorScheme } from '@/hooks/appearance';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { MonthNavigation } from '@/components/ledger-controls';
+import { Icon, categoryIcon } from '@/components/icon';
+import { MonthPicker } from '@/components/ledger-controls';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Fonts, Radius, Spacing, Stroke, Type } from '@/constants/theme';
@@ -18,9 +20,6 @@ type Merchant = { key: string; name: string; amountPaise: bigint; count: number 
 
 const monthNames = new Intl.DateTimeFormat('en-IN', { month: 'long', timeZone: 'Asia/Kolkata' });
 const shortMonthNames = new Intl.DateTimeFormat('en-IN', { month: 'short', timeZone: 'Asia/Kolkata' });
-const compactRupees = new Intl.NumberFormat('en-IN', {
-  style: 'currency', currency: 'INR', notation: 'compact', maximumFractionDigits: 1,
-});
 
 function shiftMonth(value: string, offset: number): string | null {
   const [year, month] = value.split('-').map(Number);
@@ -38,17 +37,25 @@ function monthLabel(value: string) {
   return monthNames.format(monthDate(value));
 }
 
+/** Short rupees for chart labels (₹840, ₹21.9k, ₹1.2L). Hermes has no compact Intl notation, so it's done by hand. */
 function compactMoney(paise: number) {
-  return compactRupees.format(paise / 100);
+  const rupees = Math.abs(paise) / 100;
+  const sign = paise < 0 ? '−' : '';
+  const short = (value: number, unit: string) => `${Number(value.toFixed(value < 10 ? 1 : 0))}${unit}`;
+  if (rupees >= 100_000) return `${sign}₹${short(rupees / 100_000, 'L')}`;
+  if (rupees >= 1_000) return `${sign}₹${short(rupees / 1_000, 'k')}`;
+  return `${sign}₹${Math.round(rupees)}`;
 }
 
-function exactMoney(paise: bigint) {
+/** Display money for bigint totals: whole rupees, paise only when there are some. */
+function bigMoney(paise: bigint) {
   const absolute = paise < 0n ? -paise : paise;
   const whole = (absolute / 100n).toString();
   const grouped = whole.length <= 3
     ? whole
     : `${whole.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',')},${whole.slice(-3)}`;
-  return `${paise < 0n ? '−' : ''}₹${grouped}.${String(absolute % 100n).padStart(2, '0')}`;
+  const fraction = absolute % 100n;
+  return `${paise < 0n ? '−' : ''}₹${grouped}${fraction ? `.${String(fraction).padStart(2, '0')}` : ''}`;
 }
 
 function merchantRows(rows: Transaction[]): Merchant[] {
@@ -92,7 +99,6 @@ export function Insights() {
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [revision, setRevision] = useState(0);
-  const [moreOpen, setMoreOpen] = useState(false);
   const [totalsOpen, setTotalsOpen] = useState(false);
 
   useFocusEffect(useCallback(() => {
@@ -128,8 +134,10 @@ export function Insights() {
     .filter((category) => category.expensePaise > 0)
     .sort((left, right) => right.expensePaise - left.expensePaise)[0];
   const previousMonth = history.length > 1 ? history[history.length - 2] : undefined;
-  const historyTotal = history.reduce((total, item) => total + BigInt(item.expensePaise), 0n);
-  const divisor = BigInt(Math.max(1, history.length));
+  // Months before the ledger has any spending would drag the average toward zero.
+  const recorded = history.filter((item) => item.expensePaise !== 0);
+  const historyTotal = recorded.reduce((total, item) => total + BigInt(item.expensePaise), 0n);
+  const divisor = BigInt(Math.max(1, recorded.length));
   const averagePaise = Number((historyTotal + (historyTotal < 0n ? -divisor / 2n : divisor / 2n)) / divisor);
   const averageY = averagePosition(history, averagePaise);
 
@@ -139,7 +147,7 @@ export function Insights() {
         <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.header}>
             <ThemedText style={Type.screenTitle}>Insights</ThemedText>
-            <MonthNavigation month={month} onChange={setMonth} />
+            <MonthPicker month={month} onChange={setMonth} />
           </View>
 
           {loading ? (
@@ -171,12 +179,7 @@ export function Insights() {
                 </View>
               </View>
 
-              {largestCategory && <ThemedText style={[Type.body, { color: colors.textSecondary }]}>
-                Most recorded spending is in {largestCategory.categoryName ?? 'Uncategorized'}: {money(largestCategory.expensePaise)}.
-              </ThemedText>}
-
-              <Disclosure label="More insights" expanded={moreOpen} onPress={() => setMoreOpen((open) => !open)} colors={colors} />
-              {moreOpen && <>
+              <>
                 <View style={styles.section}>
                   <View style={styles.sectionHeading}>
                     <ThemedText style={Type.sectionTitle}>Six months</ThemedText>
@@ -195,12 +198,13 @@ export function Insights() {
                 <View style={styles.section}>
                   <ThemedText style={Type.sectionTitle}>Worth knowing</ThemedText>
                   {largestCategory ? <View style={[styles.insightCard, cardDepth(dark, colors.shadow), { backgroundColor: colors.backgroundElement, borderColor: colors.border }]}>
-                    <View style={[styles.badge, { backgroundColor: colors.backgroundSelected }]}>
-                      <ThemedText style={[Type.label, { color: colors.text }]}>Category comparison</ThemedText>
+                    <View style={styles.insightTitle}>
+                      <Icon name={categoryIcon(largestCategory.categoryName)} size={22} color={colors.text} />
+                      <ThemedText style={[Type.rowTitle, styles.grow]}>{largestCategory.categoryName ?? 'Uncategorized'} leads</ThemedText>
+                      <ThemedText style={Type.amountSmall}>{money(largestCategory.expensePaise)}</ThemedText>
                     </View>
-                    <ThemedText style={Type.rowTitle}>{largestCategory.categoryName ?? 'Uncategorized'}</ThemedText>
-                    <ThemedText style={[Type.body, { color: colors.textSecondary }]}>
-                      {monthLabel(month)}: {money(largestCategory.expensePaise)}. {previousMonth ? `${monthLabel(previousMonth.month)}: ${money(previousMonth.categories.find((item) => item.categoryId === largestCategory.categoryId)?.expensePaise ?? 0)}.` : 'No earlier month is available.'}
+                    <ThemedText style={[Type.note, { color: colors.textSecondary }]}>
+                      {previousMonth ? `${monthLabel(previousMonth.month)}: ${money(previousMonth.categories.find((item) => item.categoryId === largestCategory.categoryId)?.expensePaise ?? 0)}` : 'No earlier month to compare'}
                     </ThemedText>
                   </View> : <ThemedText style={[Type.body, { color: colors.textSecondary }]}>No posted category spending to compare.</ThemedText>}
                 </View>
@@ -219,7 +223,7 @@ export function Insights() {
                           <View style={[styles.merchantFill, { width: `${Number(merchant.amountPaise * 100n / maxMerchant)}%`, backgroundColor: colors.fill }]} />
                         </View>
                       </View>
-                      <ThemedText adjustsFontSizeToFit minimumFontScale={0.7} numberOfLines={1} style={Type.amountSmall}>{exactMoney(merchant.amountPaise)}</ThemedText>
+                      <ThemedText adjustsFontSizeToFit minimumFontScale={0.7} numberOfLines={1} style={Type.amountSmall}>{bigMoney(merchant.amountPaise)}</ThemedText>
                     </View>
                   )) : <ThemedText style={[Type.body, { color: colors.textSecondary }]}>No named merchants in this month’s posted spending.</ThemedText>}
                 </View>
@@ -233,7 +237,7 @@ export function Insights() {
                     <BillRow key={bill.id} bill={bill} colors={colors} first={index === 0} />
                   )) : <ThemedText style={[Type.body, { color: colors.textSecondary }]}>No unpaid future bill reminders.</ThemedText>}
                 </View>
-              </>}
+              </>
 
               <Disclosure label="How totals work" expanded={totalsOpen} onPress={() => setTotalsOpen((open) => !open)} colors={colors} />
               {totalsOpen && <ThemedText style={[Type.note, styles.rules, { color: colors.textSecondary }]}>
@@ -351,7 +355,8 @@ const styles = StyleSheet.create({
   chevron: { width: 9, height: 9, marginRight: 4, borderRightWidth: 2, borderBottomWidth: 2, transform: [{ rotate: '45deg' }] },
   chevronOpen: { transform: [{ rotate: '225deg' }] },
   insightCard: { padding: Spacing.three, borderWidth: Stroke.ink, borderRadius: Radius.card, gap: Spacing.two },
-  badge: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 5, borderRadius: Radius.pill },
+  insightTitle: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  grow: { flex: 1, minWidth: 0 },
   rules: { lineHeight: 20 },
   merchantRow: { minHeight: 76, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   rank: { width: 28 }, merchantInfo: { flex: 1, minWidth: 0, gap: Spacing.two },

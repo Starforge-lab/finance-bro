@@ -81,6 +81,28 @@ export function createLedgerQueries(db: Ledger['db']) {
       return joinedSelect().where(and(eq(transactions.id, id), isNull(transactions.deletedAt))).get();
     },
 
+    /** Months (India time) that hold at least one entry, newest first, with what counted as spending. */
+    async listEntryMonths() {
+      const rows = await db.select({
+        occurredAt: transactions.occurredAt, amountPaise: transactions.amountPaise, direction: transactions.direction,
+        kind: transactions.kind, status: transactions.status, excludeFromStats: transactions.excludeFromStats,
+      }).from(transactions).where(isNull(transactions.deletedAt)).all();
+      const months = new Map<string, { expense: bigint; entries: number }>();
+      for (const row of rows) {
+        const month = new Date(row.occurredAt.getTime() + indiaOffsetMs).toISOString().slice(0, 7);
+        const total = months.get(month) ?? { expense: 0n, entries: 0 };
+        total.entries += 1;
+        // Same rules as getMonthlySummary: posted, counted, expenses less refunds and reversals.
+        if (row.status === 'posted' && !row.excludeFromStats) {
+          if (row.direction === 'debit' && row.kind === 'expense') total.expense += BigInt(row.amountPaise);
+          else if (row.direction === 'credit' && (row.kind === 'refund' || row.kind === 'reversal')) total.expense -= BigInt(row.amountPaise);
+        }
+        months.set(month, total);
+      }
+      return [...months].sort(([left], [right]) => (left < right ? 1 : -1))
+        .map(([month, total]) => ({ month, expensePaise: checkedPaise(total.expense), entryCount: total.entries }));
+    },
+
     async listTransactions(filters: TransactionFilters = {}) {
       return joinedSelect()
         .where(conditions(filters))

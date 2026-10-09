@@ -209,6 +209,8 @@ A monochrome ink-on-paper palette with one highlighter and six quiet category st
 ### Named Rules
 **The Money Is Mono Rule.** Every rupee amount, count and date numeral is Space Mono. Prose never is.
 
+**The Whole Rupee Rule.** Show whole rupees (₹11,134) and paise only when there are some (₹139.50). Entry detail and forms always show exact paise.
+
 **The No Eyebrow Rule.** Headings carry themselves. No small caps label above a title, no section numbers.
 
 ## Layout
@@ -245,7 +247,10 @@ Soft-cornered paper with drawn edges. Cards are 18px, hero cards 22px, controls 
 - **Press feedback:** scale to 0.96 and drop the shadow offset by 1px over 120ms; restore with the standard ease.
 
 ### Segmented Control
-- 44–48px tall, round, outlined track; the selected segment is an ink thumb (night-ink in dark) that slides with the standard ease. Selected text inverts to paper. Used for Cards/Chart and Light/Dark/System.
+- 44–48px tall, round, outlined track; the selected segment is an ink thumb (night-ink in dark) that slides 320ms with the standard ease and a selection haptic. Selected text inverts to paper. Used for Cards/Chart, entry direction, and Settings → Appearance (Auto / Light / Dark, with glyphs).
+
+### Motion
+- One authored moment: today's cards deal into the fan (640ms, 60ms stagger). Supporting motion only explains change: the pace line draws in (480ms) and budget bars grow after it; segmented thumbs slide; the month sheet slides up and its rows fade in; month content fades in on change; pressed controls scale to 0.96. Reduced motion uses existing keyframe fades for Home card, month sheet, and chart/bar entrances; pace-line and bar-fill timings settle at their final geometry, and the segmented thumb fades at its static selected position. Pressed controls use opacity feedback instead of scale. Reanimated samples the system preference at app launch; OS setting changes while the app is open require relaunch. Fades use keyframes (`src/utils/motion.ts`), not Reanimated's preset FadeIn.
 
 ### Switch
 - 52×32 round track with a 2px outline. Off: track grey, white thumb. On: ink track with a highlighter thumb in light; night-ink track with a night-paper thumb in dark. The thumb slides 20px.
@@ -259,14 +264,20 @@ Soft-cornered paper with drawn edges. Cards are 18px, hero cards 22px, controls 
 - **Budget bar:** 10px tall (14px in a hero), track grey, ink fill, 5px ends. A 3–4px highlighter tick marks where spending would be on pace. Fixed costs have no pace tick. Over budget turns the fill and the note over-red.
 - **Month pace chart (Home → Chart):** a running-total line for this month (2.5px ink, ink dot on today) over last month's (1.5px dashed secondary ink), one shared rupee axis with two recessive gridlines, and a two-item legend. The step a fixed-cost category makes (rent) is labelled "Rent · fixed", and the sentence above compares *flexible* spend with last month on the same day. Dragging the line shows that day's figures; screen readers step days with the adjust gesture. Below it, the three biggest categories plus "Other" as budget bars; a bar with no budget is muted and scaled to the largest unbudgeted spend. Tapping a category bar filters the entries; "Other" groups the remaining categories and is informational only, not tappable.
 
+### Icons
+- One glyph set: SF Symbols on iOS, Material Symbols on Android and web (`expo-symbols`, `src/components/icon.tsx`). Every category, account type and repeated action has a glyph; use the glyph instead of a word when the meaning survives (filter, add, paste, edit, chevrons). Glyphs in a filled stamp take paper ink; outlined glyph tiles are 36–40px with a 2px outline.
+
+### Month Picker
+- The month is a sheet-first control, not exposed as a pair of previous/next buttons. On Home it is the screen title itself ("October ⌄"); elsewhere a pill beside the title. The sheet lists entry months newest first, plus the current and viewed month even without entries; each row shows spend and entry count. Compact previous/next controls inside the sheet reach empty and future months for budget planning.
+
 ### Lists
-- Rows with a 10px stamp dot or a 44px date tile on the left, a Row Title, a Note beneath, and the amount in Space Mono on the right. 1.5px rules between rows, none after the last.
+- Entries are grouped under day labels (Today, Yesterday, "Tue, 6 Oct") in Label type. Each row: a 40px outlined glyph tile, a Row Title, one Label line of meta, and the amount in Space Mono on the right. Transfers and cash withdrawals carry no sign and sit in muted ink; failed amounts are struck through. 1.5px rules between rows in a group.
 
 ### Navigation
 - A floating capsule 64px tall, 16px from the sides, 24px above the bottom, four tabs (Home, Budgets, Insights, Settings) with 22px stroked icons and 11px labels. The selected tab sits on a round tint (`rgba(23,24,29,0.09)` light, `rgba(10,10,14,0.42)` dark) with an 800-weight label. The app retains NativeTabs on iOS and web; Android uses Router tabs to match the floating capsule because the native Material bar cannot float. Hide the Android capsule during entry/paste. On web, reserve tab-bar clearance below manual-entry actions so both buttons stay above the floating capsule. iOS requires Rohan’s device verification.
 
 ### Pulled Cards (signature)
-- 148×194 cards fanned in a stack on Home, rotated, each with a stamp dot, merchant, time and amount. The newest is larger (166×216), lifted, and carries a rotated "New" stamp. They deal in with a 640ms expo-out arc.
+- 148×194 cards fanned in a stack under Today on Home, rotated, each with a category glyph stamp, merchant and amount; back cards keep their words in the part the front card leaves visible. The newest is larger (166×216), lifted, and carries a rotated "New" stamp. They deal in with a 640ms expo-out arc.
 
 ## Do's and Don'ts
 

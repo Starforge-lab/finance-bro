@@ -33,6 +33,7 @@ export const Colors = {
     tabBarBorder: 'rgba(23, 24, 29, 0.16)',
     tabSelected: 'rgba(23, 24, 29, 0.09)',
     tabText: '#3E414B',
+    scrim: 'rgba(23, 24, 29, 0.42)',
   },
   dark: {
     text: '#ECEAF2',
@@ -59,6 +60,7 @@ export const Colors = {
     tabBarBorder: 'rgba(236, 234, 242, 0.24)',
     tabSelected: 'rgba(10, 10, 14, 0.42)',
     tabText: '#D4D2DC',
+    scrim: 'rgba(0, 0, 0, 0.6)',
   },
 } as const;
 

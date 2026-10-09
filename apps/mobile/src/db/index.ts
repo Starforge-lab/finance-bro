@@ -38,6 +38,7 @@ export { createDataLayer } from './service';
 export type { DataLayer } from './service';
 export { parseInrAmount, saveManualEntry, editManualAmount } from './manual';
 export type { ManualEntry } from './manual';
+export type { ThemePreference } from './preferences';
 export type { NewBudget, BudgetPatch, NewBill, BillPatch, BillStatus } from './planning';
 export type { TransactionFilters } from './queries';
 export { DuplicateReviewRequiredError } from '../imports/key-state';

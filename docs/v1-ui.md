@@ -6,6 +6,8 @@ The frontend connects the shared local data API to Home, entry/edit/delete, past
 
 The user requested minimal text, minimal overwhelm and low effort after a full workday. Home names the purpose; new entries require only an amount. Date defaults to today and preserves the current India clock; edits preserve the original clock. Category, account and note are optional details. Filters, the full entry list, additional insights and calculation explanations start collapsed. Validation, explicit save errors and discard protection remain.
 
+Home, Budgets and Insights use a month sheet with entry months plus the current and viewed month. Previous/next controls inside the sheet keep transaction-free and future budget months reachable.
+
 On Home's chart, tapping a category filters the entry list; Uncategorized is a distinct filter, and tapping the selected category again clears it.
 
 Android uses Router tabs for the reference floating capsule, with symmetric side insets and fully visible labels. Entry and paste hide that capsule. The entry footer avoids the keyboard and bottom system area. iOS retains NativeTabs and requires Rohan's device validation.
@@ -70,6 +72,10 @@ Frozen installation, typecheck, lint, 34 mobile/data tests plus 31 parser tests,
 ## Identical no-reference paste collisions — 2026-10-09
 
 When the sender/body identity already exists and the parsed message has no UPI reference, review offers “Same message” by default or an explicit “Separate payment” choice. The separate path exposes the existing India date/time and requires a different actual time to the nearest second; two purchases in the same second must be entered manually. A selected timestamp produces a stable retry identity. UPI-reference matches remain unsplittable. Automated SQLite tests cover two identical purchases, a retry of the selected timestamp, corrected/deleted replay protection, same-second validation, key identity and absence of raw message text. This source revision has not yet had a browser or physical-device interaction check.
+
+## PR review browser checkpoint — 2026-10-08
+
+On the combined #40/#41 revision, browser checks with fictional data confirmed that tapping Uncategorized shows only the uncategorized entry, and tapping it again restores all entries. The month sheet reached a future month with no entries, retained the current month, and returned to it. A fictional November category budget persisted after reload and remained reachable through Next month despite having no transactions. These checks do not establish native-device, large-text or screen-reader behavior for the revised controls.
 
 ## Remaining release gates
 

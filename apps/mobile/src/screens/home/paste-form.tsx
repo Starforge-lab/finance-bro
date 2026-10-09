@@ -10,15 +10,15 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  useColorScheme,
   View,
 } from 'react-native';
+import { useColorScheme } from '@/hooks/appearance';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { DuplicateReviewRequiredError, type DataLayer } from '@/db';
 import { transactionDirections, transactionKinds, transactionStatuses } from '@/db/schema';
 import type { PastePreparation, ReviewCorrections } from '@/imports/paste';
-import { amountInput, indiaDate, indiaTime, money, parseIndiaDate, parseIndiaDateTime } from '@/utils/display';
+import { amountInput, exactMoney, indiaDate, indiaTime, parseIndiaDate, parseIndiaDateTime } from '@/utils/display';
 import { parseInrAmount } from '@/db/manual';
 import { Fonts, Radius, Spacing, Stroke, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -537,7 +537,7 @@ export function PasteForm({
               {prepared.candidate ? (
                 <View style={[styles.summary, { borderBottomColor: colors.rule }]}>
                   <Text style={[styles.summaryAmount, { color: colors.text }]}>
-                    {direction === 'credit' ? '+' : '−'}{amountValue.amountPaise === null ? 'Amount needs correction' : money(amountValue.amountPaise)}
+                    {direction === 'credit' ? '+' : '−'}{amountValue.amountPaise === null ? 'Amount needs correction' : exactMoney(amountValue.amountPaise)}
                   </Text>
                   <Text style={[styles.bodyCopy, { color: colors.textSecondary }]}>
                     {merchant.trim() || 'Merchant not identified'} · {kind ? displayKind(kind) : 'Type needed'} · {status || 'Status needed'}

@@ -1,14 +1,15 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
+import Animated, { Easing, useAnimatedProps, useAnimatedStyle, useReducedMotion, useSharedValue, withDelay, withTiming } from 'react-native-reanimated';
 import Svg, { Circle, Line, Path, Text as SvgText } from 'react-native-svg';
 
 import { ThemedText } from '@/components/themed-text';
-import { Fonts, Radius, Type } from '@/constants/theme';
+import { Fonts, Motion, Radius, Type } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { toggleCategoryFilter } from '@/utils/category-filter';
 import { flexibleSpendSummary, type CategoryBar, type MonthPace } from '@/utils/month-pace';
 import { money } from '@/utils/display';
-
+import { fadeIn } from '@/utils/motion';
 
 const HEIGHT = 132;
 const TOP = 14;
@@ -27,6 +28,39 @@ function shortRupees(paise: number): string {
   return rupees >= 1000 ? `₹${Number((rupees / 1000).toFixed(1))}k` : `₹${Math.round(rupees)}`;
 }
 
+const ease = Easing.bezier(...Motion.ease);
+const AnimatedPath = Animated.createAnimatedComponent(Path);
+
+/** The month's line draws itself in from day 1; with reduced motion it simply appears. */
+function DrawnLine({ d, length, color }: { d: string; length: number; color: string }) {
+  const progress = useSharedValue(0);
+  useEffect(() => {
+    progress.value = 0;
+    progress.value = withTiming(1, { duration: Motion.entrance, easing: ease });
+  }, [d, progress]);
+  const props = useAnimatedProps(() => ({ strokeDashoffset: length * (1 - progress.value) }));
+  return <AnimatedPath d={d} fill="none" stroke={color} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round"
+    strokeDasharray={[length, length]} animatedProps={props} />;
+}
+
+/** A budget bar's fill grows from the left after the line has drawn. */
+function GrowFill({ fill, color, order }: { fill: number; color: string; order: number }) {
+  const width = useSharedValue(0);
+  useEffect(() => {
+    width.value = withDelay(Motion.entrance / 2 + order * Motion.stagger, withTiming(fill, { duration: Motion.standard, easing: ease }));
+  }, [fill, order, width]);
+  const style = useAnimatedStyle(() => ({ width: `${width.value * 100}%` }));
+  return <Animated.View style={[styles.fill, { backgroundColor: color }, style]} />;
+}
+
+function pathLength(values: number[], x: (day: number) => number, y: (paise: number) => number): number {
+  let length = 0;
+  for (let index = 1; index < values.length; index++) {
+    length += Math.hypot(x(index + 1) - x(index), y(values[index]!) - y(values[index - 1]!));
+  }
+  return Math.max(1, length);
+}
+
 function linePath(values: number[], x: (day: number) => number, y: (paise: number) => number): string {
   return values.map((value, index) => `${index ? 'L' : 'M'}${x(index + 1).toFixed(1)},${y(value).toFixed(1)}`).join('');
 }
@@ -41,6 +75,7 @@ export function MonthPaceChart({ pace, bars, monthName, previousName, hasFixed, 
   selectedCategoryId: string | null | undefined; onSelectCategory: (categoryId: string | null | undefined) => void;
 }) {
   const colors = useTheme();
+  const reduceMotion = useReducedMotion();
   const [width, setWidth] = useState(0);
   const [day, setDay] = useState<number | null>(null);
   const top = niceCeiling(Math.max(1, ...pace.current, ...pace.previous));
@@ -66,7 +101,7 @@ export function MonthPaceChart({ pace, bars, monthName, previousName, hasFixed, 
 
   return <View style={styles.wrap}>
     <ThemedText accessibilityLiveRegion="polite" style={[Type.note, styles.readout]}>{readout}</ThemedText>
-    <View
+    <Animated.View entering={reduceMotion ? fadeIn() : undefined}
       onLayout={(event: LayoutChangeEvent) => setWidth(event.nativeEvent.layout.width)}
       accessible accessibilityRole="adjustable"
       accessibilityLabel={`${monthName} running spending compared with ${previousName}`}
@@ -94,7 +129,7 @@ export function MonthPaceChart({ pace, bars, monthName, previousName, hasFixed, 
         <SvgText x={2} y={y(top) - 4} fill={colors.textSecondary} fontSize={10} fontFamily={Fonts.mono}>{shortRupees(top)}</SvgText>
         <SvgText x={2} y={y(top / 2) - 4} fill={colors.textSecondary} fontSize={10} fontFamily={Fonts.mono}>{shortRupees(top / 2)}</SvgText>
         {pace.previous.length ? <Path d={linePath(pace.previous, x, y)} fill="none" stroke={colors.textSecondary} strokeWidth={1.5} strokeDasharray="4 4" strokeLinejoin="round" /> : null}
-        {pace.current.length ? <Path d={linePath(pace.current, x, y)} fill="none" stroke={colors.text} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" /> : null}
+        {pace.current.length ? <DrawnLine d={linePath(pace.current, x, y)} length={pathLength(pace.current, x, y)} color={colors.text} /> : null}
         {pace.fixedStep ? <SvgText x={Math.min(x(pace.fixedStep.day) + 6, width - 96)} y={y(pace.current[pace.fixedStep.day - 1] ?? 0) + 14}
           fill={colors.textSecondary} fontSize={10} fontFamily={Fonts.sansSemiBold}>{`${pace.fixedStep.label} · fixed`}</SvgText> : null}
         {lastDay ? <Circle cx={x(lastDay)} cy={y(pace.current[lastDay - 1] ?? 0)} r={4.5} fill={colors.text} stroke={colors.backgroundElement} strokeWidth={2} /> : null}
@@ -103,20 +138,20 @@ export function MonthPaceChart({ pace, bars, monthName, previousName, hasFixed, 
           <Circle cx={x(day)} cy={y(pace.current[day - 1] ?? 0)} r={5} fill={colors.accent} stroke={colors.text} strokeWidth={2} />
         </> : null}
       </Svg> : null}
-    </View>
+    </Animated.View>
     <View style={styles.axis}>
-      <ThemedText style={[Type.label, { color: colors.textMuted }]}>1</ThemedText>
+      <ThemedText style={[Type.label, { fontFamily: Fonts.monoBold, color: colors.textMuted }]}>1</ThemedText>
       <View style={styles.legend}>
         <Svg width={18} height={6}><Line x1={1} x2={17} y1={3} y2={3} stroke={colors.text} strokeWidth={2.5} strokeLinecap="round" /></Svg>
         <ThemedText style={[Type.label, { color: colors.textSecondary }]}>{monthName}</ThemedText>
         <Svg width={18} height={6} style={styles.key}><Line x1={1} x2={17} y1={3} y2={3} stroke={colors.textSecondary} strokeWidth={1.5} strokeDasharray="4 4" /></Svg>
         <ThemedText style={[Type.label, { color: colors.textSecondary }]}>{previousName}</ThemedText>
       </View>
-      <ThemedText style={[Type.label, { color: colors.textMuted }]}>{pace.days}</ThemedText>
+      <ThemedText style={[Type.label, { fontFamily: Fonts.monoBold, color: colors.textMuted }]}>{pace.days}</ThemedText>
     </View>
 
-    <View style={styles.bars}>
-      {bars.map((bar) => {
+    <Animated.View entering={reduceMotion ? fadeIn() : undefined} style={styles.bars}>
+      {bars.map((bar, order) => {
         const selectable = bar.key !== '__other';
         const selected = selectable && selectedCategoryId === bar.categoryId;
         const amount = bar.budgetPaise === null ? money(bar.spentPaise) + ' · no budget' : money(bar.spentPaise) + ' of ' + money(bar.budgetPaise);
@@ -128,7 +163,7 @@ export function MonthPaceChart({ pace, bars, monthName, previousName, hasFixed, 
             <ThemedText style={[Type.amountSmall, { color: bar.over ? colors.over : colors.text }]} numberOfLines={1}>{amount}</ThemedText>
           </View>
           <View style={[styles.track, { backgroundColor: colors.track }]}>
-            <View style={[styles.fill, { width: String(bar.fill * 100) + '%', backgroundColor: bar.over ? colors.over : bar.budgetPaise === null ? colors.textMuted : colors.fill }]} />
+            <GrowFill fill={bar.fill} order={order} color={bar.over ? colors.over : bar.budgetPaise === null ? colors.textMuted : colors.fill} />
             {bar.budgetPaise !== null && !bar.fixed && lastDay < pace.days ? <View style={[styles.pace, { left: String(pacePosition * 100) + '%', backgroundColor: colors.accent }]} /> : null}
           </View>
         </>;
@@ -144,7 +179,7 @@ export function MonthPaceChart({ pace, bars, monthName, previousName, hasFixed, 
             {contents}
           </View>;
       })}
-    </View>
+    </Animated.View>
     {bars.some((bar) => bar.budgetPaise !== null && !bar.fixed) && lastDay < pace.days
       ? <ThemedText style={[Type.note, { color: colors.textSecondary }]}>Yellow tick: where a budget would be if spent evenly through the month.</ThemedText> : null}
   </View>;

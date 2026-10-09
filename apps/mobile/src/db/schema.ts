@@ -156,3 +156,11 @@ export const transactions = sqliteTable(
     ),
   ],
 );
+
+export const themePreferences = ['system', 'light', 'dark'] as const;
+
+/** Small app settings as key/value text; the ledger file stays the one place app state lives. */
+export const preferences = sqliteTable('preferences', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+});
