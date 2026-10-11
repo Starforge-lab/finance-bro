@@ -5,29 +5,32 @@ import type { ConfigContext, ExpoConfig } from 'expo/config';
  * next to a store install on the same phone. Set per profile in eas.json.
  */
 const IS_DEV = process.env.APP_VARIANT === 'development';
+const IS_SMS_PROBE = IS_DEV && process.env.ANDROID_SMS_PROBE === '1';
 
 // Working id; the product name is decided after v1. Must be final before the first store upload.
 const BASE_ID = 'com.rohangupta.financebro';
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
-  name: IS_DEV ? 'finance-bro (dev)' : 'finance-bro',
+  name: IS_SMS_PROBE ? 'finance-bro SMS probe' : IS_DEV ? 'finance-bro (dev)' : 'finance-bro',
   slug: 'finance-bro',
   owner: 'starforge-lab',
   extra: {
     eas: { projectId: 'd958cc1c-c6f5-449f-a397-8a106d5790d9' },
+    androidSmsProbe: IS_SMS_PROBE,
   },
   version: '0.1.0',
   orientation: 'portrait',
   icon: './assets/images/icon.png',
-  scheme: 'financebro',
+  scheme: IS_SMS_PROBE ? 'financebrosmsqa' : 'financebro',
   userInterfaceStyle: 'automatic',
   ios: {
     bundleIdentifier: IS_DEV ? `${BASE_ID}.dev` : BASE_ID,
     icon: './assets/expo.icon',
   },
   android: {
-    package: IS_DEV ? `${BASE_ID}.dev` : BASE_ID,
+    package: IS_SMS_PROBE ? `${BASE_ID}.smsqa.dev` : IS_DEV ? `${BASE_ID}.dev` : BASE_ID,
+    blockedPermissions: IS_SMS_PROBE ? [] : ['android.permission.READ_SMS', 'android.permission.RECEIVE_SMS'],
     adaptiveIcon: {
       backgroundColor: '#E6F4FE',
       foregroundImage: './assets/images/android-icon-foreground.png',
@@ -38,6 +41,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   web: { bundler: 'metro', output: 'single' },
   plugins: [
+    ['./modules/sms-reader/app.plugin.js', { enabled: IS_SMS_PROBE }],
     ['expo-router', {
       headers: {
         'Cross-Origin-Embedder-Policy': 'credentialless',

@@ -3,6 +3,10 @@ name: Android development APK
 on:
   workflow_dispatch:
     inputs:
+      android_sms_probe:
+        description: Build the isolated Android SMS feasibility client
+        type: boolean
+        default: false
       libsodium_source_check:
         description: Compile the pinned recovery crypto source instead of an APK
         type: boolean
@@ -13,6 +17,7 @@ on:
       - .github/workflows/android-development.yml
       - apps/mobile/app.config.ts
       - apps/mobile/package.json
+      - apps/mobile/modules/**
       - pnpm-lock.yaml
 
 permissions:
@@ -29,6 +34,7 @@ jobs:
     timeout-minutes: 45
     env:
       APP_VARIANT: development
+      ANDROID_SMS_PROBE: ${{ inputs.android_sms_probe && '1' || '0' }}
       CI: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

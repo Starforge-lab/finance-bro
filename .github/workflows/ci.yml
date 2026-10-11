@@ -28,6 +28,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - run: node apps/mobile/modules/sms-reader/self-check.cjs
       - run: pnpm --dir apps/mobile exec expo install --check
       - run: pnpm --dir apps/mobile dlx expo-doctor
       - run: pnpm build
