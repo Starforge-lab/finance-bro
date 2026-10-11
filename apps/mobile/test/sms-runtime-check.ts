@@ -49,6 +49,6 @@ export async function runSmsRuntimeCheck(
   expect(row?.amountPaise === 46000, 'corrected-paise');
   expect(await ledger.softDeleteTransaction(input.id), 'user-deletion');
   expect(!await ledger.upsertImportedTransaction(input), 'preserve-tombstone-on-replay');
-  return { passed: true, checks: ['parser-handoff', 'exact-paise', 'string-platform-id',
+  return { passed: true, checks: ['parser-handoff', 'exact-paise', 'transaction-semantics', 'string-platform-id',
     'no-persisted-body', 'correction-replay', 'tombstone-replay'] };
 }

@@ -14,7 +14,7 @@ it('hands a fictional SMS bridge record through the parser to correction-safe SQ
       },
     });
     assert.equal(report.passed, true);
-    assert.equal(report.checks.length, 6);
+    assert.equal(report.checks.length, 7);
   } finally {
     fixture.sqlite.close();
   }

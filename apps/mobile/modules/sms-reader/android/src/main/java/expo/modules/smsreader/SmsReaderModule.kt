@@ -60,7 +60,7 @@ class SmsReaderModule : Module() {
       withContext(Dispatchers.IO) { queryInbox(context, query) }
     }
 
-    AsyncFunction("getWakeMetadataAsync") Coroutine {
+    AsyncFunction("getWakeMetadataAsync") Coroutine { ->
       val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
       val preferences = context.getSharedPreferences(WAKE_PREFERENCES, Context.MODE_PRIVATE)
       val receivedAtMs = preferences.getLong(LAST_RECEIVED_AT_MS, 0L).takeIf { it > 0L }
