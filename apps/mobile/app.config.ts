@@ -18,6 +18,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   extra: {
     eas: { projectId: 'd958cc1c-c6f5-449f-a397-8a106d5790d9' },
     androidSmsProbe: IS_SMS_PROBE,
+    androidBackgroundProbe: IS_SMS_PROBE,
   },
   version: '0.1.0',
   orientation: 'portrait',

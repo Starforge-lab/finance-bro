@@ -34,7 +34,8 @@ function permissionNames(manifest) {
     .map((permission) => permission.$['android:name']);
 }
 
-const { manifest: normalManifest } = getAndroidManifest(false);
+const { config: normalConfig, manifest: normalManifest } = getAndroidManifest(false);
+assert.equal(normalConfig.extra.androidBackgroundProbe, false);
 assert.ok(!permissionNames(normalManifest).some((name) => name === 'android.permission.READ_SMS' || name === 'android.permission.RECEIVE_SMS'));
 assert.ok(!(normalManifest.application?.[0]?.receiver ?? []).some((receiver) => receiver.$['android:name'] === 'expo.modules.smsreader.SmsWakeReceiver'));
 
@@ -43,6 +44,7 @@ const permissions = permissionNames(probeManifest);
 assert.equal(permissions.filter((name) => name === 'android.permission.READ_SMS').length, 1);
 assert.equal(permissions.filter((name) => name === 'android.permission.RECEIVE_SMS').length, 1);
 assert.equal(probeConfig.android.package, 'com.rohangupta.financebro.smsqa.dev');
+assert.equal(probeConfig.extra.androidBackgroundProbe, true);
 
 const receiver = (probeManifest.application?.[0]?.receiver ?? []).find((item) =>
   item.$['android:name'] === 'expo.modules.smsreader.SmsWakeReceiver'
@@ -60,6 +62,7 @@ assert.doesNotMatch(moduleSource, /Log\.|println\(/);
 
 const { config: productionConfig, manifest: productionManifest } = getAndroidManifest(true, 'production');
 assert.equal(productionConfig.android.package, 'com.rohangupta.financebro');
+assert.equal(productionConfig.extra.androidBackgroundProbe, false);
 assert.ok(!permissionNames(productionManifest).some((name) => name === 'android.permission.READ_SMS' || name === 'android.permission.RECEIVE_SMS'));
 assert.ok(!(productionManifest.application?.[0]?.receiver ?? []).some((item) => item.$['android:name'] === 'expo.modules.smsreader.SmsWakeReceiver'));
 
