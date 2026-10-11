@@ -23,7 +23,7 @@ Use the existing pure parser and shared SQLite/HMAC contract in an isolated fict
 
 ## Required evidence
 
-All native results below are pending until exercised on a matching build. Keep synthetic evidence separate from physical-device evidence.
+All native results below are pending until exercised on a matching build. Keep synthetic evidence separate from physical-device evidence. The reusable fictional harness in `apps/mobile/test/sms-runtime-check.ts` passed on Node SQLite: parser handoff, exact paise, a platform id above JavaScript's safe integer range kept as a string, no stored body, and correction/tombstone protection on replay. The same harness must still run on Expo SQLite in the matching Android client. It is a probe fixture, not the production eligibility or ingestion policy.
 
 | Check | Evidence required |
 | --- | --- |
