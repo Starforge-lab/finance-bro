@@ -20,7 +20,7 @@ The job retains build/dependency metadata for one day. It does not upload an APK
 
 ## Evidence and limits
 
-The first exact-head hosted source build is pending. Local exports or a development APK are not substitutes for its result. Record the run URL and source SHA here after it completes; keep #27 open until all acceptance criteria have evidence.
+The first hosted source build at `8086cbfff2509f4fff004d3e5e2f8d38fa21338f` failed in [run 38150756109](https://github.com/Starforge-lab/finance-bro/actions/runs/38150756109): Gradle's release JavaScript bundling could not resolve `babel-preset-expo`. The app's Babel config names that preset, so it now declares the SDK-compatible `58.0.12` preset directly as a development dependency rather than relying on a transitive package. A corrected hosted release build is still required. Local exports or a development APK are not substitutes; keep #27 open until all acceptance criteria have evidence.
 
 Forcing Expo modules to build from source does not prove that every transitive native library or tool was source-built or freely licensed. The [current F-Droid inclusion policy](https://f-droid.org/en/docs/Inclusion_Policy/) permits some trusted FLOSS binary sources and requires dependency, toolchain and license review. Audit the resolved Gradle graph, npm packages and bundled assets separately; repository or package names alone are insufficient.
 
