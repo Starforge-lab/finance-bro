@@ -6,7 +6,7 @@ This is the bounded native probe for [issue #16](https://github.com/Starforge-la
 
 The local Expo module is compiled into the development client. Its manifest permissions and receiver are enabled only when both `APP_VARIANT=development` and `ANDROID_SMS_PROBE=1` are set. The probe uses package `com.rohangupta.financebro.smsqa.dev` and scheme `financebrosmsqa`; ordinary development and production packages keep their existing identities and have no probe permission declarations or receiver.
 
-The `extra.androidBackgroundProbe` flag uses the same gate. The temporary probe UI may import `apps/mobile/test/sms-background-check.ts`; the production entry must not import it. Its helpers register one 15-minute-minimum task, unregister it, request the SDK's development-only test trigger, and read the last QA report. The task is defined at module scope so TaskManager can resolve it when the module is loaded. No iOS background configuration is enabled for this Android-only experiment.
+The `extra.androidBackgroundProbe` flag uses the same gate. The temporary probe entry must import `apps/mobile/test/sms-background-check.ts` before `expo-router/entry`; the production entry must not import it. Importing the helper from a route layout alone does not establish cold headless availability: Router registers its React root without rendering the route tree, whereas TaskManager's headless loader starts the task without rendering that root. Its helpers register one 15-minute-minimum task, unregister it, request the SDK's development-only test trigger, and read the last QA report. The task is defined at module scope so TaskManager can resolve it when the module is loaded. No iOS background configuration is enabled for this Android-only experiment.
 
 Use the `Android development APK` workflow's `android_sms_probe=true` dispatch input on the exact reviewed branch. Generated Android files remain uncommitted. A matching client must be installed before testing native APIs; an Expo export is not native proof.
 
@@ -37,13 +37,17 @@ A separately consented inbox probe checked a fixed preceding 24-hour window with
 
 Expo SDK 58 uses WorkManager on Android. Its documented interval is a minimum of 15 minutes, not a schedule guarantee; its installed Android implementation additionally sets a `CONNECTED` network constraint. The QA test trigger is development-only and may schedule work instead of invoking it immediately when the app is foregrounded. A callback recorded as `origin-unknown` is not by itself headless-process evidence; verify process termination/restart independently. If Android terminates the process before fixture cleanup, the unique QA database may remain until manually cleaned; it contains only fictional fixture values. See the [SDK 58 BackgroundTask reference](https://docs.expo.dev/versions/v58.0.0/sdk/background-task/) and [TaskManager reference](https://docs.expo.dev/versions/v58.0.0/sdk/task-manager/).
 
+On 2026-10-11, the matching background client at `dbd9635d682cf6d6e7e0bef90679bef66aea642e` built successfully in [run 38120051487](https://github.com/Starforge-lab/finance-bro/actions/runs/38120051487). APK SHA256: `c26f2e8b0a3f1ff3854ff5c5f5494b1b255810b924a9b36982e61558b0e8f8ba`. On the same physical device, the development-triggered callback reported `appState: background`, seven passing fictional checks and passing database cleanup. It completed in 356 ms. This establishes background execution while the existing JS runtime was alive, not natural scheduling or a cold headless start. See [the device record](https://github.com/Starforge-lab/finance-bro/issues/16#issuecomment-6106660704).
+
+A subsequent forced WorkManager request and scoped background-process termination produced no newer callback report. Android restarted the native process, but the job later remained waiting on timing and connectivity constraints. The old report must not be counted as a forced or headless pass. Source inspection identified the route-only task import as a cold-start gap; a temporary global-entry experiment bundles and typechecks, but its native result remains pending. Phone privacy/network settings were not changed.
+
 | Check | Evidence required |
 | --- | --- |
 | Default manifests | No probe SMS permissions or receiver in ordinary development/production manifests |
 | Probe manifest and autolinking | Correct package, two read-only permissions, receiver and compiled Expo module |
 | Permission denial/revocation | Initial and post-revocation rejection passed; manual/paste fallback still needs its own flow check |
 | Bounded inbox query | Consented foreground range/order/pagination passed; boundary timestamps, equal-date ids and empty/missing-row cases remain unverified |
-| Background test trigger | Fictional SQLite/HMAC task and report need a matching rebuilt Android client; a development trigger does not prove WorkManager scheduling |
+| Background test trigger | Seven fictional SQLite/HMAC checks and cleanup passed on the matching `dbd9635` Android client; a development trigger does not prove WorkManager scheduling |
 | Natural scheduled/headless execution | Pending physical-device proof after app background/process termination; WorkManager's SDK 58 network constraint means offline execution is not covered |
 | Live multipart receipt | Fictional SMS received with expected aggregate wake/part metadata |
 | Foreground parser/SQLite | Fictional fixture passed on Expo SQLite/HMAC with database cleanup; a verified bank corpus and production ingestion policy remain pending |
