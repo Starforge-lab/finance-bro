@@ -23,16 +23,20 @@ Use the existing pure parser and shared SQLite/HMAC contract in an isolated fict
 
 ## Required evidence
 
-All native results below are pending until exercised on a matching build. Keep synthetic evidence separate from physical-device evidence. The reusable fictional harness in `apps/mobile/test/sms-runtime-check.ts` passed on Node SQLite: parser handoff, exact paise, a platform id above JavaScript's safe integer range kept as a string, no stored body, and correction/tombstone protection on replay. The same harness must still run on Expo SQLite in the matching Android client. It is a probe fixture, not the production eligibility or ingestion policy.
+Keep synthetic evidence separate from physical-device evidence. On 2026-10-11, the [matching ARM64 build](https://github.com/Starforge-lab/finance-bro/actions/runs/38117321881) at `89f59fe73f0adfa725341f50cd2c58b9ceb4b0c4` passed on a Motorola edge 60 pro running Android 17/API 37. APK SHA256: `5a212dd684d807affa8e37034fc02cbae0b7c44c903b15a2213cc87ae16b1802`.
+
+The reusable fictional harness in `apps/mobile/test/sms-runtime-check.ts` passed on both Node SQLite and physical-device Expo SQLite/HMAC: parser handoff, exact paise and transaction semantics, a platform id above JavaScript's safe integer range kept as a string, no stored body, and correction/tombstone protection on replay. The isolated fictional database was closed and deleted. This is a probe fixture, not the production eligibility or ingestion policy.
+
+A separately consented inbox probe checked a fixed preceding 24-hour window with a maximum of 20 returned messages. Range, strict compound order and pagination checks passed; only counts/checks were reported locally, with no sender, body, platform id or ledger write. Both SMS permissions were revoked afterward; a fresh run reported denial and rejected inbox access. See [the device record](https://github.com/Starforge-lab/finance-bro/issues/16#issuecomment-6106309184). These development-client results do not prove release-build behavior or the remaining matrix below.
 
 | Check | Evidence required |
 | --- | --- |
 | Default manifests | No probe SMS permissions or receiver in ordinary development/production manifests |
 | Probe manifest and autolinking | Correct package, two read-only permissions, receiver and compiled Expo module |
-| Permission denial/revocation | Calls reject safely; manual/paste remain usable |
-| Bounded inbox query | Stable pagination, boundary timestamps, equal-date ids, empty/missing rows; no durable raw text |
+| Permission denial/revocation | Initial and post-revocation rejection passed; manual/paste fallback still needs its own flow check |
+| Bounded inbox query | Consented foreground range/order/pagination passed; boundary timestamps, equal-date ids and empty/missing-row cases remain unverified |
 | Live multipart receipt | Fictional SMS received with expected aggregate wake/part metadata |
-| Foreground parser/SQLite | Fictional corpus parses, saves and replays safely in an isolated database |
+| Foreground parser/SQLite | Fictional fixture passed on Expo SQLite/HMAC with database cleanup; a verified bank corpus and production ingestion policy remain pending |
 | Process kill/reboot/unlock | Record actual receiver and app-open catch-up behavior |
 | Force-stop/reopen and battery limits | Document missed wakes and required recovery; do not promise delivery while force-stopped |
 | Locked/missing fingerprint key | Defer or require explicit duplicate review; no silent duplicate import |
