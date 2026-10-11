@@ -58,4 +58,12 @@ A subsequent forced WorkManager request and scoped background-process terminatio
 
 Issue #16 stays open until its device matrix and go/no-go recommendation are complete. This probe alone does not satisfy the Android SMS 2.0 release gates.
 
+### Cold development-client limit
+
+Installed SDK 58 source inspection shows that `RNHeadlessAppLoader` starts the application's ReactHost without using the task's stored `appUrl` to select a development project. React Native can try Metro when development support is enabled, but the interactive development launcher's selected manifest and bundle-loader injection are not established by this headless path. A reachable Metro server and a registered task therefore do not prove that a cold process loaded the intended probe entry.
+
+On the same device, scheduler job 6 reached pending/ready with timing, connectivity and quota satisfied while no probe process or newer fictional report was present. This is scheduler evidence, not a passing or failed JavaScript callback. Preserve the distinction from the earlier development-triggered pass.
+
+The next deterministic test requires an isolated probe APK with the fictional task bundle embedded and its task helper imported before Router. Register it in the foreground, verify process termination, then observe one native worker invocation. Record the exact APK and source, and keep any manually requested invocation separate from natural scheduling. Do not infer production background reliability from a development client or an embedded probe alone.
+
 References: [Expo local modules](https://docs.expo.dev/modules/get-started/), [Expo module API](https://docs.expo.dev/modules/module-api/), [Expo SDK 58 BackgroundTask](https://docs.expo.dev/versions/v58.0.0/sdk/background-task/), [Expo SDK 58 TaskManager](https://docs.expo.dev/versions/v58.0.0/sdk/task-manager/), [Android SMS intents](https://developer.android.com/reference/android/provider/Telephony.Sms.Intents), and [Android manifest permissions](https://developer.android.com/reference/android/Manifest.permission).
