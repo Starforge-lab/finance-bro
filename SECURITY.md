@@ -6,6 +6,12 @@ Private vulnerability reporting is enabled. Use **Security → Report a vulnerab
 
 ## Known development-tooling advisories
 
+The SDK 58.0.7 / React Native 0.88.0-rc.4 refresh on 2026-10-10 still reports
+the same two high and two moderate advisories listed below. No forced override
+or advisory suppression was added. Expo's compatibility check passes, but
+`expo-modules-core@58.0.15` still declares Worklets peers only through 0.10.x
+while the supported app uses 0.13.0; issue #3 retains that upstream warning.
+
 The local-ledger dependency audit on 2026-10-06 additionally reported a moderate `esbuild@0.18.20` advisory through `drizzle-kit@0.31.11` → `@esbuild-kit/esm-loader` → `@esbuild-kit/core-utils`: [GHSA-67mh-4wv8-2f99](https://github.com/advisories/GHSA-67mh-4wv8-2f99), concerning cross-origin access to esbuild's development server. Drizzle Kit is used for local migration generation, not shipped as app runtime code. No transitive override was applied; review a compatible upstream tooling update separately. The full audit now reports two high and two moderate advisories, including the three below.
 
 A `pnpm audit` on 2026-10-06 reported three transitive advisories (two high, one moderate). These findings were in development/build tooling:
