@@ -29,6 +29,8 @@ export async function runSmsRuntimeCheck(
     'fictional-parser-handoff');
   const candidate = prepared.candidate;
   expect(candidate.amountPaise === 45000, 'exact-paise');
+  expect(candidate.direction === 'debit' && candidate.kind === 'expense' &&
+    candidate.status === 'posted' && candidate.occurredAt === message.dateMs, 'transaction-semantics');
   const input = {
     id: `sms-probe:${message.id}`, source: 'sms' as const, smsRefId: message.id,
     amountPaise: candidate.amountPaise, direction: candidate.direction,
