@@ -61,6 +61,10 @@ CSV write failures now attempt deletion of the created file. If deletion also fa
 
 Frozen installation, typecheck, lint, 34 mobile/data tests plus 31 parser tests, SDK dependency check, Expo Doctor (20/20), and Android/iOS/web exports passed. These checks do not prove Android destination cancellation, filesystem error behavior or physical haptics. Android's existing folder picker retains persisted directory grants; replacing it with a single-file destination or releasing grants is still required. Rohan's design-system PR #33 is now merged into dev; #31 and #37 remain open.
 
+## Android CSV single-file destination follow-up
+
+The Android exporter now opens the system `ACTION_CREATE_DOCUMENT` picker for one `text/csv` file instead of requesting a persistable folder grant. Cancel returns without creating a file; a successful result must include a document URI, and a failed write attempts to delete only that selected file. Automated checks cover cancellation, malformed picker results, selected-URI writes and cleanup. This does not verify Android document-provider behavior on a device; the rebuilt development client still needs a real-device cancel, successful save/readback and write-failure check. iOS implementation and device validation remain Rohan's work.
+
 ## Identical no-reference paste collisions — 2026-10-09
 
 When the sender/body identity already exists and the parsed message has no UPI reference, review offers “Same message” by default or an explicit “Separate payment” choice. The separate path exposes the existing India date/time and requires a different actual time to the nearest second; two purchases in the same second must be entered manually. A selected timestamp produces a stable retry identity. UPI-reference matches remain unsplittable. Automated SQLite tests cover two identical purchases, a retry of the selected timestamp, corrected/deleted replay protection, same-second validation, key identity and absence of raw message text. This source revision has not yet had a browser or physical-device interaction check.

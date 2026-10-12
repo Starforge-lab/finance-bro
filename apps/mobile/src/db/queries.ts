@@ -89,7 +89,17 @@ export function createLedgerQueries(db: Ledger['db']) {
     },
 
     async getMonthlySummary(month: string) {
-      const rows = await joinedSelect().where(conditions({ month })).all();
+      const rows = await db.select({
+        amountPaise: transactions.amountPaise,
+        direction: transactions.direction,
+        kind: transactions.kind,
+        status: transactions.status,
+        categoryId: transactions.categoryId,
+        categoryName: projection.categoryName,
+        excludeFromStats: transactions.excludeFromStats,
+      }).from(transactions)
+        .leftJoin(categories, eq(transactions.categoryId, categories.id))
+        .where(conditions({ month })).all();
       let expenses = 0n;
       let income = 0n;
       const byCategory = new Map<string | null, {
