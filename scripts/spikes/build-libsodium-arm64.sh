@@ -10,7 +10,7 @@ output=$(realpath -m "$2")
 : "${ANDROID_NDK_HOME:?Set ANDROID_NDK_HOME to NDK 30.0.16248370}"
 grep -Eq '^Pkg.Revision *= *30\.0\.16248370$' "$ANDROID_NDK_HOME/source.properties"
 [[ ! -e "$output" ]] || { echo 'Output directory must be new' >&2; exit 2; }
-echo "d8892d3ea624d8fc513918bd49336df956dac11ee3e6b622556adfa65d03dc88  $archive" | sha256sum --check
+echo "141fe4ef54a9f5ca7a219d1431adc13f02f63ed8f7d3f0513db697207595f0c1  $archive" | sha256sum --check
 minisign -Vm "$archive" -P RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
 
 mkdir -p "$output"

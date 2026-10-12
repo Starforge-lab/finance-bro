@@ -7,6 +7,10 @@ on:
         description: Compile the pinned recovery crypto source instead of an APK
         type: boolean
         default: false
+      libsodium_binding_check:
+        description: Build an isolated ARM64 QA APK with source-built libsodium
+        type: boolean
+        default: false
   pull_request:
     branches: [dev]
     paths:
@@ -19,12 +23,22 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-development-${{ github.ref }}
+  group: android-development-${{ github.ref }}-${{ inputs.libsodium_binding_check && 'binding' || inputs.libsodium_source_check && 'source' || 'default' }}
   cancel-in-progress: true
 
 jobs:
+  validate-dispatch:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reject ambiguous build modes
+        run: |
+          if [[ '${{ inputs.libsodium_source_check }}' == 'true' && '${{ inputs.libsodium_binding_check }}' == 'true' ]]; then
+            echo 'Choose either the source-only check or the binding APK check, not both.' >&2
+            exit 1
+          fi
   build:
-    if: ${{ !inputs.libsodium_source_check }}
+    if: ${{ !inputs.libsodium_source_check && !inputs.libsodium_binding_check }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -54,22 +68,23 @@ jobs:
           compression-level: 0
           if-no-files-found: error
   libsodium-source:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.libsodium_source_check }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.libsodium_source_check && !inputs.libsodium_binding_check }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install signature verifier
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y minisign
-      - name: Fetch source and signature
-        working-directory: ${{ runner.temp }}
+      - name: Stage the repository-pinned source snapshot and signature
         run: |
-          curl --fail --location --retry 3 --output libsodium-1.0.22-stable.tar.gz https://download.libsodium.org/libsodium/releases/libsodium-1.0.22-stable.tar.gz
-          curl --fail --location --retry 3 --output libsodium-1.0.22-stable.tar.gz.minisig https://download.libsodium.org/libsodium/releases/libsodium-1.0.22-stable.tar.gz.minisig
+          source="$GITHUB_WORKSPACE/scripts/spikes/vendor/libsodium-1.0.22-stable-20261009.tar.gz"
+          mkdir -p "$RUNNER_TEMP/libsodium-source-provenance"
+          sha256sum "$source" > "$RUNNER_TEMP/libsodium-source-provenance/source-tarball-sha256.txt"
+          cp "$source.minisig" "$RUNNER_TEMP/libsodium-source-provenance/"
       - name: Compile and inspect ARM64 library
         run: |
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/30.0.16248370"
-          bash scripts/spikes/build-libsodium-arm64.sh "$RUNNER_TEMP/libsodium-1.0.22-stable.tar.gz" "$RUNNER_TEMP/libsodium-source-check"
+          bash scripts/spikes/build-libsodium-arm64.sh "$GITHUB_WORKSPACE/scripts/spikes/vendor/libsodium-1.0.22-stable-20261009.tar.gz" "$RUNNER_TEMP/libsodium-source-check"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: libsodium-source-arm64
@@ -77,5 +92,139 @@ jobs:
             ${{ runner.temp }}/libsodium-source-check/*.txt
             ${{ runner.temp }}/libsodium-source-check/LICENSE.libsodium
             ${{ runner.temp }}/libsodium-source-check/libsodium-stable/libsodium-android-armv8-a+crypto/lib/libsodium.so
+            ${{ runner.temp }}/libsodium-source-provenance/**
           retention-days: 1
+          if-no-files-found: error
+  libsodium-binding:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.libsodium_binding_check && !inputs.libsodium_source_check }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      APP_VARIANT: development
+      CI: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.x
+          cache: pnpm
+      - name: Use Java 17
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
+      - name: Install the locked workspace
+        run: pnpm install --frozen-lockfile
+      - name: Add the exact candidate without lifecycle scripts
+        run: pnpm --dir apps/mobile add --save-exact --ignore-scripts react-native-libsodium@1.7.0
+      - name: Preserve the ephemeral candidate dependency graph
+        run: |
+          mkdir -p "$RUNNER_TEMP/libsodium-binding-provenance"
+          cp pnpm-lock.yaml "$RUNNER_TEMP/libsodium-binding-provenance/pnpm-lock.ephemeral.yaml"
+          cp apps/mobile/package.json "$RUNNER_TEMP/libsodium-binding-provenance/mobile-package.ephemeral.json"
+      - name: Install signature verifier
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y minisign
+      - name: Stage the repository-pinned source snapshot and signature
+        run: |
+          source="$GITHUB_WORKSPACE/scripts/spikes/vendor/libsodium-1.0.22-stable-20261009.tar.gz"
+          sha256sum "$source" > "$RUNNER_TEMP/libsodium-binding-provenance/source-tarball-sha256.txt"
+          cp "$source.minisig" "$RUNNER_TEMP/libsodium-binding-provenance/"
+      - name: Build and inspect source ARM64 library
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/30.0.16248370"
+          bash scripts/spikes/build-libsodium-arm64.sh "$GITHUB_WORKSPACE/scripts/spikes/vendor/libsodium-1.0.22-stable-20261009.tar.gz" "$RUNNER_TEMP/libsodium-binding-source"
+      - name: Replace candidate bundled inputs with the verified source build
+        run: |
+          node scripts/spikes/prepare-libsodium-binding.mjs \
+            apps/mobile/node_modules/react-native-libsodium \
+            "$RUNNER_TEMP/libsodium-binding-source" \
+            "$RUNNER_TEMP/libsodium-binding-provenance"
+          mkdir -p apps/mobile/scripts
+          cp scripts/spikes/libsodium-binding-vectors.mjs apps/mobile/scripts/libsodium-binding-vectors.mjs
+          rm apps/mobile/src/app/_layout.tsx
+          cp scripts/spikes/libsodium-binding-layout.jsx apps/mobile/src/app/_layout.jsx
+      - name: Isolate the QA install identity and scheme
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          const file = 'apps/mobile/app.config.ts';
+          const before = await readFile(file, 'utf8');
+          const id = "const BASE_ID = 'com.rohangupta.financebro';";
+          const scheme = "scheme: 'financebro',";
+          if (before.split(id).length !== 2 || before.split(scheme).length !== 2) {
+            throw new Error('Expected exactly one known app ID and scheme in app.config.ts');
+          }
+          const after = before.replace(id, "const BASE_ID = 'com.rohangupta.financebro.sodiumqa';")
+            .replace(scheme, "scheme: 'financebrosodiumqa',");
+          await writeFile(file, after);
+          NODE
+      - name: Generate the isolated Android QA project
+        run: pnpm --dir apps/mobile exec expo prebuild --platform android --no-install
+      - name: Preserve the source library bytes in the debug APK
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          const file = 'apps/mobile/android/app/build.gradle';
+          const before = await readFile(file, 'utf8');
+          const marker = 'android {';
+          if (before.split(marker).length !== 2 || before.includes('keepDebugSymbols')) {
+            throw new Error('Generated app Gradle file changed; cannot safely preserve libsodium.so bytes');
+          }
+          const packaging = `android {\n  packagingOptions {\n    jniLibs {\n      keepDebugSymbols += ['**/libsodium.so']\n    }\n  }`;
+          await writeFile(file, before.replace(marker, packaging));
+          NODE
+          grep -F "keepDebugSymbols += ['**/libsodium.so']" apps/mobile/android/app/build.gradle
+      - name: Build ARM64 QA development APK and retain the C++ compile log
+        working-directory: apps/mobile/android
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleDebug -PreactNativeArchitectures=arm64-v8a --no-daemon --max-workers=2 --console=plain --info 2>&1 | tee "$RUNNER_TEMP/libsodium-binding-gradle.log"
+          binding_android=$(realpath ../node_modules/react-native-libsodium/android)
+          find . "$binding_android" -type f -name '*react-native-libsodium.cpp.o' -print -quit | tee "$RUNNER_TEMP/libsodium-binding-provenance/native-cxx-object.txt"
+          test -s "$RUNNER_TEMP/libsodium-binding-provenance/native-cxx-object.txt"
+          grep -E 'Building CXX object .*react-native-libsodium\.cpp\.o|clang\+\+.*react-native-libsodium\.cpp|react-native-libsodium\.cpp.*clang\+\+' "$RUNNER_TEMP/libsodium-binding-gradle.log" | tee "$RUNNER_TEMP/libsodium-binding-provenance/native-cxx-compile.txt"
+      - name: Verify the packaged ARM64 library matches the source build
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import zipfile
+
+          apk = pathlib.Path('apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk')
+          provenance_dir = pathlib.Path('${{ runner.temp }}/libsodium-binding-provenance')
+          prepared = json.loads((provenance_dir / 'binding-preparation.json').read_text())
+          expected = prepared['sourceBuild']['librarySha256']
+          entry = 'lib/arm64-v8a/libsodium.so'
+          with zipfile.ZipFile(apk) as archive:
+              matches = [item for item in archive.namelist() if item == entry]
+              if len(matches) != 1:
+                  raise SystemExit(f'Expected one {entry} in the APK, found {len(matches)}')
+              actual = hashlib.sha256(archive.read(entry)).hexdigest()
+              adapter = 'lib/arm64-v8a/liblibsodium.so'
+              if adapter not in archive.namelist() or not archive.read(adapter):
+                  raise SystemExit(f'Expected the compiled binding adapter {adapter} in the APK')
+          if actual != expected:
+              raise SystemExit(f'Packaged libsodium SHA-256 {actual} does not match source build {expected}')
+          (provenance_dir / 'packaged-library-sha256.json').write_text(json.dumps({
+              'apk': apk.name,
+              'entry': entry,
+              'sha256': actual,
+              'matchesSourceBuild': True,
+          }, indent=2) + '\n')
+          print(f'APK {entry} matches source-built SHA-256 {actual}')
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: libsodium-binding-dev-arm64
+          path: |
+            apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+            ${{ runner.temp }}/libsodium-binding-source/*.txt
+            ${{ runner.temp }}/libsodium-binding-source/LICENSE.libsodium
+            ${{ runner.temp }}/libsodium-binding-source/libsodium-stable/libsodium-android-armv8-a+crypto/include/**
+            ${{ runner.temp }}/libsodium-binding-source/libsodium-stable/libsodium-android-armv8-a+crypto/lib/libsodium.so
+            ${{ runner.temp }}/libsodium-binding-provenance/**
+            ${{ runner.temp }}/libsodium-binding-gradle.log
+          retention-days: 1
+          compression-level: 0
           if-no-files-found: error
