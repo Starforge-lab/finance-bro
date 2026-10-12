@@ -213,7 +213,8 @@ export function createSmsIngestion(
           const prior = await ledger.db.select().from(smsImportRefs)
             .where(eq(smsImportRefs.platformId, row.platformId)).get();
           if (prior) {
-            if (prior.receivedAt !== row.receivedAt || prior.dedupeKey !== prepared.identity.dedupeKey ||
+            // Parser-derived identity can change; replay depends on the unchanged source.
+            if (prior.receivedAt !== row.receivedAt ||
                 prior.bodyHash !== prepared.identity.bodyHash || prior.senderHash !== senderHash ||
                 prior.keyId !== fingerprinter.keyId) {
               throw new Error('A previously imported SMS row changed; import stopped for review');

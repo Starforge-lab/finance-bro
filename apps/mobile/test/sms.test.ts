@@ -558,8 +558,34 @@ describe('Android SMS ingestion storage seam', () => {
     } finally { fixture.sqlite.close(); }
   });
 
-  it('rejects changed sender or date for an already referenced platform ID', async () => {
-    for (const change of ['sender', 'date'] as const) {
+  it('replays unchanged source content when a parser upgrade changes derived identity', async () => {
+    const fixture = openTestLedger();
+    try {
+      const key = fingerprinter('fictional-sms-key');
+      const api = createApi(fixture, key);
+      await api.migrateLedger();
+      await api.importSmsBatch([smsRow('81')], null);
+      const oldIdentity = `body:${await key.fingerprint(JSON.stringify(['sms', strongSms.sender.toUpperCase(), strongSms.body]))}`;
+      await fixture.ledger.db.update(smsImportRefs).set({ dedupeKey: oldIdentity, ruleVersion: 4 })
+        .where(eq(smsImportRefs.platformId, '81')).run();
+      const original = await fixture.ledger.db.select().from(smsImportRefs).where(eq(smsImportRefs.platformId, '81')).get();
+      const expected = { receivedAt: strongSms.receivedAt - 1_000, platformId: '80' };
+      await fixture.ledger.db.update(smsImportState).set({ cursorReceivedAt: expected.receivedAt, cursorPlatformId: expected.platformId })
+        .where(eq(smsImportState.id, 1)).run();
+      const current = await api.preparePaste(strongSms);
+      assert.equal(current.kind, 'needs-review');
+      if (current.kind !== 'needs-review') throw new Error('Fictional fixture must reach review');
+      assert.equal(current.identity.dedupeKey.startsWith('upi:'), true);
+      const result = await api.importSmsBatch([smsRow('81')], expected);
+      assert.equal(result.duplicate, 1);
+      assert.equal(result.inserted, 0);
+      assert.deepEqual(await fixture.ledger.db.select().from(smsImportRefs).where(eq(smsImportRefs.platformId, '81')).get(), original);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 0);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('rejects changed sender, body or date for an already referenced platform ID', async () => {
+    for (const change of ['sender', 'body', 'date'] as const) {
       const fixture = openTestLedger();
       try {
         const api = createApi(fixture);
@@ -572,7 +598,9 @@ describe('Android SMS ingestion storage seam', () => {
         }).where(eq(smsImportState.id, 1)).run();
         const changed = change === 'sender'
           ? smsRow('80', { ...strongSms, sender: 'AD-FAKEBANK-S' }, strongSms.receivedAt)
-          : smsRow('80', strongSms, strongSms.receivedAt + 1_000);
+          : change === 'body'
+            ? smsRow('80', { ...strongSms, body: strongSms.body.replace('450.00', '451.00') })
+            : smsRow('80', strongSms, strongSms.receivedAt + 1_000);
         await assert.rejects(api.importSmsBatch([changed], expected), /previously imported SMS row changed/);
         assert.deepEqual(await api.getSmsImportCursor(), expected);
         assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 1);
