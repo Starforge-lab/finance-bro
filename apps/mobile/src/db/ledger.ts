@@ -26,6 +26,10 @@ export type LedgerSQLiteClient = Pick<
   'execAsync' | 'getFirstAsync' | 'withTransactionAsync' | 'prepareAsync'
 >;
 
+export type LedgerSQLiteTransactionRunner = (
+  task: (transaction: LedgerSQLiteClient) => Promise<void>,
+) => Promise<void>;
+
 type TransactionInsert = typeof transactions.$inferInsert;
 type TransactionRow = typeof transactions.$inferSelect;
 type AccountInsert = typeof accounts.$inferInsert;
@@ -479,11 +483,14 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
         .where(and(eq(transactions.id, id), isNull(transactions.deletedAt)))
         .returning({ id: transactions.id }).all().then((rows) => rows.length > 0);
     },
-    async findPasteCollision(id: string) {
+    async findPasteCollision(id: string, dedupeKey?: string) {
       assertId(id);
+      if (dedupeKey !== undefined) assertText(dedupeKey, 'dedupeKey', { nonEmpty: true });
       return db.select({ occurredAt: transactions.occurredAt, deletedAt: transactions.deletedAt })
         .from(transactions)
-        .where(and(eq(transactions.id, id), eq(transactions.source, 'paste')))
+        .where(dedupeKey === undefined
+          ? and(eq(transactions.id, id), eq(transactions.source, 'paste'))
+          : eq(transactions.dedupeKey, dedupeKey))
         .get();
     },
     async upsertImportedTransaction(input: ImportedTransaction): Promise<boolean> {
@@ -532,6 +539,27 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
       assertValidReviewedPaste(input);
       await assertTransactionReferences(input);
       await assertTransactionSemantics(input);
+      const dedupeKey = input.dedupeKey;
+      const bodyHash = input.bodyHash;
+      if (!dedupeKey || !bodyHash) throw new TypeError('A reviewed paste requires keyed source identity');
+      const overlaps = await db.select().from(transactions)
+        .where(eq(transactions.dedupeKey, dedupeKey)).all();
+      if (overlaps.length > 0) {
+        if (dedupeKey.startsWith('upi:')) {
+          const existing = overlaps[0]!;
+          const sameSource = existing.bodyHash === bodyHash;
+          const coherentEvidence = existing.amountPaise === input.amountPaise &&
+            existing.direction === input.direction &&
+            existing.kind === input.kind &&
+            existing.status === input.status &&
+            existing.accountId === (input.accountId ?? null);
+          const coherent = overlaps.length === 1 && (sameSource || coherentEvidence);
+          if (!coherent) {
+            throw new Error('A transaction with this payment reference has conflicting details; review it before saving');
+          }
+        }
+        return false;
+      }
       const createdAt = now();
       return db.insert(transactions).values({
         id: input.id,

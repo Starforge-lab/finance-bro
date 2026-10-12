@@ -1,15 +1,21 @@
-import { createLedger, type LedgerMigrations, type LedgerSQLiteClient } from './ledger';
+import { createLedger, type LedgerMigrations, type LedgerSQLiteClient, type LedgerSQLiteTransactionRunner } from './ledger';
 import { createPlanning } from './planning';
 import { createLedgerQueries } from './queries';
 import { createLedgerCsvExporter } from '../exports/csv';
 import { saveManualEntry, type ManualEntry } from './manual';
-import { preparePastedSms, saveReviewedPaste, type PastePreparation, type ReviewCorrections } from '../imports/paste';
+import { preparePastedSms, saveReviewedPaste, type PastePreparation, type PasteSaveResult, type ReviewCorrections } from '../imports/paste';
 import { DuplicateReviewRequiredError, requiresDuplicateReview } from '../imports/key-state';
 import type { Fingerprinter } from '../imports/fingerprint';
 import type { RawSms } from '@finance-bro/sms-parser';
+import { createSmsIngestion } from '../imports/sms';
 
 /** One local business API for screens; no network or UI dependencies. */
-export function createDataLayer(client: LedgerSQLiteClient, migrations: LedgerMigrations, fingerprints?: () => Promise<Fingerprinter>) {
+export function createDataLayer(
+  client: LedgerSQLiteClient,
+  migrations: LedgerMigrations,
+  fingerprints?: () => Promise<Fingerprinter>,
+  runSmsTransaction?: LedgerSQLiteTransactionRunner,
+) {
   const ledger = createLedger(client, migrations);
   const {
     db,
@@ -20,9 +26,11 @@ export function createDataLayer(client: LedgerSQLiteClient, migrations: LedgerMi
   } = ledger;
   const queries = createLedgerQueries(db);
   const planning = createPlanning(db);
+  const smsIngestion = createSmsIngestion(client, migrations, fingerprints, runSmsTransaction);
   async function getPasteCollision(id: string) {
-    if (!/^paste:body:[a-f0-9]{64}$/.test(id)) return null;
-    const collision = await ledger.findPasteCollision(id);
+    const match = /^paste:body:([a-f0-9]{64})$/.exec(id);
+    if (!match) return null;
+    const collision = await ledger.findPasteCollision(id, `body:${match[1]}`);
     return collision ? { occurredAt: collision.occurredAt.getTime(), deleted: collision.deletedAt !== null } : null;
   }
   return {
@@ -30,6 +38,7 @@ export function createDataLayer(client: LedgerSQLiteClient, migrations: LedgerMi
     ...queries,
     ...planning,
     ...createLedgerCsvExporter(db),
+    ...smsIngestion,
     saveManualEntry: (input: ManualEntry) => saveManualEntry(ledger, input),
     async preparePaste(raw: RawSms) {
       if (!fingerprints) throw new Error('A platform fingerprint provider is required for paste imports');
@@ -56,7 +65,14 @@ export function createDataLayer(client: LedgerSQLiteClient, migrations: LedgerMi
           throw new DuplicateReviewRequiredError();
         }
       }
-      return saveReviewedPaste(ledger, prepared, corrections, options, fingerprinter);
+      if (!runSmsTransaction) return saveReviewedPaste(ledger, prepared, corrections, options, fingerprinter);
+
+      let result: PasteSaveResult | undefined;
+      await runSmsTransaction(async (transaction) => {
+        result = await saveReviewedPaste(createLedger(transaction, migrations), prepared, corrections, options, fingerprinter);
+      });
+      if (result === undefined) throw new Error('Paste transaction completed without a result');
+      return result;
     },
     async getBudgetSummary(month: string) {
       const [budgets, summary] = await Promise.all([

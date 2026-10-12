@@ -154,3 +154,47 @@ export const transactions = sqliteTable(
     ),
   ],
 );
+
+export const smsImportState = sqliteTable(
+  'sms_import_state',
+  {
+    id: integer('id').primaryKey(),
+    cursorReceivedAt: integer('cursor_received_at'),
+    cursorPlatformId: text('cursor_platform_id'),
+    keyId: text('key_id').notNull(),
+  },
+  (table) => [
+    check('sms_import_state_singleton', sql`${table.id} = 1`),
+    check(
+      'sms_import_state_cursor_pair',
+      sql`(${table.cursorReceivedAt} is null and ${table.cursorPlatformId} is null) or (${table.cursorReceivedAt} is not null and ${table.cursorPlatformId} is not null)`,
+    ),
+  ],
+);
+
+export const smsImportRefs = sqliteTable(
+  'sms_import_refs',
+  {
+    platformId: text('platform_id').primaryKey(),
+    receivedAt: integer('received_at').notNull(),
+    senderHash: text('sender_hash').notNull(),
+    dedupeKey: text('dedupe_key').notNull(),
+    bodyHash: text('body_hash').notNull(),
+    keyId: text('key_id').notNull(),
+    status: text('status', { enum: ['review', 'saved', 'duplicate'] }).notNull(),
+    reason: text('reason'),
+    ruleId: text('rule_id'),
+    ruleVersion: integer('rule_version'),
+    transactionId: text('transaction_id').references(() => transactions.id),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    check('sms_import_refs_status_check', sql`${table.status} in ('review', 'saved', 'duplicate')`),
+    check('sms_import_refs_received_at_check', sql`typeof(${table.receivedAt}) = 'integer'`),
+    check('sms_import_refs_created_at_check', sql`typeof(${table.createdAt}) = 'integer'`),
+    check(
+      'sms_import_refs_rule_pair',
+      sql`(${table.ruleId} is null and ${table.ruleVersion} is null) or (${table.ruleId} is not null and ${table.ruleVersion} is not null)`,
+    ),
+  ],
+);
