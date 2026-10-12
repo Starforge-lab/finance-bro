@@ -1,0 +1,13 @@
+diff --git a/android/src/main/java/expo/modules/intentlauncher/IntentLauncherModule.kt b/android/src/main/java/expo/modules/intentlauncher/IntentLauncherModule.kt
+index 2a85454974457eb6bd01714687959b2cad08697c..103aefc37cd70517b8b64f08a55d96e7f2ad54b8 100644
+--- a/android/src/main/java/expo/modules/intentlauncher/IntentLauncherModule.kt
++++ b/android/src/main/java/expo/modules/intentlauncher/IntentLauncherModule.kt
+@@ -137,7 +137,7 @@ class IntentLauncherModule : Module() {
+       val response = Bundle().apply {
+         putInt("resultCode", payload.resultCode)
+         if (payload.data != null) {
+-          payload.data?.let { putString(ATTR_DATA, it.toString()) }
++          payload.data?.data?.let { putString(ATTR_DATA, it.toString()) }
+           payload.data?.extras?.let { putBundle(ATTR_EXTRA, it) }
+         }
+       }
