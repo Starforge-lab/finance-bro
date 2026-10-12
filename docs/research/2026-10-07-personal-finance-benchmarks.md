@@ -2,6 +2,8 @@
 
 Researched: 7 October 2026. Scope: evidence to guide Finance Bro's existing manual-first, India/INR, local-only roadmap. This is a development reference, not a new feature specification or approval to change architecture.
 
+Release scope was narrowed on 10 October 2026: [2.0 is Android SMS automatic imports only](https://github.com/Starforge-lab/finance-bro/issues/58). Broader product lessons remain reference or later backlog, not additional 2.0 gates. Documentation-drift observations below describe the research date, rather than the current repository state.
+
 ## Conclusion
 
 Prioritize fast manual entry, understandable spending totals, easy corrections and user-controlled portability. Add automation only with visible outcomes and recovery paths. Competitors demonstrate useful mechanisms, but their popularity does not prove which mechanisms caused success. Finance Bro's low-effort experience still needs testing with its own users.
