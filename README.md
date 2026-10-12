@@ -1,12 +1,14 @@
 # finance-bro
 
-**Working repository name; final product name is undecided.**
+Next: [the 2.0 roadmap](docs/v2-roadmap.md) is narrowed to opt-in automatic Android SMS import. Android runtime, privacy, correction-safety and device proof are release gates; iOS, Gmail, receipt OCR, encrypted recovery and planning features are later work.
+
+**Finance Bro is the working product name; a final name is not selected.**
 
 [![CI](https://github.com/Starforge-lab/finance-bro/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/Starforge-lab/finance-bro/actions/workflows/ci.yml)
 
 A mobile-first personal finance app for India, targeting Android, iOS, and web, with English and INR as initial defaults. Suvo and Rohan are building it together.
 
-**Status:** Early development. Connected Home, manual entry/corrections, paste review/save, Budgets/Bills, Insights and Settings use the shared local ledger. Android/web CSV destinations are connected; iOS export and native SMS/App Intent imports remain separate work. See [the UI validation record](docs/v1-ui.md) and [data contract](docs/v1-data-layer.md) for observed checks and remaining gaps.
+**Status:** Early development. Connected Home, manual entry/corrections, paste review/save, Budgets/Bills, Insights and Settings use the shared local ledger. Android/web CSV destinations are connected. Automatic Android SMS import is planned as the sole 2.0 capability and remains unimplemented; iOS export and imports are separate later work. See [the UI validation record](docs/v1-ui.md) and [data contract](docs/v1-data-layer.md) for observed checks and remaining gaps.
 
 A frozen install, `pnpm check` (including 31 parser tests), Expo install check, Expo Doctor (20/20), and Android/iOS/web export passed locally. Browser rendering showed Home and four tab items; Home-to-Settings navigation and one synthetic SMS parse were observed. The other tabs have not had a full click-through. These starter checks are historical; later Android checks are recorded in [UI validation](docs/v1-ui.md). Remote CI and CodeQL results are published on pull requests; use those checks for the current revision. `pnpm audit` reported three transitive development/build-tool advisories (two high, one moderate); see [Security](SECURITY.md).
 
@@ -50,9 +52,9 @@ pnpm parser:try "Rs.450 debited from A/c XX1234 to VPA shop@ybl" --sender VM-HDF
 
 ## Product scope
 
-The confirmed initial finance scope is expenses and income, budgets, and bills. Required entry paths include manual entry, receipt scanning, automatic Android SMS parsing, and connected email parsing. Budgets and bills remain in scope even though the preserved Rohan proposal originally scheduled them later. Manual finance workflows now save locally; receipt OCR, connected email and automatic imports remain future work.
+The core finance scope is expenses and income, budgets, and bills. Manual entry and paste review are current entry paths. Automatic Android SMS import is the only new input source selected for 2.0; it is not implemented yet. Receipt scanning/OCR, connected email and iOS imports are later work. Budgets and bills remain part of the product regardless of their order in the preserved Rohan proposal.
 
-The current direction is local-only, with no app account or hosted backend. The shared ledger and Android/web CSV destinations are implemented; backup and remaining platform flows need further work. Receipt OCR, email provider and permissions, and how email import fits the local-only design remain open. Android SMS access needs native integration and user consent. iOS apps cannot read a user's general SMS inbox; the iOS message-import approach is undecided. Google Play SMS rules matter only if distributing through Google Play. Store setup is deferred.
+The app is local-only, with no app account or hosted backend. Android SMS import needs native integration and explicit, revocable permission; background TypeScript parsing and SQLite writes must be proven under issue #16. A cancellable preview precedes any 90-day history import, and catch-up must use bounded batches. There is no notification-listener fallback. iOS imports, receipt OCR, email and full encrypted backup/recovery are later work. F-Droid permission and source-build eligibility are tracked separately under issue #27; signing and publication remain separate decisions.
 
 The original Rohan plan is preserved in [docs/proposals/2026-10-06-rohan-plan.md](docs/proposals/2026-10-06-rohan-plan.md) for reference. [PRODUCT.md](PRODUCT.md) records the current confirmed scope.
 
