@@ -7,12 +7,19 @@ on:
         description: Compile the pinned recovery crypto source instead of an APK
         type: boolean
         default: false
+      android_release_source_check:
+        description: Build the unsigned ARM64 Android release from source
+        type: boolean
+        default: false
   pull_request:
     branches: [dev]
     paths:
       - .github/workflows/android-development.yml
+      - .github/scripts/android-release-source-check.sh
       - apps/mobile/app.config.ts
       - apps/mobile/package.json
+      - apps/mobile/plugins/withUnsignedAndroidRelease.cjs
+      - apps/mobile/test/with-unsigned-android-release.test.cjs
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
       - patches/**
@@ -26,7 +33,7 @@ concurrency:
 
 jobs:
   build:
-    if: ${{ !inputs.libsodium_source_check }}
+    if: ${{ !inputs.libsodium_source_check && !inputs.android_release_source_check }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -79,5 +86,36 @@ jobs:
             ${{ runner.temp }}/libsodium-source-check/*.txt
             ${{ runner.temp }}/libsodium-source-check/LICENSE.libsodium
             ${{ runner.temp }}/libsodium-source-check/libsodium-stable/libsodium-android-armv8-a+crypto/lib/libsodium.so
+          retention-days: 1
+          if-no-files-found: error
+  android-release-source:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.android_release_source_check }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      APP_VARIANT: production
+      ANDROID_SMS_PROBE: '0'
+      ANDROID_RELEASE_SOURCE_CHECK: '1'
+      CI: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.x
+          cache: pnpm
+      - name: Use Java 17
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
+      - run: pnpm install --frozen-lockfile
+      - name: Check release-only signing override
+        run: node --test apps/mobile/test/with-unsigned-android-release.test.cjs
+      - name: Build release from source and capture bounded metadata
+        run: bash .github/scripts/android-release-source-check.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: finance-bro-android-release-source-report
+          path: ${{ runner.temp }}/finance-bro-android-release-source-report.txt
           retention-days: 1
           if-no-files-found: error
