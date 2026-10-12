@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq, gt, or, sql } from 'drizzle-orm';
 import { parseSms, type ParsedTxn, type RawSms } from '@finance-bro/sms-parser';
 import { createLedger, type LedgerMigrations, type LedgerSQLiteClient, type LedgerSQLiteTransactionRunner } from '../db/ledger';
 import { accounts, smsImportRefs, smsImportState, transactions } from '../db/schema';
@@ -21,6 +21,14 @@ export type SmsImportBatchResult = {
   review: number;
   ignored: number;
 };
+export type SmsReviewRow = Pick<SmsCursor, 'receivedAt' | 'platformId'> & {
+  reason: string | null;
+  ruleId: string | null;
+  ruleVersion: number | null;
+};
+export type SmsReviewPage = { rows: SmsReviewRow[]; nextCursor?: SmsCursor };
+
+export type SmsReviewPageOptions = { limit?: number | undefined; after?: SmsCursor | null | undefined };
 
 type ReviewReason =
   | 'unknown_format'
@@ -50,6 +58,20 @@ function assertPlatformId(value: unknown, name = 'platformId'): asserts value is
   if (typeof value !== 'string' || !/^[1-9][0-9]{0,18}$/.test(value) || BigInt(value) > maxPlatformId) {
     throw new TypeError(`${name} must be a canonical positive Android row ID`);
   }
+}
+
+function validateReviewPageOptions(value: unknown): asserts value is SmsReviewPageOptions {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('SMS review page options must be an object');
+  }
+  const options = value as Record<string, unknown>;
+  if (Object.keys(options).some((key) => key !== 'limit' && key !== 'after')) {
+    throw new TypeError('SMS review page options contain unsupported fields');
+  }
+  if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || (options.limit as number) < 1 || (options.limit as number) > maxBatchSize)) {
+    throw new RangeError(`SMS review page limit must be an integer from 1 to ${maxBatchSize}`);
+  }
+  assertCursor(options.after ?? null, 'after');
 }
 
 function compareCursor(left: SmsCursor, right: SmsCursor): number {
@@ -172,6 +194,40 @@ export function createSmsIngestion(
     async getSmsImportCursor(): Promise<SmsCursor | null> {
       const state = await readLedger.db.select().from(smsImportState).where(eq(smsImportState.id, 1)).get();
       return currentCursor(state);
+    },
+    async getSmsReviewPage(options: SmsReviewPageOptions = {}): Promise<SmsReviewPage> {
+      validateReviewPageOptions(options);
+      const limit = options.limit ?? maxBatchSize;
+      const after = options.after ?? null;
+      const reviewFilter = eq(smsImportRefs.status, 'review');
+      const afterFilter = after === null ? undefined : or(
+        gt(smsImportRefs.receivedAt, after.receivedAt),
+        and(
+          eq(smsImportRefs.receivedAt, after.receivedAt),
+          or(
+            gt(sql`length(${smsImportRefs.platformId})`, after.platformId.length),
+            and(
+              eq(sql`length(${smsImportRefs.platformId})`, after.platformId.length),
+              gt(smsImportRefs.platformId, after.platformId),
+            ),
+          ),
+        ),
+      );
+      const selected = await readLedger.db.select({
+        platformId: smsImportRefs.platformId,
+        receivedAt: smsImportRefs.receivedAt,
+        reason: smsImportRefs.reason,
+        ruleId: smsImportRefs.ruleId,
+        ruleVersion: smsImportRefs.ruleVersion,
+      }).from(smsImportRefs)
+        .where(afterFilter ? and(reviewFilter, afterFilter) : reviewFilter)
+        .orderBy(asc(smsImportRefs.receivedAt), asc(sql`length(${smsImportRefs.platformId})`), asc(smsImportRefs.platformId))
+        .limit(limit + 1).all();
+      const hasMore = selected.length > limit;
+      const rows = selected.slice(0, limit);
+      if (!hasMore) return { rows };
+      const last = rows[rows.length - 1]!;
+      return { rows, nextCursor: { receivedAt: last.receivedAt, platformId: last.platformId } };
     },
     async importSmsBatch(batch: SmsInboxRow[], expectedCursor: SmsCursor | null): Promise<SmsImportBatchResult> {
       validateBatch(batch, expectedCursor);

@@ -32,7 +32,7 @@ export function getLedger(): Promise<DataLayer> {
 export { createLedger, migrateLedger, assertValidAmountPaise } from './ledger';
 export { createDataLayer } from './service';
 export type { DataLayer } from './service';
-export type { SmsCursor, SmsInboxRow, SmsImportBatchResult } from '../imports/sms';
+export type { SmsCursor, SmsInboxRow, SmsImportBatchResult, SmsReviewPage, SmsReviewPageOptions, SmsReviewRow } from '../imports/sms';
 export { parseInrAmount, saveManualEntry, editManualAmount } from './manual';
 export type { ManualEntry } from './manual';
 export type { NewBudget, BudgetPatch, NewBill, BillPatch, BillStatus } from './planning';

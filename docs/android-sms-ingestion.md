@@ -27,6 +27,15 @@ Non-financial ignored messages need no
 durable reference. Missing keys, mismatched key identifiers and storage failures
 stop cursor advancement.
 
+`getSmsReviewPage({ limit, after })` lists pending review references without
+loading a key or reading the inbox. Pages default to 100 rows and accept limits
+from 1 to 100. The returned rows contain only platform ID, received timestamp,
+review reason and parser rule/version. Ordering uses timestamp then numeric
+platform ID, retaining precision beyond JavaScript's safe integer range. A
+`nextCursor` is returned only when more pending rows exist. Resolved references
+are excluded; refresh from the first page to discover newly pending earlier
+references. This listing does not prepare or confirm a transaction.
+
 The data layer checks persisted state before requesting a protected key. Any
 import key state, SMS cursor state, review reference or imported transaction
 (including a tombstone) forbids key creation. This deliberately includes
@@ -60,7 +69,7 @@ are not a verified acceptance corpus. Generic parsing therefore stays in review.
 - Matching Android tests of the connection, migration, concurrent saves, rollback
   and restart are required before this native storage path is ready to merge.
 - #46 must establish the eligible rule corpus before any automatic saving claim.
-- #43 still needs review listing/re-read/save and recovery actions, health state,
+- #43 still needs review re-read/save and recovery actions, health state,
   protected-key unavailability/loss lifecycle proof and full native cross-source
   regression evidence. The missing-key creation guard is implemented and tested
   in source/platform mocks and an isolated real browser key-store probe; visible
