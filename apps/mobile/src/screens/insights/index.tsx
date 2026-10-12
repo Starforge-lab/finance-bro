@@ -336,7 +336,7 @@ function BillRow({ bill, colors, first }: { bill: Bill; colors: ReturnType<typeo
 
 const styles = StyleSheet.create({
   container: { flex: 1 }, safe: { flex: 1 },
-  content: { paddingHorizontal: Spacing.gutter, paddingTop: 52, paddingBottom: Spacing.tabBarClearance, gap: Spacing.section, width: '100%', maxWidth: 520, alignSelf: 'center' },
+  content: { paddingHorizontal: Spacing.gutter, paddingTop: 40, paddingBottom: Spacing.tabBarClearance, gap: Spacing.section, width: '100%', maxWidth: 520, alignSelf: 'center' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: Spacing.two },
   state: { gap: Spacing.three }, pill: { minHeight: 44, alignSelf: 'flex-start', justifyContent: 'center', paddingHorizontal: Spacing.three, borderWidth: Stroke.ink, borderRadius: Radius.pill },
   hero: { padding: 22, borderRadius: Radius.hero, gap: Spacing.two },
