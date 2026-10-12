@@ -657,7 +657,7 @@ function DateTile({ date, colors }: { date: string; colors: ReturnType<typeof us
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1 },
-  content: { width: '100%', maxWidth: 520, alignSelf: 'center', paddingHorizontal: Spacing.gutter, paddingTop: Spacing.five, paddingBottom: Spacing.tabBarClearance, gap: Spacing.section },
+  content: { width: '100%', maxWidth: 520, alignSelf: 'center', paddingHorizontal: Spacing.gutter, paddingTop: 40, paddingBottom: Spacing.tabBarClearance, gap: Spacing.section },
   header: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
   heroLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
   overBadge: { borderRadius: Radius.pill, paddingHorizontal: Spacing.two, paddingVertical: Spacing.one },
