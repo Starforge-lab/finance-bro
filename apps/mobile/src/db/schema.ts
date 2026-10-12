@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   check,
+  index,
   integer,
   sqliteTable,
   text,
@@ -134,6 +135,7 @@ export const transactions = sqliteTable(
     deletedAt: integer('deleted_at', { mode: 'timestamp_ms' }),
   },
   (table) => [
+    index('transactions_dedupe_key_idx').on(table.dedupeKey),
     check(
       'transactions_amount_paise_check',
       sql`typeof(${table.amountPaise}) = 'integer' and ${table.amountPaise} between 1 and 9007199254740991`,
@@ -189,6 +191,7 @@ export const smsImportRefs = sqliteTable(
     createdAt: integer('created_at').notNull(),
   },
   (table) => [
+    index('sms_import_refs_dedupe_key_idx').on(table.dedupeKey),
     check('sms_import_refs_status_check', sql`${table.status} in ('review', 'saved', 'duplicate')`),
     check('sms_import_refs_received_at_check', sql`typeof(${table.receivedAt}) = 'integer'`),
     check('sms_import_refs_created_at_check', sql`typeof(${table.createdAt}) = 'integer'`),

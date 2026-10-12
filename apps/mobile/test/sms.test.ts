@@ -80,7 +80,14 @@ describe('Android SMS ingestion storage seam', () => {
       await api.migrateLedger();
       assert.equal((await api.getTransaction('old-row'))?.amountPaise, 100);
       assert.equal(await api.getSmsImportCursor(), null);
-      assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 6);
+      assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 7);
+      for (const [table, name] of [
+        ['transactions', 'transactions_dedupe_key_idx'],
+        ['sms_import_refs', 'sms_import_refs_dedupe_key_idx'],
+      ]) {
+        const indexes = fixture.sqlite.prepare(`PRAGMA index_list('${table}')`).all() as Array<{ name: string; unique: number }>;
+        assert.equal(indexes.find((index) => index.name === name)?.unique, 0);
+      }
     } finally { fixture.sqlite.close(); }
   });
 
@@ -170,6 +177,137 @@ describe('Android SMS ingestion storage seam', () => {
       assert.equal(paste?.accountId, null);
       assert.equal(paste?.note, 'Corrected fictional amount and account');
       assert.equal(paste?.userEdited, true);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('resolves a strong review reference when the same message is confirmed by paste', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcAccount(api);
+      const imported = await api.importSmsBatch([smsRow('110')], null);
+      assert.equal(imported.review, 1);
+
+      const prepared = await api.preparePaste(strongSms);
+      if (prepared.kind !== 'needs-review') throw new Error('Fictional fixture must reach review');
+      assert.equal(await api.saveReviewedPaste(prepared, { accountId: 'hdfc-1234' }), 'inserted');
+
+      const ref = await fixture.ledger.db.select().from(smsImportRefs).where(eq(smsImportRefs.platformId, '110')).get();
+      assert.equal(ref?.status, 'duplicate');
+      assert.equal(ref?.reason, null);
+      assert.equal(ref?.transactionId, prepared.identity.id);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('links an exact paste replay to a tombstoned SMS transaction without resurrecting it', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcAccount(api);
+      await api.importSmsBatch([smsRow('111')], null);
+      const prepared = await api.preparePaste(strongSms);
+      if (prepared.kind !== 'needs-review' || !prepared.candidate) throw new Error('Fictional fixture must parse');
+      const candidate = prepared.candidate;
+      await fixture.ledger.upsertImportedTransaction({
+        id: 'sms:131',
+        amountPaise: candidate.amountPaise,
+        direction: candidate.direction,
+        kind: candidate.kind,
+        status: candidate.status,
+        accountId: 'hdfc-1234',
+        counterparty: candidate.counterparty,
+        merchantId: null,
+        categoryId: null,
+        occurredAt: new Date(candidate.occurredAt),
+        note: null,
+        source: 'sms',
+        smsRefId: 'android-sms:131',
+        upiRef: candidate.upiRef,
+        dedupeKey: prepared.identity.dedupeKey,
+        bodyHash: prepared.identity.bodyHash,
+        ruleId: prepared.ruleId,
+        ruleVersion: prepared.ruleVersion,
+        linkedTxnId: null,
+        excludeFromStats: false,
+      });
+      await fixture.ledger.softDeleteTransaction('sms:131');
+
+      assert.equal(await api.saveReviewedPaste(prepared, { accountId: 'hdfc-1234' }), 'duplicate');
+      const ref = await fixture.ledger.db.select().from(smsImportRefs).where(eq(smsImportRefs.platformId, '111')).get();
+      const tombstone = await fixture.ledger.db.select().from(transactions).where(eq(transactions.id, 'sms:131')).get();
+      assert.equal(ref?.status, 'duplicate');
+      assert.equal(ref?.transactionId, 'sms:131');
+      assert.ok(tombstone?.deletedAt);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('keeps a strong reference with changed message content in ambiguous review', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcAccount(api);
+      await api.importSmsBatch([smsRow('112')], null);
+      const changedMessage = { ...strongSms, body: strongSms.body.replace('450.00', '451.00') };
+      const prepared = await api.preparePaste(changedMessage);
+      if (prepared.kind !== 'needs-review') throw new Error('Fictional fixture must reach review');
+
+      assert.equal(await api.saveReviewedPaste(prepared, { accountId: 'hdfc-1234' }), 'inserted');
+      const ref = await fixture.ledger.db.select().from(smsImportRefs).where(eq(smsImportRefs.platformId, '112')).get();
+      assert.equal(ref?.status, 'review');
+      assert.equal(ref?.reason, 'ambiguous_evidence');
+      assert.equal(ref?.transactionId, null);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('keeps identical weak review references distinct when paste confirms a transaction', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcAccount(api);
+      const imported = await api.importSmsBatch([
+        smsRow('120', weakSms),
+        smsRow('121', weakSms, weakSms.receivedAt + 1_000),
+      ], null);
+      assert.equal(imported.review, 2);
+
+      const prepared = await api.preparePaste(weakSms);
+      if (prepared.kind !== 'needs-review') throw new Error('Fictional fixture must reach review');
+      assert.equal(await api.saveReviewedPaste(prepared, { accountId: 'hdfc-1234' }), 'inserted');
+
+      const refs = await fixture.ledger.db.select().from(smsImportRefs).all();
+      assert.deepEqual(refs.map((ref) => ref.platformId).sort(), ['120', '121']);
+      assert.ok(refs.every((ref) => ref.status === 'review' && ref.reason === 'weak_overlap' && ref.transactionId === null));
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('rolls back a new paste transaction if SMS reference linking fails', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcAccount(api);
+      await api.importSmsBatch([smsRow('130')], null);
+      const prepared = await api.preparePaste(strongSms);
+      if (prepared.kind !== 'needs-review') throw new Error('Fictional fixture must reach review');
+      const before = await fixture.ledger.db.select().from(smsImportRefs).where(eq(smsImportRefs.platformId, '130')).get();
+      fixture.sqlite.exec(`CREATE TRIGGER fail_sms_ref_link BEFORE UPDATE ON sms_import_refs
+        BEGIN SELECT RAISE(ABORT, 'injected SMS reference-link failure'); END`);
+
+      await assert.rejects(api.saveReviewedPaste(prepared, { accountId: 'hdfc-1234' }), /Failed query: update "sms_import_refs"/);
+
+      const after = await fixture.ledger.db.select().from(smsImportRefs).where(eq(smsImportRefs.platformId, '130')).get();
+      assert.equal(after?.status, before?.status);
+      assert.equal(after?.reason, before?.reason);
+      assert.equal(after?.transactionId, null);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 0);
     } finally { fixture.sqlite.close(); }
   });
 

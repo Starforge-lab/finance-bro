@@ -1,4 +1,6 @@
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { createLedger, type LedgerMigrations, type LedgerSQLiteClient, type LedgerSQLiteTransactionRunner } from './ledger';
+import { smsImportRefs, transactions } from './schema';
 import { createPlanning } from './planning';
 import { createLedgerQueries } from './queries';
 import { createLedgerCsvExporter } from '../exports/csv';
@@ -8,6 +10,59 @@ import { DuplicateReviewRequiredError, requiresDuplicateReview } from '../import
 import type { Fingerprinter } from '../imports/fingerprint';
 import type { RawSms } from '@finance-bro/sms-parser';
 import { createSmsIngestion } from '../imports/sms';
+
+async function reconcileSmsReviewReferences(ledger: ReturnType<typeof createLedger>, prepared: PastePreparation) {
+  if (prepared.kind !== 'needs-review' || await requiresDuplicateReview(ledger, prepared.fingerprintKeyId)) return;
+
+  const sourceRefs = await ledger.db.select({ bodyHash: smsImportRefs.bodyHash })
+    .from(smsImportRefs)
+    .where(and(
+      eq(smsImportRefs.dedupeKey, prepared.identity.dedupeKey),
+      eq(smsImportRefs.keyId, prepared.fingerprintKeyId),
+      eq(smsImportRefs.status, 'review'),
+      isNull(smsImportRefs.transactionId),
+    )).all();
+  if (sourceRefs.length === 0) return;
+
+  const referenceFilter = and(
+    eq(smsImportRefs.dedupeKey, prepared.identity.dedupeKey),
+    eq(smsImportRefs.keyId, prepared.fingerprintKeyId),
+    eq(smsImportRefs.status, 'review'),
+    isNull(smsImportRefs.transactionId),
+  );
+  if (prepared.identity.dedupeKey.startsWith('body:')) {
+    // Weak identities can collide across real purchases. Keep every platform row in review.
+    await ledger.db.update(smsImportRefs).set({ status: 'review', reason: 'weak_overlap', transactionId: null })
+      .where(referenceFilter).run();
+    return;
+  }
+
+  const matchingRefs = sourceRefs.filter((ref) => ref.bodyHash === prepared.identity.bodyHash);
+  const ambiguousRefs = sourceRefs.filter((ref) => ref.bodyHash !== prepared.identity.bodyHash);
+  const targets = await ledger.db.select({ id: transactions.id }).from(transactions).where(and(
+    eq(transactions.dedupeKey, prepared.identity.dedupeKey),
+    eq(transactions.bodyHash, prepared.identity.bodyHash),
+    eq(transactions.status, 'posted'),
+    inArray(transactions.source, ['sms', 'paste']),
+  )).all();
+
+  if (matchingRefs.length > 0) {
+    if (targets.length === 1) {
+      await ledger.db.update(smsImportRefs).set({
+        status: 'duplicate',
+        reason: null,
+        transactionId: targets[0]!.id,
+      }).where(and(referenceFilter, eq(smsImportRefs.bodyHash, prepared.identity.bodyHash))).run();
+    } else {
+      await ledger.db.update(smsImportRefs).set({ status: 'review', reason: 'ambiguous_evidence', transactionId: null })
+        .where(and(referenceFilter, eq(smsImportRefs.bodyHash, prepared.identity.bodyHash))).run();
+    }
+  }
+  if (ambiguousRefs.length > 0) {
+    await ledger.db.update(smsImportRefs).set({ status: 'review', reason: 'ambiguous_evidence', transactionId: null })
+      .where(and(referenceFilter, ne(smsImportRefs.bodyHash, prepared.identity.bodyHash))).run();
+  }
+}
 
 /** One local business API for screens; no network or UI dependencies. */
 export function createDataLayer(
@@ -69,7 +124,9 @@ export function createDataLayer(
 
       let result: PasteSaveResult | undefined;
       await runSmsTransaction(async (transaction) => {
-        result = await saveReviewedPaste(createLedger(transaction, migrations), prepared, corrections, options, fingerprinter);
+        const transactionLedger = createLedger(transaction, migrations);
+        result = await saveReviewedPaste(transactionLedger, prepared, corrections, options, fingerprinter);
+        await reconcileSmsReviewReferences(transactionLedger, prepared);
       });
       if (result === undefined) throw new Error('Paste transaction completed without a result');
       return result;

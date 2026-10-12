@@ -5,6 +5,7 @@ import planning from '../../drizzle/0002_loose_moondragon.sql';
 import importKey from '../../drizzle/0003_dry_darkhawk.sql';
 import transactionIntegrity from '../../drizzle/0004_transaction_integrity.sql';
 import smsIngestion from '../../drizzle/0005_stale_klaw.sql';
+import smsIngestionIndexes from '../../drizzle/0006_lumpy_micromax.sql';
 import type { LedgerMigrations } from './ledger';
 
 export const ledgerMigrations: LedgerMigrations = {
@@ -16,5 +17,6 @@ export const ledgerMigrations: LedgerMigrations = {
     m0003: importKey,
     m0004: transactionIntegrity,
     m0005: smsIngestion,
+    m0006: smsIngestionIndexes,
   },
 };

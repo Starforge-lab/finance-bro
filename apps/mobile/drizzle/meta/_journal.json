@@ -43,6 +43,13 @@
       "when": 1791816924064,
       "tag": "0005_stale_klaw",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1791817547280,
+      "tag": "0006_lumpy_micromax",
+      "breakpoints": true
     }
   ]
 }
