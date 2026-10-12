@@ -345,13 +345,13 @@ function BillRow({ bill, colors, first }: { bill: Bill; colors: ReturnType<typeo
 
 const styles = StyleSheet.create({
   container: { flex: 1 }, safe: { flex: 1 },
-  body: { gap: Spacing.section }, refresh: { minHeight: 44, justifyContent: 'center' },
-  heroSkeleton: { borderWidth: Stroke.ink }, skeletonStat: { flex: 1, gap: 8 },
   content: { paddingHorizontal: Spacing.gutter, paddingTop: 52, paddingBottom: Spacing.tabBarClearance, gap: Spacing.section, width: '100%', maxWidth: 520, alignSelf: 'center' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: Spacing.two },
   state: { gap: Spacing.three }, pill: { minHeight: 44, alignSelf: 'flex-start', justifyContent: 'center', paddingHorizontal: Spacing.three, borderWidth: Stroke.ink, borderRadius: Radius.pill },
   hero: { padding: 22, borderRadius: Radius.hero, gap: Spacing.two },
   heroAmount: { marginTop: 2 },
+  body: { gap: Spacing.section }, refresh: { minHeight: 44, justifyContent: 'center' },
+  heroSkeleton: { borderWidth: Stroke.ink }, skeletonStat: { flex: 1, gap: 8 },
   heroStats: { flexDirection: 'row', marginTop: Spacing.two, paddingTop: Spacing.three, borderTopWidth: Stroke.hairline, gap: Spacing.two },
   heroStat: { flex: 1, minWidth: 0, gap: Spacing.two },
   heroStatAmount: { flexShrink: 1 }, keptChip: { alignSelf: 'flex-start', paddingHorizontal: 4, borderRadius: 4 },
