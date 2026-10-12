@@ -44,6 +44,8 @@ On 2026-10-10, Suvo narrowed Version 2.0 to one capability: opt-in automatic And
 
 ## Evidence on Hand
 
+The [personal-finance benchmark research](docs/research/2026-10-07-personal-finance-benchmarks.md) compares commercial and open-source apps, separates documented capabilities from anecdotal shortcomings, and maps lessons to existing development issues. Use it when a feature decision needs this evidence; proposals do not change confirmed scope and competitor popularity does not prove Finance Bro outcomes.
+
 Backend migration, persistence, validation and protected paste-save evidence is recorded separately in [Android ledger validation](docs/android-ledger-validation.md) and [the v1 data contract](docs/v1-data-layer.md). Those results do not prove the connected screens.
 
 On 2026-10-08, the connected Motorola Edge 60 Pro running Android 17 rendered the simplified Home, Budgets, Insights and Settings with an isolated fictional ledger. Add opened with the decimal keyboard; a ₹12.34 expense saved without optional details and increased monthly spending from ₹7,598.00 to ₹7,610.34. Save remained above the keyboard after the Android layout fix. More insights revealed the six-month chart. Further UI flows and iOS remain pending; see [UI validation](docs/v1-ui.md). Current CI belongs to the exact PR revision.
