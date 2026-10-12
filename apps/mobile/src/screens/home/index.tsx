@@ -1,5 +1,5 @@
-import { useFocusEffect, useRootNavigationState, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState, type ComponentRef } from 'react';
+import { useRootNavigationState, useRouter } from 'expo-router';
+import { useEffect, useRef, useState, type ComponentRef } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useColorScheme } from '@/hooks/appearance';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -7,10 +7,12 @@ import Animated, { Keyframe, useReducedMotion } from 'react-native-reanimated';
 import { Icon, accountIcon, categoryIcon, type IconName } from '@/components/icon';
 import { LedgerButton, MonthPicker, Segmented } from '@/components/ledger-controls';
 import { MonthPaceChart } from '@/components/month-pace-chart';
+import { Bone, SkeletonGroup } from '@/components/skeleton';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Categories, Fonts, Motion, Radius, Shadow, Spacing, Type } from '@/constants/theme';
 import { getLedger, type DataLayer } from '@/db';
+import { useLedgerVersion } from '@/hooks/use-ledger-version';
 import { useTheme } from '@/hooks/use-theme';
 import { exactMoney, indiaDate, money } from '@/utils/display';
 import { buildMonthPace, shiftMonth, topCategoryBars } from '@/utils/month-pace';
@@ -43,7 +45,8 @@ export function Home() {
   const [filters, setFilters] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const reduceMotion = useReducedMotion();
-  const [loading, setLoading] = useState(true);
+  // Set once the first read lands; later refreshes keep the last data on screen.
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
   const [mode, setMode] = useState<'feed' | 'entry' | 'paste'>('feed');
@@ -58,9 +61,9 @@ export function Home() {
   const [deleting, setDeleting] = useState(false);
   const deleteGuard = useRef(false);
   const scroll = useRef<ComponentRef<typeof ScrollView>>(null);
-  useFocusEffect(useCallback(() => {
+  const version = useLedgerVersion();
+  useEffect(() => {
     let active = true;
-    setLoading(true); setError('');
     void getLedger().then(async (data) => {
       const [entries, totals, stamps, bankAccounts, lastMonth, limits] = await Promise.all([
         data.listTransactions({ month }), data.getMonthlySummary(month), data.listCategories(), data.listAccounts(true),
@@ -68,14 +71,13 @@ export function Home() {
       ]);
       if (!active) return;
       setLedger(data); setRows(entries); setSummary(totals); setCategories(stamps); setAccounts(bankAccounts);
-      setPreviousRows(lastMonth); setBudgets(limits);
+      setPreviousRows(lastMonth); setBudgets(limits); setLoaded(true); setError('');
     }).catch(() => {
       if (active) setError('Couldn’t load your entries. Try again.');
-    }).finally(() => { if (active) setLoading(false); });
+    });
     return () => { active = false; };
-    // A retry must reload even when the month is unchanged.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [month, revision]));
+    // A retry or a ledger write must reload even when the month is unchanged.
+  }, [month, revision, version]);
   function finish() {
     setMode('feed'); setSelected(undefined); setConfirmDelete(false); setError('');
     setRevision((value) => value + 1);
@@ -146,22 +148,34 @@ export function Home() {
         <View style={styles.heading}>
           <MonthPicker variant="title" month={month} onChange={(value) => { setMonth(value); setCategoryId(undefined); setShowAll(false); }} />
           <View style={styles.headerActions}>
-            <LedgerButton label="Paste a message" icon="paste" iconOnly disabled={!ledger || loading} onPress={() => setMode('paste')} />
-            <Pressable accessibilityRole="button" accessibilityLabel="Add entry" accessibilityState={{ disabled: !ledger || loading }} disabled={!ledger || loading}
-              onPress={() => setMode('entry')} style={({ pressed }) => [styles.add, printed, { backgroundColor: colors.accent, borderColor: colors.text, opacity: !ledger || loading ? 0.5 : pressed && reduceMotion ? 0.72 : 1, transform: [{ scale: pressed && !reduceMotion ? 0.96 : 1 }] }]}>
+            <LedgerButton label="Paste a message" icon="paste" iconOnly disabled={!ledger} onPress={() => setMode('paste')} />
+            <Pressable accessibilityRole="button" accessibilityLabel="Add entry" accessibilityState={{ disabled: !ledger }} disabled={!ledger}
+              onPress={() => setMode('entry')} style={({ pressed }) => [styles.add, printed, { backgroundColor: colors.accent, borderColor: colors.text, opacity: !ledger ? 0.5 : pressed && reduceMotion ? 0.72 : 1, transform: [{ scale: pressed && !reduceMotion ? 0.96 : 1 }] }]}>
               <Icon name="add" size={28} color={colors.onAccent} />
             </Pressable>
           </View>
         </View>
-        {summary && !loading && !error ? <Animated.View key={`hero-${month}`} entering={fadeIn()} style={styles.hero}>
+        {summary && loaded ? <Animated.View key={`hero-${month}`} entering={fadeIn()} style={styles.hero}>
           <ThemedText style={styles.heroAmount} adjustsFontSizeToFit numberOfLines={1}>{money(summary.expensePaise)}</ThemedText>
           <ThemedText themeColor="textSecondary" style={Type.note}>
             spent{budgetTotal ? ` of ${money(budgetTotal)}` : ''} · <Text style={{ fontFamily: Fonts.monoBold }}>{rows.length}</Text> {rows.length === 1 ? 'entry' : 'entries'}
           </ThemedText>
         </Animated.View> : null}
-        {error ? <View style={styles.section}><ThemedText accessibilityRole="alert">{error}</ThemedText><LedgerButton label="Retry" onPress={() => setRevision((value) => value + 1)} /></View> : null}
+        {error && !loaded ? <View style={styles.section}><ThemedText accessibilityRole="alert">{error}</ThemedText><LedgerButton label="Retry" onPress={() => setRevision((value) => value + 1)} /></View> : null}
+        {error && loaded ? <Pressable accessibilityRole="button" accessibilityLabel="Couldn’t refresh. Retry" onPress={() => setRevision((value) => value + 1)} style={styles.textAction}>
+          <ThemedText themeColor="textSecondary" style={Type.note}>Couldn’t refresh · <ThemedText style={[Type.note, { textDecorationLine: 'underline' }]}>Retry</ThemedText></ThemedText>
+        </Pressable> : null}
+        {!loaded && !error ? <SkeletonGroup label="Loading your month" style={styles.skeleton}>
+          <View style={styles.hero}><Bone width="60%" height={40} radius={Radius.tile} /><Bone width="45%" height={14} style={styles.skeletonNote} /></View>
+          <View style={styles.tiles}>{[0, 1, 2, 3, 4, 5].map((key) => <View key={key} style={styles.tileCell}>
+            <View style={[styles.tile, { borderColor: colors.track }]}><Bone width={28} height={28} radius={Radius.tile} /><Bone width="70%" height={12} /><Bone width="85%" height={16} /></View>
+          </View>)}</View>
+          <View>{[0, 1, 2].map((key) => <View key={key} style={styles.entryRow}>
+            <Bone width={40} height={40} radius={Radius.tile} /><View style={styles.skeletonWords}><Bone width="55%" height={16} /><Bone width="35%" height={12} /></View><Bone width={64} height={14} />
+          </View>)}</View>
+        </SkeletonGroup> : null}
 
-        {isCurrentMonth && !loading && !error ? <View style={styles.section}>
+        {isCurrentMonth && loaded ? <View style={styles.section}>
           <SectionHeading title="Today" count={pulls.length ? today.length : undefined} />
           {pulls.length ? <View style={styles.fan}>
             {[...pulls].reverse().map((row, reversedIndex) => {
@@ -187,7 +201,7 @@ export function Home() {
           </View>}
         </View> : null}
 
-        {!loading && !error ? <Animated.View key={`spend-${month}`} entering={fadeIn()} style={styles.section}>
+        {loaded ? <Animated.View key={`spend-${month}`} entering={fadeIn()} style={styles.section}>
           <View style={styles.sectionRow}>
             <ThemedText style={[Type.sectionTitle, styles.grow]} accessibilityRole="header">Spending</ThemedText>
             {stamps.length ? <View style={styles.viewToggle}><Segmented label="Spending view" value={view} onChange={setView}
@@ -219,7 +233,7 @@ export function Home() {
           </View> : <ThemedText themeColor="textSecondary" style={Type.note}>No spending recorded in {monthName}.</ThemedText>}
         </Animated.View> : null}
 
-        {!loading && !error ? <View style={styles.section}>
+        {loaded ? <View style={styles.section}>
           <View style={styles.sectionRow}>
             <View style={styles.grow}>
               <ThemedText style={Type.sectionTitle} accessibilityRole="header">Entries</ThemedText>
@@ -326,6 +340,7 @@ const styles = StyleSheet.create({
   hero: { gap: 2, marginTop: -18 },
   heroAmount: { fontFamily: Fonts.monoBold, fontSize: 40, lineHeight: 46, letterSpacing: -1.6 },
   section: { gap: 12 },
+  skeleton: { gap: Spacing.section }, skeletonNote: { marginTop: 8 }, skeletonWords: { flex: 1, gap: 8 },
   sectionRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   viewToggle: { width: 168 },
   fan: { height: 226, position: 'relative' },

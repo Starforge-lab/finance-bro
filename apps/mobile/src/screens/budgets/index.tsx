@@ -1,16 +1,18 @@
 import * as Crypto from 'expo-crypto';
-import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useRouter } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useColorScheme } from '@/hooks/appearance';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LedgerButton, MonthPicker } from '@/components/ledger-controls';
+import { Bone, SkeletonGroup } from '@/components/skeleton';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Categories, Fonts, Radius, Spacing, Stroke, Type } from '@/constants/theme';
 import { getLedger, parseInrAmount, type DataLayer } from '@/db';
 import { amountInput, indiaDate, money, parseIndiaDate } from '@/utils/display';
+import { useLedgerVersion } from '@/hooks/use-ledger-version';
 import { useTheme } from '@/hooks/use-theme';
 import { confirmSave } from '@/utils/confirm-save';
 
@@ -154,7 +156,7 @@ export function Budgets() {
   const [confirmBillDelete, setConfirmBillDelete] = useState('');
 
   const requestId = useRef(0);
-  const isFocused = useRef(false);
+  const mounted = useRef(false);
   const pendingRef = useRef(false);
   const budgetCreateId = useRef<string | null>(null);
   const billCreateId = useRef<string | null>(null);
@@ -172,35 +174,38 @@ export function Budgets() {
         ledger.listBills(indiaDate()),
         ledger.getMonthlySummary(month),
       ]);
-      if (!isFocused.current || request !== requestId.current) return;
+      if (!mounted.current || request !== requestId.current) return;
       setCategories(nextCategories);
       setBudgets(nextBudgets);
       setBills(nextBills);
       setSummary(nextSummary);
       setLoadedMonth(month);
     } catch {
-      if (!isFocused.current || request !== requestId.current) return;
+      if (!mounted.current || request !== requestId.current) return;
       setLoadError(true);
     } finally {
-      if (isFocused.current && request === requestId.current) setLoading(false);
+      if (mounted.current && request === requestId.current) setLoading(false);
     }
   }, [month]);
 
-  useFocusEffect(useCallback(() => {
-    isFocused.current = true;
+  const version = useLedgerVersion();
+  useEffect(() => {
+    mounted.current = true;
+    // Reloads when the month or the ledger changes; load's state updates are the point.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
     return () => {
-      isFocused.current = false;
+      mounted.current = false;
       requestId.current += 1;
     };
-  }, [load]));
+  }, [load, version]);
 
   const runWrite = useCallback(async (
     area: ActionArea,
     key: string,
     write: (ledger: DataLayer) => Promise<unknown>,
   ) => {
-    if (pendingRef.current || loading || loadedMonth !== month || loadError) return false;
+    if (pendingRef.current || loadedMonth !== month || loadError) return false;
     pendingRef.current = true;
     setPending(key);
     setActionIssue(null);
@@ -220,7 +225,7 @@ export function Budgets() {
       pendingRef.current = false;
       setPending('');
     }
-  }, [load, loadError, loadedMonth, loading, month]);
+  }, [load, loadError, loadedMonth, month]);
 
   const selectMonth = (value: string) => {
     if (!isMonth(value)) return;
@@ -249,7 +254,8 @@ export function Budgets() {
   const heroFill = totalBudget > 0n
     ? Math.min(100, Number((BigInt(Math.max(0, summary?.expensePaise ?? 0)) * 10_000n) / totalBudget) / 100)
     : 0;
-  const writesDisabled = !!pending || loading || loadedMonth !== month || loadError;
+  const writesDisabled = !!pending || loadedMonth !== month || loadError;
+  const firstLoad = loading && !summaryReady;
 
   const setMonthLimit = async () => {
     try {
@@ -415,10 +421,12 @@ export function Budgets() {
               </>}
             </View>
           ) : loading ? (
-            <View accessibilityRole="progressbar" accessibilityLabel="Loading budget totals" style={[styles.loadPanel, { borderColor: colors.rule }]}>
-              <ActivityIndicator color={colors.text} />
-              <ThemedText style={Type.note} themeColor="textSecondary">Opening your local ledger…</ThemedText>
-            </View>
+            <SkeletonGroup label="Loading budget totals" style={[styles.hero, { borderColor: colors.track }]}>
+              <Bone width={90} height={12} />
+              <Bone width="70%" height={46} radius={Radius.tile} />
+              <Bone width="55%" height={16} />
+              <Bone height={14} />
+            </SkeletonGroup>
           ) : (
             <View style={[styles.loadPanel, { borderColor: colors.rule }]}>
               <ThemedText style={Type.body}>Monthly totals could not be loaded.</ThemedText>
@@ -521,7 +529,12 @@ export function Budgets() {
               {categories.length === 0
                 ? <LedgerButton label="Open Settings" primary onPress={() => router.navigate('/settings')} />
                 : <LedgerButton label="Set a limit" primary disabled={writesDisabled || !availableCategories.length} onPress={() => setCreateBudgetOpen(true)} />}
-            </View> : loading ? <ThemedText themeColor="textSecondary" style={Type.note}>Updating category limits…</ThemedText> : null}
+            </View> : firstLoad ? <SkeletonGroup label="Loading category limits">
+              {[0, 1, 2].map((key) => <View key={key} style={[styles.categoryRow, styles.skeletonRow, { borderBottomColor: colors.rule }]}>
+                <View style={styles.categoryTitleRow}><Bone width="40%" height={16} /><Bone width={110} height={14} /></View>
+                <Bone height={10} /><Bone width={120} height={12} />
+              </View>)}
+            </SkeletonGroup> : null}
 
             {createBudgetOpen && <PrintedPanel colors={colors} dark={dark}>
               <ThemedText style={Type.rowTitle}>Set a category limit</ThemedText>
@@ -606,7 +619,13 @@ export function Budgets() {
             </View> : summaryReady && !loading && !loadError ? <View style={[styles.emptyState, { borderColor: colors.textMuted }]}>
               <ThemedText style={Type.rowTitle}>No bills saved yet.</ThemedText>
               <ThemedText themeColor="textSecondary" style={Type.note}>Add a bill to track its due date.</ThemedText>
-            </View> : loading ? <ThemedText themeColor="textSecondary" style={Type.note}>Checking due dates…</ThemedText> : null}
+            </View> : firstLoad ? <SkeletonGroup label="Loading bills">
+              {[0, 1].map((key) => <View key={key} style={[styles.billRow, { borderBottomColor: colors.rule }]}><View style={styles.billButton}>
+                <Bone width={44} height={44} radius={Radius.tile} />
+                <View style={styles.billDescription}><Bone width="55%" height={16} /><Bone width="40%" height={12} /></View>
+                <Bone width={70} height={14} />
+              </View></View>)}
+            </SkeletonGroup> : null}
 
             {createBillOpen && <PrintedPanel colors={colors} dark={dark}>
               <ThemedText style={Type.rowTitle}>Add a bill</ThemedText>
@@ -682,5 +701,6 @@ const styles = StyleSheet.create({
   billDescription: { flex: 1, minWidth: 0, gap: Spacing.one },
   errorNotice: { borderWidth: Stroke.hairline, borderRadius: Radius.control, padding: Spacing.two },
   refreshError: { borderWidth: Stroke.hairline, borderRadius: Radius.control, padding: Spacing.two, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
+  skeletonRow: { gap: 10 },
   loadPanel: { minHeight: 104, borderWidth: Stroke.hairline, borderRadius: Radius.card, padding: Spacing.three, justifyContent: 'center', alignItems: 'flex-start', gap: Spacing.two },
 });
