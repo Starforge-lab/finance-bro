@@ -6,13 +6,18 @@ import { createLedgerQueries } from './queries';
 import { createLedgerCsvExporter } from '../exports/csv';
 import { saveManualEntry, type ManualEntry } from './manual';
 import { preparePastedSms, saveReviewedPaste, type PastePreparation, type PasteSaveResult, type ReviewCorrections } from '../imports/paste';
-import { DuplicateReviewRequiredError, requiresDuplicateReview } from '../imports/key-state';
-import type { Fingerprinter } from '../imports/fingerprint';
+import { DuplicateReviewRequiredError, getFingerprintKeyPolicy, requiresDuplicateReview } from '../imports/key-state';
+import type { FingerprintKeyProvider } from '../imports/fingerprint';
 import type { RawSms } from '@finance-bro/sms-parser';
 import { createSmsIngestion } from '../imports/sms';
 
-async function reconcileSmsReviewReferences(ledger: ReturnType<typeof createLedger>, prepared: PastePreparation) {
-  if (prepared.kind !== 'needs-review' || await requiresDuplicateReview(ledger, prepared.fingerprintKeyId)) return;
+async function reconcileSmsReviewReferences(
+  ledger: ReturnType<typeof createLedger>,
+  prepared: PastePreparation,
+  currentKeyId: string,
+) {
+  if (prepared.kind !== 'needs-review' || prepared.fingerprintKeyId !== currentKeyId ||
+      await requiresDuplicateReview(ledger, prepared.fingerprintKeyId)) return;
 
   const sourceRefs = await ledger.db.select({ bodyHash: smsImportRefs.bodyHash })
     .from(smsImportRefs)
@@ -68,7 +73,7 @@ async function reconcileSmsReviewReferences(ledger: ReturnType<typeof createLedg
 export function createDataLayer(
   client: LedgerSQLiteClient,
   migrations: LedgerMigrations,
-  fingerprints?: () => Promise<Fingerprinter>,
+  fingerprints?: FingerprintKeyProvider,
   runSmsTransaction?: LedgerSQLiteTransactionRunner,
 ) {
   const ledger = createLedger(client, migrations);
@@ -82,12 +87,44 @@ export function createDataLayer(
   const queries = createLedgerQueries(db);
   const planning = createPlanning(db);
   const smsIngestion = createSmsIngestion(client, migrations, fingerprints, runSmsTransaction);
-  async function getPasteCollision(id: string) {
+  async function getPasteCollisionFrom(targetLedger: ReturnType<typeof createLedger>, id: string) {
     const match = /^paste:body:([a-f0-9]{64})$/.exec(id);
     if (!match) return null;
-    const collision = await ledger.findPasteCollision(id, `body:${match[1]}`);
+    const collision = await targetLedger.findPasteCollision(id, `body:${match[1]}`);
     return collision ? { occurredAt: collision.occurredAt.getTime(), deleted: collision.deletedAt !== null } : null;
   }
+
+  async function getFingerprinterFor(targetLedger: ReturnType<typeof createLedger>) {
+    if (!fingerprints) throw new Error('A platform fingerprint provider is required for paste imports');
+    return fingerprints(await getFingerprintKeyPolicy(targetLedger));
+  }
+
+  async function preparePasteWithLedger(targetLedger: ReturnType<typeof createLedger>, raw: RawSms) {
+    const prepared = await preparePastedSms(raw, await getFingerprinterFor(targetLedger));
+    if (prepared.kind === 'needs-review') {
+      prepared.duplicateReviewRequired = await requiresDuplicateReview(targetLedger, prepared.fingerprintKeyId);
+      if (prepared.identity.dedupeKey.startsWith('body:') && !prepared.candidate?.upiRef) {
+        prepared.collision = await getPasteCollisionFrom(targetLedger, prepared.identity.id);
+      }
+    }
+    return prepared;
+  }
+
+  async function savePasteWithLedger(
+    targetLedger: ReturnType<typeof createLedger>,
+    prepared: PastePreparation,
+    corrections: ReviewCorrections,
+    options: { acknowledgeDuplicateRisk?: boolean; separatePaymentAt?: Date },
+  ): Promise<PasteSaveResult> {
+    const fingerprinter = await getFingerprinterFor(targetLedger);
+    if (prepared.kind === 'needs-review' && fingerprinter.keyId !== prepared.fingerprintKeyId) {
+      throw new DuplicateReviewRequiredError();
+    }
+    const result = await saveReviewedPaste(targetLedger, prepared, corrections, options, fingerprinter);
+    await reconcileSmsReviewReferences(targetLedger, prepared, fingerprinter.keyId);
+    return result;
+  }
+
   return {
     ...manualLedger,
     ...queries,
@@ -96,37 +133,26 @@ export function createDataLayer(
     ...smsIngestion,
     saveManualEntry: (input: ManualEntry) => saveManualEntry(ledger, input),
     async preparePaste(raw: RawSms) {
-      if (!fingerprints) throw new Error('A platform fingerprint provider is required for paste imports');
-      const prepared = await preparePastedSms(raw, await fingerprints());
-      if (prepared.kind === 'needs-review') {
-        prepared.duplicateReviewRequired = await requiresDuplicateReview(ledger, prepared.fingerprintKeyId);
-        if (prepared.identity.dedupeKey.startsWith('body:') && !prepared.candidate?.upiRef) {
-          prepared.collision = await getPasteCollision(prepared.identity.id);
-        }
-      }
+      if (!runSmsTransaction) return preparePasteWithLedger(ledger, raw);
+      let prepared: PastePreparation | undefined;
+      await runSmsTransaction(async (transaction) => {
+        prepared = await preparePasteWithLedger(createLedger(transaction, migrations), raw);
+      });
+      if (prepared === undefined) throw new Error('Paste preparation transaction completed without a result');
       return prepared;
     },
-    getPasteCollision,
+    getPasteCollision: (id: string) => getPasteCollisionFrom(ledger, id),
     async saveReviewedPaste(
       prepared: PastePreparation,
       corrections: ReviewCorrections = {},
       options: { acknowledgeDuplicateRisk?: boolean; separatePaymentAt?: Date } = {},
     ) {
-      let fingerprinter: Fingerprinter | undefined;
-      if (options.separatePaymentAt !== undefined) {
-        if (!fingerprints) throw new Error('A platform fingerprint provider is required for paste imports');
-        fingerprinter = await fingerprints();
-        if (prepared.kind === 'needs-review' && fingerprinter.keyId !== prepared.fingerprintKeyId) {
-          throw new DuplicateReviewRequiredError();
-        }
-      }
-      if (!runSmsTransaction) return saveReviewedPaste(ledger, prepared, corrections, options, fingerprinter);
+      if (!runSmsTransaction) return savePasteWithLedger(ledger, prepared, corrections, options);
 
       let result: PasteSaveResult | undefined;
       await runSmsTransaction(async (transaction) => {
         const transactionLedger = createLedger(transaction, migrations);
-        result = await saveReviewedPaste(transactionLedger, prepared, corrections, options, fingerprinter);
-        await reconcileSmsReviewReferences(transactionLedger, prepared);
+        result = await savePasteWithLedger(transactionLedger, prepared, corrections, options);
       });
       if (result === undefined) throw new Error('Paste transaction completed without a result');
       return result;

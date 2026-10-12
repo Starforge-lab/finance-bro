@@ -9,7 +9,7 @@ import { describe, it } from 'node:test';
 import { createDataLayer } from '../src/db/service';
 import type { LedgerSQLiteClient, LedgerSQLiteTransactionRunner, LedgerMigrations } from '../src/db/ledger';
 import { importKeyState, smsImportRefs, smsImportState, transactions } from '../src/db/schema';
-import type { Fingerprinter } from '../src/imports/fingerprint';
+import type { FingerprintKeyProvider, Fingerprinter } from '../src/imports/fingerprint';
 import { ledgerMigrations, openTestLedger, temporaryFile } from './helpers/ledger';
 
 const strongSms = {
@@ -456,6 +456,42 @@ describe('Android SMS ingestion storage seam', () => {
       assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 0);
       assert.equal(await fixture.ledger.db.select().from(smsImportState).get(), undefined);
       assert.equal(await fixture.ledger.db.select().from(importKeyState).get(), undefined);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('checks the cursor before loading a key and keeps Android paste key work inside the writer transaction', async () => {
+    const fixture = openTestLedger();
+    try {
+      const baseRunner = transactionRunner(fixture.sqlite, fixture.client);
+      let inTransaction = false;
+      const run: LedgerSQLiteTransactionRunner = (task) => baseRunner(async (transaction) => {
+        inTransaction = true;
+        try { await task(transaction); }
+        finally { inTransaction = false; }
+      });
+      const key = fingerprinter('fictional-sms-key');
+      const policies: boolean[] = [];
+      const provider: FingerprintKeyProvider = async (policy) => {
+        assert.equal(inTransaction, true, 'key provider must run after BEGIN IMMEDIATE');
+        policies.push(policy?.allowCreate ?? false);
+        return key;
+      };
+      const api = createDataLayer(fixture.client, ledgerMigrations, provider, run);
+      await api.migrateLedger();
+
+      const imported = await api.importSmsBatch([smsRow('61')], null);
+      assert.equal(policies.length, 1);
+      assert.equal(policies[0], true);
+      await assert.rejects(api.importSmsBatch([smsRow('62')], null), /cursor is stale/);
+      assert.equal(policies.length, 1, 'stale cursor must fail before key-store access');
+
+      await api.createAccount({ id: 'hdfc-1234', name: 'Fictional HDFC', type: 'bank', institution: 'hdfc', last4: '1234' });
+      const prepared = await api.preparePaste(strongSms);
+      assert.equal(prepared.kind, 'needs-review');
+      assert.deepEqual(policies, [true, false]);
+      assert.equal(await api.saveReviewedPaste(prepared, { accountId: 'hdfc-1234' }), 'inserted');
+      assert.deepEqual(policies, [true, false, false]);
+      assert.deepEqual(await api.getSmsImportCursor(), imported.cursor);
     } finally { fixture.sqlite.close(); }
   });
 

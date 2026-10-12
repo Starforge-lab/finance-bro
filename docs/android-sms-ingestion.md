@@ -27,6 +27,23 @@ Non-financial ignored messages need no
 durable reference. Missing keys, mismatched key identifiers and storage failures
 stop cursor advancement.
 
+The data layer checks persisted state before requesting a protected key. Any
+import key state, SMS cursor state, review reference or imported transaction
+(including a tombstone) forbids key creation. This deliberately includes
+preview-only and ignored-only state; there is no implicit reset or rebinding.
+Fresh ledgers containing only manual entries may create their first key.
+Android performs this decision inside the immediate transaction. Paste save
+rechecks key availability and the preparation's key identity, even when the user
+acknowledges historical duplicate risk. That acknowledgement cannot override a
+missing key or a key changed after preparation.
+
+Providers default to forbidding creation and reread protected storage after each
+completed operation. Concurrent requests with the same policy share only the
+in-flight load; successful key material is not permanently cached. A restrictive
+request cannot borrow a load that permits creation. Store failures remain errors,
+with no temporary key fallback. Actual device store/lifecycle behavior still
+requires Android checks.
+
 SMS platform identity protects replay. Keyed identities are shared with paste
 imports in both directions; strong coherent overlap preserves existing edits
 and deletion markers, while conflicting or weak evidence requires review. Body fingerprints are not
@@ -45,9 +62,9 @@ are not a verified acceptance corpus. Generic parsing therefore stays in review.
 - #46 must establish the eligible rule corpus before any automatic saving claim.
 - #43 still needs review listing/re-read/save and recovery actions, health state,
   protected-key unavailability/loss lifecycle proof and full native cross-source
-  regression evidence. Existing platform key loading still needs to stop creating
-  a replacement when import history exists; rejecting the replacement identifier
-  at this boundary prevents writes but is not the full key-loss recovery flow.
+  regression evidence. The missing-key creation guard is implemented and tested
+  in source/platform mocks and an isolated real browser key-store probe; visible
+  recovery actions and actual Android store/lifecycle proof remain incomplete.
 - #44 supplies opt-in permissions, cancellable history preview, bounded inbox
   pages, catch-up and receiver integration. Permission changes must stop further
   reads/writes safely; this storage API cannot establish source consent itself.

@@ -38,6 +38,7 @@ export type { ManualEntry } from './manual';
 export type { NewBudget, BudgetPatch, NewBill, BillPatch, BillStatus } from './planning';
 export type { TransactionFilters } from './queries';
 export { DuplicateReviewRequiredError } from '../imports/key-state';
+export { FingerprintKeyUnavailableError } from '../imports/fingerprint';
 export type {
   NewAccount,
   AccountPatch,

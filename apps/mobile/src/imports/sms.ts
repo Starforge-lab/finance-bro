@@ -2,9 +2,9 @@ import { and, eq } from 'drizzle-orm';
 import { parseSms, type ParsedTxn, type RawSms } from '@finance-bro/sms-parser';
 import { createLedger, type LedgerMigrations, type LedgerSQLiteClient, type LedgerSQLiteTransactionRunner } from '../db/ledger';
 import { accounts, smsImportRefs, smsImportState, transactions } from '../db/schema';
-import { DuplicateReviewRequiredError, requiresDuplicateReview } from './key-state';
+import { DuplicateReviewRequiredError, getFingerprintKeyPolicy, requiresDuplicateReview } from './key-state';
 import { preparePastedSms } from './paste';
-import type { Fingerprinter } from './fingerprint';
+import type { FingerprintKeyProvider, Fingerprinter } from './fingerprint';
 
 const maxBatchSize = 100;
 const maxBodyLength = 16_384;
@@ -164,7 +164,7 @@ function matchingEvidence(existing: typeof transactions.$inferSelect, candidate:
 export function createSmsIngestion(
   client: LedgerSQLiteClient,
   migrations: LedgerMigrations,
-  fingerprints: (() => Promise<Fingerprinter>) | undefined,
+  fingerprints: FingerprintKeyProvider | undefined,
   runTransaction: LedgerSQLiteTransactionRunner | undefined,
 ) {
   const readLedger = createLedger(client, migrations);
@@ -178,16 +178,12 @@ export function createSmsIngestion(
       const rows = batch.map(({ platformId, sender, body, receivedAt }) => ({ platformId, sender, body, receivedAt }));
       const checkedExpectedCursor = expectedCursor === null ? null : { ...expectedCursor };
       if (!runTransaction) throw new Error('Android SMS import transactions are unavailable on this platform');
-      if (!fingerprints) throw new Error('A platform fingerprint provider is required for SMS imports');
-      const fingerprinter = await fingerprints();
-      if (!/^[a-f0-9]{64}$/.test(fingerprinter.keyId)) throw new TypeError('Invalid fingerprint key identifier');
 
       let result: SmsImportBatchResult | undefined;
       await runTransaction(async (transaction) => {
         const ledger = createLedger(transaction, migrations);
         const state = await ledger.db.select().from(smsImportState).where(eq(smsImportState.id, 1)).get();
         const cursor = currentCursor(state);
-        if (state && state.keyId !== fingerprinter.keyId) throw new DuplicateReviewRequiredError();
         if ((cursor?.receivedAt ?? null) !== (checkedExpectedCursor?.receivedAt ?? null) ||
             (cursor?.platformId ?? null) !== (checkedExpectedCursor?.platformId ?? null)) {
           throw new Error('SMS import cursor is stale; reload the current cursor before retrying');
@@ -195,6 +191,10 @@ export function createSmsIngestion(
 
         result = { cursor, inserted: 0, duplicate: 0, review: 0, ignored: 0 };
         if (rows.length === 0) return;
+        if (!fingerprints) throw new Error('A platform fingerprint provider is required for SMS imports');
+        const fingerprinter = await fingerprints(await getFingerprintKeyPolicy(ledger));
+        if (!/^[a-f0-9]{64}$/.test(fingerprinter.keyId)) throw new TypeError('Invalid fingerprint key identifier');
+        if (state && state.keyId !== fingerprinter.keyId) throw new DuplicateReviewRequiredError();
         if (await requiresDuplicateReview(ledger, fingerprinter.keyId)) throw new DuplicateReviewRequiredError();
 
         for (const row of rows) {
