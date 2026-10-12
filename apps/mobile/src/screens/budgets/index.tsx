@@ -1,10 +1,11 @@
 import * as Crypto from 'expo-crypto';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useColorScheme } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useColorScheme } from '@/hooks/appearance';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { LedgerButton, MonthNavigation } from '@/components/ledger-controls';
+import { LedgerButton, MonthPicker } from '@/components/ledger-controls';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Categories, Fonts, Radius, Spacing, Stroke, Type } from '@/constants/theme';
@@ -41,14 +42,16 @@ function billDateLabel(value: string) {
   }).format(parseIndiaDate(value));
 }
 
-function exactMoney(paise: bigint) {
+/** Display money for bigint totals: whole rupees, paise only when there are some. */
+function bigMoney(paise: bigint) {
   const negative = paise < 0n;
   const value = negative ? -paise : paise;
   const rupees = (value / 100n).toString();
   const grouped = rupees.length <= 3
     ? rupees
     : `${rupees.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',')},${rupees.slice(-3)}`;
-  return `${negative ? '−' : ''}₹${grouped}.${String(value % 100n).padStart(2, '0')}`;
+  const fraction = value % 100n;
+  return `${negative ? '−' : ''}₹${grouped}${fraction ? `.${String(fraction).padStart(2, '0')}` : ''}`;
 }
 
 function errorMessage(error: unknown) {
@@ -377,13 +380,13 @@ export function Budgets() {
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets>
           <View style={styles.header}>
             <ThemedText accessibilityRole="header" style={Type.screenTitle}>Budgets</ThemedText>
-            <MonthNavigation month={month} onChange={selectMonth} />
+            <MonthPicker month={month} onChange={selectMonth} />
           </View>
 
           {summaryReady ? (
             <View style={[styles.hero, { backgroundColor: colors.heroBackground, borderColor: colors.heroBackground }]}>
               <View style={styles.heroLabelRow}>
-                <ThemedText style={[Type.label, { color: colors.heroTextSecondary }]}>Budget left</ThemedText>
+                <ThemedText style={[Type.label, { color: colors.heroTextSecondary }]}>Left to spend</ThemedText>
                 {totalRemaining !== null && totalRemaining < 0n && <View style={[styles.overBadge, { backgroundColor: colors.over }]}>
                   <Text style={[Type.label, { color: colors.heroText }]}>Over</Text>
                 </View>}
@@ -393,16 +396,16 @@ export function Budgets() {
                   styles.heroAmount,
                   Type.amountHero,
                   { color: colors.heroText },
-                  String(totalRemaining === null ? 0 : exactMoney(totalRemaining)).length > 13 && styles.heroAmountCompact,
+                  String(totalRemaining === null ? 0 : bigMoney(totalRemaining)).length > 13 && styles.heroAmountCompact,
                 ]}>
-                {totalRemaining === null ? 'Set a limit' : exactMoney(totalRemaining)}
+                {totalRemaining === null ? 'Set a limit' : bigMoney(totalRemaining)}
               </ThemedText>
-              <ThemedText style={[Type.body, { color: colors.heroText }]}>
+              <ThemedText style={[Type.note, { color: colors.heroTextSecondary }]}>
                 {totalRemaining === null
-                  ? `Set a monthly spending limit.`
+                  ? 'Add a category limit to start.'
                   : totalRemaining < 0n
-                    ? `${exactMoney(-totalRemaining)} over your limits.`
-                    : `${exactMoney(recordedSpend)} spent this month.`}
+                    ? `${bigMoney(-totalRemaining)} over · ${bigMoney(recordedSpend)} spent of ${bigMoney(totalBudget)}`
+                    : `${bigMoney(recordedSpend)} spent of ${bigMoney(totalBudget)}`}
               </ThemedText>
               {totalBudget > 0n && <>
                 <View accessibilityRole="progressbar" accessibilityLabel="Spending compared with combined category limits" accessibilityValue={{ min: 0, max: 100, now: heroFill }} aria-valuemin={0} aria-valuemax={100} aria-valuenow={heroFill} style={[styles.heroTrack, { backgroundColor: colors.heroRule }]}>
@@ -410,20 +413,6 @@ export function Budgets() {
                 </View>
 
               </>}
-              <View style={[styles.heroStats, { borderTopColor: colors.heroRule }]}>
-                <HeroStat label="Limits" value={exactMoney(totalBudget)} color={colors.heroText} secondaryColor={colors.heroTextSecondary} highlightBackground={colors.accent} highlightForeground={colors.onAccent} dark={dark} />
-                <HeroStat label="Spent" value={exactMoney(recordedSpend)} color={colors.heroText} secondaryColor={colors.heroTextSecondary} highlightBackground={colors.accent} highlightForeground={colors.onAccent} dark={dark} />
-                <HeroStat
-                  label="Remaining"
-                  value={totalRemaining === null ? '—' : exactMoney(totalRemaining)}
-                  color={totalRemaining === null ? colors.heroTextSecondary : totalRemaining < 0n ? colors.over : colors.accent}
-                  secondaryColor={colors.heroTextSecondary}
-                  highlightValue={totalRemaining !== null && totalRemaining >= 0n}
-                  highlightBackground={colors.accent}
-                  highlightForeground={colors.onAccent}
-                  dark={dark}
-                />
-              </View>
             </View>
           ) : loading ? (
             <View accessibilityRole="progressbar" accessibilityLabel="Loading budget totals" style={[styles.loadPanel, { borderColor: colors.rule }]}>
@@ -447,6 +436,7 @@ export function Budgets() {
               <ThemedText accessibilityRole="header" style={Type.sectionTitle}>Categories</ThemedText>
               {categories.length > 0 && <LedgerButton
                 label={createBudgetOpen ? 'Cancel' : 'Add limit'}
+                icon={createBudgetOpen ? 'close' : 'add'}
                 primary={false}
                 disabled={writesDisabled || (!createBudgetOpen && availableCategories.length === 0)}
                 onPress={() => {
@@ -480,14 +470,14 @@ export function Budgets() {
                       </View>
                       <View style={styles.categoryAmounts}>
                         <ThemedText style={[Type.amountSmall, over && { color: colors.over }]}>{money(budget.spentPaise)}</ThemedText>
-                        <ThemedText style={Type.note}>/ {money(budget.amountPaise)}</ThemedText>
+                        <ThemedText style={[Type.label, { color: colors.textSecondary }]}>/ {money(budget.amountPaise)}</ThemedText>
                       </View>
                     </View>
                     <View accessibilityRole="progressbar" accessibilityLabel={`${name} spending`} accessibilityValue={{ min: 0, max: budget.amountPaise, now: Math.min(budget.amountPaise, Math.max(0, budget.spentPaise)) }} aria-valuemin={0} aria-valuemax={budget.amountPaise} aria-valuenow={Math.min(budget.amountPaise, Math.max(0, budget.spentPaise))} style={[styles.categoryTrack, { backgroundColor: colors.track }]}>
                       <View style={[styles.categoryFill, { width: `${fill}%`, backgroundColor: over ? colors.over : colors.fill }]} />
                     </View>
-                    <ThemedText style={[Type.note, over && { color: colors.over }]}>
-                      {over ? `${money(-budget.remainingPaise)} over this limit` : `${money(budget.remainingPaise)} remaining`}
+                    <ThemedText style={[Type.label, { color: over ? colors.over : colors.textSecondary }]}>
+                      {over ? `${money(-budget.remainingPaise)} over` : `${money(budget.remainingPaise)} left`}
                     </ThemedText>
                   </Pressable>
 
@@ -637,20 +627,6 @@ export function Budgets() {
   </ThemedView>;
 }
 
-function HeroStat({ label, value, color, secondaryColor, highlightValue = false, highlightBackground, highlightForeground, dark = false }: {
-  label: string; value: string; color: string; secondaryColor: string; highlightValue?: boolean;
-  highlightBackground: string; highlightForeground: string; dark?: boolean;
-}) {
-  return <View style={styles.heroStat}>
-    <ThemedText style={[Type.label, { color: secondaryColor }]}>{label}</ThemedText>
-    <ThemedText numberOfLines={1} adjustsFontSizeToFit style={[
-      Type.amountSmall,
-      { color: highlightValue && dark ? highlightForeground : color, flexShrink: 1 },
-      highlightValue && dark && [styles.statHighlight, { backgroundColor: highlightBackground }],
-    ]}>{value}</ThemedText>
-  </View>;
-}
-
 function DateTile({ date, colors }: { date: string; colors: ReturnType<typeof useTheme> }) {
   const month = new Intl.DateTimeFormat('en-IN', { month: 'short', timeZone: 'Asia/Kolkata' }).format(parseIndiaDate(date));
   return <View accessible={false} style={[styles.dateTile, { borderColor: colors.border, backgroundColor: colors.backgroundElement }]}>
@@ -671,8 +647,6 @@ const styles = StyleSheet.create({
   heroAmountCompact: { fontSize: 30, lineHeight: 36, letterSpacing: -1 },
   heroTrack: { height: 14, borderRadius: Radius.bar, overflow: 'hidden' },
   heroFill: { height: '100%', borderRadius: Radius.bar },
-  heroStats: { flexDirection: 'row', gap: Spacing.two, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: Spacing.three },
-  heroStat: { flex: 1, minWidth: 0, gap: Spacing.one },
   statHighlight: { alignSelf: 'flex-start', borderRadius: 4, paddingHorizontal: Spacing.one },
   section: { gap: Spacing.three },
   sectionHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },

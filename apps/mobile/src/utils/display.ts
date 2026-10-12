@@ -8,10 +8,17 @@ export function amountInput(paise: number): string {
   return `${value < 0n ? '-' : ''}${absolute / 100n}.${String(absolute % 100n).padStart(2, '0')}`;
 }
 
-export function money(paise: number): string {
+/** Every paise, always: entry detail, forms and anywhere the exact amount is the point. */
+export function exactMoney(paise: number): string {
   const [whole, fraction] = amountInput(paise).split('.');
   // Whole rupees fit a safe Number; Hermes Intl does not accept BigInt.
   return `${paise < 0 ? '−' : ''}₹${rupees.format(Number(whole!.replace('-', '')))}.${fraction}`;
+}
+
+/** Display money: whole rupees, with paise only when there are some (₹236, ₹139.50). */
+export function money(paise: number): string {
+  const exact = exactMoney(paise);
+  return exact.endsWith('.00') ? exact.slice(0, -3) : exact;
 }
 
 export function indiaDate(date: Date = new Date()): string {

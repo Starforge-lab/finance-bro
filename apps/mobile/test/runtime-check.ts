@@ -74,13 +74,8 @@ async function seedPreviousSchema(client: LedgerSQLiteClient, migrations: Ledger
   if (!(await layer.listAccounts(true)).some((account) => account.id === 'runtime-cash')) {
     await layer.createAccount({ id: 'runtime-cash', name: 'Fictional cash', type: 'cash' });
   }
-  const categoryRows = await layer.listCategories();
-  if (!categoryRows.some((category) => category.id === 'runtime-food')) {
-    await layer.createCategory({ id: 'runtime-food', name: 'Fictional food', kind: 'expense' });
-  }
-  if (!categoryRows.some((category) => category.id === 'runtime-income')) {
-    await layer.createCategory({ id: 'runtime-income', name: 'Fictional income', kind: 'income' });
-  }
+  // Raw SQL: the current ORM schema has columns this older ledger doesn't.
+  await client.execAsync("INSERT OR IGNORE INTO categories (id, name, kind) VALUES ('runtime-food', 'Fictional food', 'expense'), ('runtime-income', 'Fictional income', 'income')");
 
   const entries = [
     { id: 'runtime-old-expense', amountInr: '100.00', direction: 'debit' as const, occurredAt: '2026-09-30T18:30:00.000Z', categoryId: 'runtime-food' },
