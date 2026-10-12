@@ -2,7 +2,11 @@
 
 **Decision:** `serenity-kit/react-native-libsodium` is the strongest single binding candidate found for Finance Bro’s selected libsodium APIs: it has native JSI implementations for Argon2id and XChaCha20-Poly1305 plus a React Native Web path to libsodium.js WASM. Its API fit is good enough for a bounded integration spike, but **the binding/source-build gate is not cleared**. The published native package extracts prebuilt libsodium binaries, its own source-build script still pins libsodium 1.0.21-stable, and its example targets React Native 0.83 while this app is on Expo SDK 58 / RN 0.88. Do not freeze the backup format or add the runtime dependency until source-built Android and exact SDK58 native compatibility are demonstrated.
 
-This note addresses feasibility for [#42](https://github.com/Starforge-lab/finance-bro/issues/42) against the F-Droid source-build requirement in [#56](https://github.com/Starforge-lab/finance-bro/issues/56). It is research, not an implementation decision to ship the dependency.
+Scope update (2026-10-10): encrypted recovery is deferred beyond the Android
+SMS-only 2.0 release. This historical research is retained for later work,
+not as a prerequisite for automatic SMS ingestion.
+
+This note addresses feasibility for [#42](https://github.com/Starforge-lab/finance-bro/issues/42) against the F-Droid source-build requirement in [#27](https://github.com/Starforge-lab/finance-bro/issues/27). It is research, not an implementation decision to ship the dependency.
 
 ## Candidate and API evidence
 

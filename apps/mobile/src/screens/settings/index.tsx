@@ -207,10 +207,10 @@ export default function SettingsScreen() {
       const content = await ledger.exportTransactionsCsv();
       const result = await saveCsv(content, `transactions-${indiaDate()}.csv`);
       setNotice({ text: result === 'cancelled' ? 'Export cancelled. No file was created.'
-        : Platform.OS === 'web' ? 'Download requested. Check your downloads.' : 'CSV saved to your chosen folder.' });
+        : Platform.OS === 'web' ? 'Download requested. Check your downloads.' : 'CSV saved to your chosen file.' });
     } catch (error) {
       setExportError(error instanceof ExportCleanupError
-        ? 'Export couldn’t finish. Check your chosen folder for an incomplete CSV before retrying. Your ledger is unchanged.'
+        ? 'Export couldn’t finish. Check the selected location for an incomplete CSV before retrying. Your ledger is unchanged.'
         : 'Export couldn’t finish. Your ledger is unchanged; try again.');
     } finally {
       setPending(null);
@@ -426,7 +426,7 @@ export default function SettingsScreen() {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={Platform.OS === 'ios' ? 'Export to CSV, not available on iOS yet' : `Export ${entryCount ?? 0} entries to CSV`}
-                accessibilityHint={Platform.OS === 'ios' ? 'CSV export is not available on iOS yet.' : Platform.OS === 'android' ? 'Choose a folder on this device.' : 'Downloads a copy in your browser.'}
+                accessibilityHint={Platform.OS === 'ios' ? 'CSV export is not available on iOS yet.' : Platform.OS === 'android' ? 'Choose a location and filename for a single CSV file on this device.' : 'Downloads a copy in your browser.'}
                 accessibilityState={{ disabled: Platform.OS === 'ios' || busy || loading, busy: pending === 'export' }}
                 aria-busy={pending === 'export'}
                 disabled={Platform.OS === 'ios' || busy || loading}
