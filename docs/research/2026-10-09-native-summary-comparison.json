@@ -1,0 +1,100 @@
+{
+  "baseline": "007771e804a5473d649eee179fc11c81f2aeede0",
+  "patch": "d1e4b915e4f19905f694b7f6a52ae493a6def7d4 summary projection only",
+  "samplesPerQuery": 3,
+  "status": "pass",
+  "scenarios": [
+    {
+      "rows": 10000,
+      "distribution": "24-months",
+      "samplesMs": {
+        "before": [
+          107.63784700632095,
+          93.15753898024559,
+          97.86992397904396
+        ],
+        "after": [
+          73.28215399384499,
+          71.24669200181961,
+          74.59915399551392
+        ]
+      },
+      "correctness": "pass",
+      "medianMs": {
+        "before": 97.86992397904396,
+        "after": 73.28215399384499
+      }
+    },
+    {
+      "rows": 10000,
+      "distribution": "one-month-stress",
+      "samplesMs": {
+        "before": [
+          1175.787154018879,
+          946.799153983593,
+          971.7230769991875
+        ],
+        "after": [
+          566.081770002842,
+          521.9817689955235,
+          522.5307700037956
+        ]
+      },
+      "correctness": "pass",
+      "medianMs": {
+        "before": 971.7230769991875,
+        "after": 522.5307700037956
+      }
+    },
+    {
+      "rows": 50000,
+      "distribution": "24-months",
+      "samplesMs": {
+        "before": [
+          266.2951540052891,
+          271.3820770084858,
+          285.76215398311615
+        ],
+        "after": [
+          161.32861599326134,
+          150.04592299461365,
+          175.1464619934559
+        ]
+      },
+      "correctness": "pass",
+      "medianMs": {
+        "before": 271.3820770084858,
+        "after": 161.32861599326134
+      }
+    },
+    {
+      "rows": 50000,
+      "distribution": "one-month-stress",
+      "samplesMs": {
+        "before": [
+          4680.176076978445,
+          4654.155692994595,
+          4641.352001011372
+        ],
+        "after": [
+          2501.2274610102177,
+          2528.1759999990463,
+          2492.448539018631
+        ]
+      },
+      "correctness": "pass",
+      "medianMs": {
+        "before": 4654.155692994595,
+        "after": 2501.2274610102177
+      }
+    }
+  ],
+  "appStates": [
+    {
+      "state": "active",
+      "atMs": 225847924.610922
+    }
+  ],
+  "stage": "50000/one-month-stress/after/2",
+  "cleanup": "qa-database-deleted"
+}
