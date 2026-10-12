@@ -34,8 +34,9 @@ const shift: Pick<BottomTabNavigationOptions, 'sceneStyleInterpolator' | 'transi
 /** The Android material bar cannot float; keep the reference capsule with Router's standard tabs. */
 export default function AppTabs() {
   const reduceMotion = useReducedMotion();
-  return <Tabs tabBar={(props) => <CapsuleBar {...props} />} screenOptions={{
-    headerShown: false,
+  // All four tabs are built at launch and stay attached, so a switch only moves finished pages.
+  return <Tabs detachInactiveScreens={false} tabBar={(props) => <CapsuleBar {...props} />} screenOptions={{
+    headerShown: false, lazy: false, freezeOnBlur: false,
     ...(reduceMotion ? { animation: 'none' as const } : shift),
   }}>
     {tabs.map((tab) => <Tabs.Screen key={tab.name} name={tab.name} options={{ title: tab.title }} />)}

@@ -1,15 +1,16 @@
-import { useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useColorScheme } from '@/hooks/appearance';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Icon, categoryIcon } from '@/components/icon';
 import { MonthPicker } from '@/components/ledger-controls';
+import { Bone, SkeletonGroup } from '@/components/skeleton';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Fonts, Radius, Spacing, Stroke, Type } from '@/constants/theme';
 import { getLedger, type DataLayer } from '@/db';
+import { useLedgerVersion } from '@/hooks/use-ledger-version';
 import { useTheme } from '@/hooks/use-theme';
 import { indiaDate, money, parseIndiaDate } from '@/utils/display';
 
@@ -96,15 +97,13 @@ export function Insights() {
   const [history, setHistory] = useState<Summary[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [bills, setBills] = useState<Bill[]>([]);
-  const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [revision, setRevision] = useState(0);
   const [totalsOpen, setTotalsOpen] = useState(false);
 
-  useFocusEffect(useCallback(() => {
+  const version = useLedgerVersion();
+  useEffect(() => {
     let active = true;
-    setLoading(true);
-    setFailed(false);
     void getLedger().then(async (ledger) => {
       const months = Array.from({ length: 6 }, (_, index) => shiftMonth(month, index - 5))
         .filter((value): value is string => value !== null);
@@ -117,15 +116,14 @@ export function Insights() {
       setHistory(summaries);
       setTransactions(entries);
       setBills(upcoming.filter((bill) => bill.status === 'upcoming'));
+      setFailed(false);
     }).catch(() => {
       if (active) setFailed(true);
-    }).finally(() => {
-      if (active) setLoading(false);
     });
     return () => { active = false; };
     // Retry reloads the currently selected period.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [month, revision]));
+     
+  }, [month, revision, version]);
 
   const summary = history.find((item) => item.month === month);
   const merchants = useMemo(() => merchantRows(transactions), [transactions]);
@@ -150,11 +148,19 @@ export function Insights() {
             <MonthPicker month={month} onChange={setMonth} />
           </View>
 
-          {loading ? (
-            <View accessibilityRole="progressbar" accessibilityLabel="Loading recorded insights" style={styles.state}>
-              <ThemedText style={Type.body}>Loading your recorded month…</ThemedText>
-            </View>
-          ) : failed || !summary ? (
+          {!summary && !failed ? (
+            <SkeletonGroup label="Loading recorded insights" style={styles.state}>
+              <View style={[styles.hero, styles.heroSkeleton, { borderColor: colors.track }]}>
+                <Bone width={110} height={16} />
+                <Bone width="65%" height={46} radius={Radius.tile} />
+                <View style={[styles.heroStats, { borderColor: colors.track }]}>
+                  {[0, 1, 2].map((key) => <View key={key} style={styles.skeletonStat}><Bone width="50%" height={12} /><Bone width="85%" height={16} /></View>)}
+                </View>
+              </View>
+              <Bone width="80%" height={16} />
+              <Bone width={150} height={44} radius={Radius.pill} />
+            </SkeletonGroup>
+          ) : !summary ? (
             <View accessibilityLiveRegion="polite" style={styles.state}>
               <ThemedText style={Type.body}>Your recorded insights could not be loaded. Your ledger has not been reset.</ThemedText>
               <Pressable accessibilityRole="button" onPress={() => setRevision((value) => value + 1)}
@@ -163,7 +169,10 @@ export function Insights() {
               </Pressable>
             </View>
           ) : (
-            <>
+            <View style={styles.body}>
+              {failed ? <Pressable accessibilityRole="button" accessibilityLabel="Couldn’t refresh. Retry" onPress={() => setRevision((value) => value + 1)} style={styles.refresh}>
+                <ThemedText themeColor="textSecondary" style={Type.note}>Couldn’t refresh · <ThemedText style={[Type.note, { textDecorationLine: 'underline' }]}>Retry</ThemedText></ThemedText>
+              </Pressable> : null}
               <View style={[styles.hero, { backgroundColor: colors.heroBackground }]}>
                 <ThemedText style={[Type.body, { color: colors.heroText }]}>
                   {summary.expensePaise < 0 ? 'Refunds exceed spending by' : 'You’ve spent'}
@@ -243,7 +252,7 @@ export function Insights() {
               {totalsOpen && <ThemedText style={[Type.note, styles.rules, { color: colors.textSecondary }]}>
                 India calendar months. Posted debit expenses count as spending and posted credit income as income. A posted credit refund or reversal reduces spending in its receipt month. Transfers, cash withdrawals, pending, failed, deleted, and excluded entries are omitted. These totals show recorded cash flow, not balance or forecast.
               </ThemedText>}
-            </>
+            </View>
           )}
         </ScrollView>
       </SafeAreaView>
@@ -336,6 +345,8 @@ function BillRow({ bill, colors, first }: { bill: Bill; colors: ReturnType<typeo
 
 const styles = StyleSheet.create({
   container: { flex: 1 }, safe: { flex: 1 },
+  body: { gap: Spacing.section }, refresh: { minHeight: 44, justifyContent: 'center' },
+  heroSkeleton: { borderWidth: Stroke.ink }, skeletonStat: { flex: 1, gap: 8 },
   content: { paddingHorizontal: Spacing.gutter, paddingTop: 52, paddingBottom: Spacing.tabBarClearance, gap: Spacing.section, width: '100%', maxWidth: 520, alignSelf: 'center' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: Spacing.two },
   state: { gap: Spacing.three }, pill: { minHeight: 44, alignSelf: 'flex-start', justifyContent: 'center', paddingHorizontal: Spacing.three, borderWidth: Stroke.ink, borderRadius: Radius.pill },
