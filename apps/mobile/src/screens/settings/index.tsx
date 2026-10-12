@@ -1,17 +1,18 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
 import * as Crypto from 'expo-crypto';
 
 import { Icon, accountIcon, categoryIcon } from '@/components/icon';
 import { LedgerButton, Segmented } from '@/components/ledger-controls';
+import { Bone, SkeletonGroup } from '@/components/skeleton';
 import { useThemePreference } from '@/hooks/appearance';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors, Fonts, Radius, Shadow, Spacing, Stroke, Type } from '@/constants/theme';
 import { accountTypes, categoryKinds } from '@/db/schema';
 import { getLedger, getLedgerClient, type DataLayer, type NewAccount, type NewCategory } from '@/db';
+import { useLedgerVersion } from '@/hooks/use-ledger-version';
 import { useTheme } from '@/hooks/use-theme';
 import { indiaDate } from '@/utils/display';
 import { saveCsv } from '@/exports/save-csv';
@@ -80,12 +81,14 @@ export default function SettingsScreen() {
     }
   }, []);
 
-  useFocusEffect(useCallback(() => {
-    let focused = true;
-    setLoading(true);
-    void refresh(() => focused);
-    return () => { focused = false; };
-  }, [refresh]));
+  const version = useLedgerVersion();
+  useEffect(() => {
+    let current = true;
+    // refresh only sets state after its awaited reads.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void refresh(() => current);
+    return () => { current = false; };
+  }, [refresh, version]);
 
   const saveAccount = useCallback(async (fields: AccountFields, id?: string, createId?: string): Promise<string | null> => {
     if (operationGuard.current) return 'Another settings action is finishing. Try again in a moment.';
@@ -277,7 +280,6 @@ export default function SettingsScreen() {
             </View>
           </View>
 
-          {loading ? <View accessibilityRole="progressbar" accessibilityLabel="Loading settings" style={[styles.loadLine, { backgroundColor: theme.backgroundSelected }]}><ActivityIndicator color={theme.textSecondary} /></View> : null}
           {loadError ? <View style={styles.messageLine}>
             <ThemedText accessibilityRole="alert" style={[Type.note, { color: theme.over }]}>Settings couldn’t load. Your saved data is still on this device.</ThemedText>
             <LedgerButton label="Retry" onPress={() => { setLoading(true); void refresh(); }} />
@@ -293,7 +295,7 @@ export default function SettingsScreen() {
           <View style={styles.section}>
             <SectionHeading title="Accounts" theme={theme} />
             <SettingsGroup theme={theme}>
-              {loading && accounts.length === 0 ? <LoadingRow theme={theme} /> : null}
+              {loading && accounts.length === 0 ? <LoadingRow /> : null}
               {!loading && activeAccounts.length === 0 ? <StaticRow title="No accounts added." theme={theme} /> : null}
               {activeAccounts.map((account, index) => (
                 <AccountRow
@@ -368,7 +370,7 @@ export default function SettingsScreen() {
                 last={!categoriesOpen}
               />
               {categoriesOpen ? <View style={styles.categoryContents}>
-                {loading ? <LoadingRow theme={theme} /> : null}
+                {loading ? <LoadingRow /> : null}
                 {!loading && categories.length === 0 ? <ThemedText style={[Type.note, styles.emptyCopy]}>No categories yet.</ThemedText> : null}
                 {expenses.length > 0 ? <ThemedText style={[Type.label, styles.kindHeading]}>Expenses</ThemedText> : null}
                 {expenses.map((category, index) => (
@@ -504,10 +506,10 @@ function StaticRow({ title, detail, theme, last = false }: { title: string; deta
   </View>;
 }
 
-function LoadingRow({ theme }: { theme: Theme }) {
-  return <View accessibilityLiveRegion="polite" style={[styles.loadingRow, { backgroundColor: theme.backgroundSelected }]}>
-    <ThemedText style={Type.note}>Loading saved settings…</ThemedText>
-  </View>;
+function LoadingRow() {
+  return <SkeletonGroup label="Loading saved settings" style={styles.loadingRow}>
+    <Bone width="45%" height={16} /><Bone width="30%" height={12} />
+  </SkeletonGroup>;
 }
 
 function DisclosureRow({ title, detail, expanded, theme, onPress, last = false }: {
@@ -763,11 +765,10 @@ const styles = StyleSheet.create({
   fieldLabel: { marginBottom: 1 },
   input: { minHeight: 48, paddingHorizontal: 12, paddingVertical: 8, borderWidth: Stroke.ink, borderRadius: Radius.control },
   choices: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  loadLine: { marginTop: 12, height: 32, borderRadius: Radius.control, alignItems: 'center', justifyContent: 'center' },
   messageLine: { marginTop: 12, gap: 8, alignItems: 'flex-start' },
   message: { marginTop: 12 },
   exportRow: { minHeight: 68, paddingHorizontal: 16, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   exportError: { padding: 16 },
   exportNote: { marginTop: 8, maxWidth: 480 },
-  loadingRow: { minHeight: 64, paddingHorizontal: 16, alignItems: 'flex-start', justifyContent: 'center' },
+  loadingRow: { minHeight: 64, paddingHorizontal: 16, alignItems: 'flex-start', justifyContent: 'center', gap: 8 },
 });
