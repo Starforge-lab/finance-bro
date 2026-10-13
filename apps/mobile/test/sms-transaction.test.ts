@@ -12,7 +12,7 @@ const source = ts.transpileModule(
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
 ).outputText;
 
-function loadRunner(openDatabaseAsync: (name: string, options: { useNewConnection: boolean }) => Promise<unknown>, platform = 'android') {
+function loadRunner(openDatabaseAsync: (name: string, options: { useNewConnection: boolean; enableChangeListener: boolean }) => Promise<unknown>, platform = 'android') {
   const exports: { createSmsTransactionRunner?: (name: string) => LedgerSQLiteTransactionRunner } = {};
   runInNewContext(source, {
     exports,
@@ -40,6 +40,7 @@ function fixture(options: { platform?: string; foreignKeys?: number; failStateme
   const createRunner = loadRunner(async (name, openOptions) => {
     assert.equal(name, 'fictional-sms.db');
     assert.equal(openOptions.useNewConnection, true);
+    assert.equal(openOptions.enableChangeListener, true);
     calls.push('OPEN');
     return transaction;
   }, options.platform);
