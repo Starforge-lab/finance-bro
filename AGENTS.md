@@ -18,7 +18,7 @@
 
 Use the pnpm version in package.json and commit pnpm-lock.yaml. For Expo dependencies, run pnpm --dir apps/mobile exec expo install <package> and consult the docs for the installed SDK major at https://docs.expo.dev/versions/v58.0.0/.
 
-Use the newest compatible releases, including the selected SDK beta. Read SECURITY.md and issue #3 before changing toolchain versions: some newer compiler/lint APIs are not yet supported. Review lockfile and build-script approval changes; preserve the explicit allowBuilds list instead of approving all dependencies.
+Freeze the tested Expo SDK/native dependency graph for 2.0 at Expo 58.0.8 and React Native 0.88.0-rc.4 until Android SMS 2.0 acceptance. Security fixes and necessary bug fixes are explicit, separately reviewed exceptions; do not take routine SDK/native patch updates. Read SECURITY.md and issue #3 before any toolchain exception: some newer compiler/lint APIs are not yet supported. Review lockfile and build-script approval changes; preserve the explicit allowBuilds list instead of approving all dependencies.
 
 F-Droid dependency changes: read CLAUDE.md's clean source-build and transitive dependency gates before adding packages.
 
@@ -32,12 +32,20 @@ For UI work, use exactly one design skill: impeccable for product screens; desig
 
 From the repository root:
 
+Set `EXPO_OFFLINE=1` only for the Expo install check and Expo Doctor so SDK compatibility is checked against the installed, frozen Expo matrix. Keep Doctor's other checks enabled and provide network access for its React Native Directory check. The shell examples below use bash prefixes; in PowerShell, set `$env:EXPO_OFFLINE = "1"` before those commands.
+
 ```sh
 pnpm install --frozen-lockfile
 pnpm check
-pnpm --dir apps/mobile exec expo install --check
-pnpm --dir apps/mobile dlx expo-doctor
+EXPO_OFFLINE=1 pnpm --dir apps/mobile exec expo install --check
 pnpm build
+```
+
+Run Expo Doctor from `apps/mobile` with the same environment variable set:
+
+```sh
+cd apps/mobile
+EXPO_OFFLINE=1 pnpm dlx expo-doctor
 ```
 
 For visible changes, exercise the affected browser flow with fictional data. Native changes also need the relevant real-device check; state when device access is unavailable. Exporting bundles does not create signed apps or prove native behavior.
