@@ -70,7 +70,8 @@ pnpm --filter @finance-bro/sms-parser test
 pnpm parser:try "<sms text>" --sender VM-HDFCBK-S   # print classification + parse result
 pnpm build:android:dev         # EAS development build (APK); needs `eas login` + `eas init` once
 pnpm build:ios:dev             # EAS development build (internal distribution)
-pnpm --dir apps/mobile dlx expo-doctor   # dependency/config health
+# From apps/mobile, with EXPO_OFFLINE=1 (see CONTRIBUTING.md):
+pnpm dlx expo-doctor           # dependency/config health
 ```
 
 Planned: `pnpm parser:anonymise <file>`, which scrubs names, digits and VPAs from raw samples.
@@ -87,7 +88,7 @@ Dev builds use `APP_VARIANT=development` (set in `eas.json`), giving the id `com
 6. **Every parser rule has at least one positive fixture**; CI fails otherwise. Every bug fix in parsing starts with a failing fixture.
 7. **Fixtures are anonymised** before commit — no real names, account digits, VPAs, phone numbers or reference numbers.
 8. **The app must be fully usable without SMS permission** (manual entry + paste). This is a store-compliance requirement, not a nice-to-have.
-9. Pin exact versions while on the beta. Use `pnpm --dir apps/mobile exec expo install` for Expo-managed packages.
+9. Freeze the tested SDK/native graph at Expo 58.0.8 and React Native 0.88.0-rc.4 until Android SMS 2.0 acceptance. Security and necessary bug-fix exceptions need separate review. Use `pnpm --dir apps/mobile exec expo install` for approved Expo-managed changes; validate against the installed SDK matrix as documented in CONTRIBUTING.md.
 
 ## Architecture decisions
 

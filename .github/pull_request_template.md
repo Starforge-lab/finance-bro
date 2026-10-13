@@ -5,8 +5,7 @@
 ## Checks
 
 - [ ] `pnpm check`
-- [ ] `pnpm --dir apps/mobile exec expo install --check`
-- [ ] `pnpm --dir apps/mobile dlx expo-doctor`
+- [ ] From `apps/mobile`, `pnpm exec expo install --check` and `pnpm dlx expo-doctor` pass with `EXPO_OFFLINE=1`
 - [ ] `pnpm build`
 - [ ] I noted any checks I could not run below.
 
