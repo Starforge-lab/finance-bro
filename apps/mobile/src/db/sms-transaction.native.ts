@@ -5,7 +5,7 @@ import type { LedgerSQLiteTransactionRunner } from './ledger';
 export function createSmsTransactionRunner(databaseName: string): LedgerSQLiteTransactionRunner {
   return async (task) => {
     if (Platform.OS !== 'android') throw new Error('Android SMS import transactions are unavailable on this platform');
-    const transaction = await SQLite.openDatabaseAsync(databaseName, { useNewConnection: true });
+    const transaction = await SQLite.openDatabaseAsync(databaseName, { useNewConnection: true, enableChangeListener: true });
     let active = false;
     try {
       await transaction.execAsync('PRAGMA foreign_keys = ON');
