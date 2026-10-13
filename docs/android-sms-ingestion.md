@@ -149,8 +149,25 @@ are not a verified acceptance corpus. Generic parsing therefore stays in review.
 
 ## Remaining integration gates
 
-- Matching Android tests of the connection, migration, concurrent saves, rollback
-  and restart are required before this native storage path is ready to merge.
+On 2026-10-14, the Motorola Edge 60 Pro (Android 17) passed 12 fictional
+checks in the isolated `com.rohangupta.financebro.smsqa.dev` client built from
+native revision `6bbc2a4`, with storage source
+`a01e22badd30a5bef2784fe80f7a159947d8f134`. The harness used a separate
+database and a temporary protected-key slot; it preserved the production key
+and cleaned up its own data. It covered migration preservation, foreign keys,
+bounded review/cursor, rollback, writer exclusion, paste overlap/corrections/
+tombstones, selected review confirmation, connection reopen, foreground
+catch-up/health, cancellation rollback, key loss and manual fallback. Inbox
+pages were fictional; no inbox access or permission request occurred.
+
+This proves those isolated storage cases, not a process-restart test or the
+connected review UI. The subsequent change-listener fix still needs an Android
+screen-refresh check. Rohan's review also identified unresolved row-ID reuse,
+unreadable-row progress, concurrent-connection contention and date-order
+recovery concerns; keep this PR draft until those are resolved and verified.
+
+- Full Android concurrent manual/import saves and process-restart behavior
+  remain required before this native storage path is ready to merge.
 - #46 must establish the eligible rule corpus before any automatic saving claim.
 - #43 still needs native review-reader wiring, confirmation/recovery actions,
   failed/unavailable operation-count semantics and presentation, protected-key
