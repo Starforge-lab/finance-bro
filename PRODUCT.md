@@ -8,7 +8,7 @@ adaptive
 
 ## Stack
 
-A pnpm 12.9.1 and Turborepo monorepo with an Expo SDK 58 beta, React Native 0.88 release candidate, TypeScript 6.0.3, and Expo Router app for Android, iOS, and web. The mobile app is in `apps/mobile/`; the pure TypeScript SMS parser is in `packages/sms-parser/`. ESLint 9.39.5 is the current Expo-tooling-compatible major.
+A pnpm 12.9.1 and Turborepo monorepo with Expo SDK 58.0.8, React Native 0.88.0-rc.4, TypeScript 6.0.3, and an Expo Router app for Android, iOS, and web. The mobile app is in `apps/mobile/`; the pure TypeScript SMS parser is in `packages/sms-parser/`. ESLint 9.39.5 is the current Expo-tooling-compatible major.
 
 ## Users
 
@@ -27,6 +27,8 @@ Mobile use is primary, with Android, iOS, and web support. Suvo can test on a Mo
 ## Capabilities and Constraints
 
 Delivery follows [the approved manual-first roadmap](docs/mvp-roadmap.md): ledger and everyday finance workflows first, with native imports validated separately.
+
+On 2026-10-14, Suvo chose to freeze the tested Expo SDK/native dependency graph for 2.0 at Expo 58.0.8 and React Native 0.88.0-rc.4 until Android SMS 2.0 acceptance. Security fixes and necessary bug fixes are explicit, separately reviewed exceptions; routine SDK/native patch updates are deferred. This preserves the current tested baseline and does not establish new native or device acceptance evidence.
 
 On 2026-10-10, Suvo narrowed Version 2.0 to one capability: opt-in automatic Android SMS import. It must use the shared parser and local ledger, preserve corrections and keyed deduplication, process inbox history in bounded batches, and never persist message bodies. Any 90-day history import starts with a cancellable preview. Background TypeScript parsing and SQLite writes must be proven on Android under [issue #16](https://github.com/Starforge-lab/finance-bro/issues/16). iOS imports, Gmail, receipt OCR, encrypted backup/recovery, reconciliation, planning/forecasts, and widgets are later work, not 2.0 gates. Suvo owns Android/shared integration; Rohan independently reviews shared work and owns design and all later iOS work. See [the 2.0 roadmap](docs/v2-roadmap.md).
 

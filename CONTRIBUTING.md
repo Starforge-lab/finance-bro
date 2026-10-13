@@ -52,12 +52,22 @@ For the isolated Android SMS feasibility client, dispatch the workflow with `and
 
 ```bash
 pnpm check
-pnpm --dir apps/mobile exec expo install --check
-pnpm --dir apps/mobile dlx expo-doctor
+EXPO_OFFLINE=1 pnpm --dir apps/mobile exec expo install --check
 pnpm build
 ```
 
-The workspace intentionally sets `minimumReleaseAge: 0` so newly published SDK beta dependencies are available immediately. Treat that as a bleeding-edge choice, not a stability guarantee. Use `pnpm --dir apps/mobile exec expo install <package>` for Expo or React Native dependencies, review lockfile changes, and run the checks above. Dependabot changes are proposals; review and test them before merging.
+For the frozen 2.0 baseline, run both Expo checks with `EXPO_OFFLINE=1`. Expo CLI then compares SDK-known dependencies against the installed `expo` package's `bundledNativeModules.json`; the standalone check's offline warning is expected because remote version data is intentionally skipped. `pnpm install --frozen-lockfile` keeps the exact resolved dependency graph. Expo Doctor 1.20.4 still ran all 20 checks with this environment, including its active React Native Directory check, so keep network access available.
+
+Run Expo Doctor from `apps/mobile` rather than through `pnpm --dir`:
+
+```bash
+cd apps/mobile
+EXPO_OFFLINE=1 pnpm dlx expo-doctor
+```
+
+In PowerShell, set `$env:EXPO_OFFLINE = "1"` before the two Expo checks. In bash, prefix each Expo command with `EXPO_OFFLINE=1`.
+
+The workspace intentionally sets `minimumReleaseAge: 0` so newly published SDK beta dependencies can be installed when explicitly approved. Use `pnpm --dir apps/mobile exec expo install <package>` for Expo or React Native dependencies, review lockfile changes, and run the checks above. Keep the tested SDK/native graph at Expo 58.0.8 and React Native 0.88.0-rc.4 until Android SMS 2.0 acceptance; security and necessary bug-fix updates require explicit review. Dependabot changes are proposals; review and test them before merging.
 
 GitHub's [Dependabot ecosystem reference](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference) currently lists pnpm support through v10, so compatibility with this repo's pnpm 12 toolchain is unconfirmed. The npm/pnpm entry remains configured; check Dependabot's update logs before relying on JavaScript dependency update PRs. GitHub Actions updates use a separate supported entry.
 
@@ -129,7 +139,7 @@ This is the most common contribution.
 ## Pull request checklist
 
 - [ ] `pnpm check` passes (typecheck, lint and tests)
-- [ ] `pnpm --dir apps/mobile exec expo install --check`, `pnpm --dir apps/mobile dlx expo-doctor` and `pnpm build` pass
+- [ ] From `apps/mobile`, `pnpm exec expo install --check` and `pnpm dlx expo-doctor` pass with `EXPO_OFFLINE=1`; `pnpm build` passes
 - [ ] Parser changes include positive and negative fixtures; all samples are anonymised
 - [ ] No new network calls involving user data (or explicit opt-in consent is in place)
 - [ ] The app still works with SMS permission denied
