@@ -2,7 +2,27 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
+const ts = require('typescript');
 const { clearReleaseSigning } = require('../plugins/withUnsignedAndroidRelease.cjs');
+
+test('source-check signing override requires an explicit production variant', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../app.config.ts'), 'utf8');
+  const script = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  const load = (env) => {
+    const context = { exports: {}, process: { env } };
+    vm.runInNewContext(script, context);
+    return context.exports.default({ config: {} });
+  };
+  for (const variant of [undefined, 'development', 'preview']) {
+    assert.throws(() => load({ APP_VARIANT: variant, ANDROID_RELEASE_SOURCE_CHECK: '1' }), /requires the production variant/);
+  }
+  const config = load({ APP_VARIANT: 'production', ANDROID_RELEASE_SOURCE_CHECK: '1', ANDROID_SMS_PROBE: '1' });
+  assert.equal(config.android.package, 'com.rohangupta.financebro');
+  assert.equal(config.extra.androidSmsProbe, false);
+  assert.ok(config.plugins.includes('./plugins/withUnsignedAndroidRelease.cjs'));
+  assert.ok(!load({}).plugins.includes('./plugins/withUnsignedAndroidRelease.cjs'));
+});
 const generatedGradle = [
   'android {', '    buildTypes {', '        debug {',
   '            signingConfig signingConfigs.debug', '        }',

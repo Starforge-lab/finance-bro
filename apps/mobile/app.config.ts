@@ -8,7 +8,7 @@ const IS_DEV = process.env.APP_VARIANT === 'development';
 const IS_SMS_PROBE = IS_DEV && process.env.ANDROID_SMS_PROBE === '1';
 const IS_SOURCE_CHECK = process.env.ANDROID_RELEASE_SOURCE_CHECK === '1';
 
-if (IS_SOURCE_CHECK && IS_DEV) {
+if (IS_SOURCE_CHECK && process.env.APP_VARIANT !== 'production') {
   throw new Error('The Android release source check requires the production variant');
 }
 
