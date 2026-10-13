@@ -8,6 +8,7 @@ export function createSmsTransactionRunner(databaseName: string): LedgerSQLiteTr
     const transaction = await SQLite.openDatabaseAsync(databaseName, { useNewConnection: true, enableChangeListener: true });
     let active = false;
     try {
+      await transaction.execAsync('PRAGMA busy_timeout = 5000');
       await transaction.execAsync('PRAGMA foreign_keys = ON');
       const foreignKeys = await transaction.getFirstAsync<{ foreign_keys: number }>('PRAGMA foreign_keys');
       if (foreignKeys?.foreign_keys !== 1) throw new Error('SMS import transaction cannot enforce ledger references');
