@@ -39,6 +39,7 @@ export type SmsReaderModule = {
   getPermissionsAsync(): Promise<SmsPermissionState>;
   requestPermissionsAsync(): Promise<SmsPermissionState>;
   queryInboxAsync(options: SmsInboxQuery): Promise<SmsInboxQueryResult>;
+  readInboxMessageAsync(platformId: string): Promise<SmsInboxMessage | null>;
   getWakeMetadataAsync(): Promise<SmsWakeMetadata>;
 };
 

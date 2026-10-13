@@ -12,6 +12,7 @@ import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.util.concurrent.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -60,6 +61,16 @@ class SmsReaderModule : Module() {
       withContext(Dispatchers.IO) { queryInbox(context, query) }
     }
 
+    AsyncFunction("readInboxMessageAsync") Coroutine { platformId: String ->
+      val id = parsePlatformId(platformId)
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      val permissions = appContext.permissions ?: throw Exceptions.PermissionsModuleNotFound()
+      if (!permissions.hasGrantedPermissions(Manifest.permission.READ_SMS)) {
+        throw Exceptions.MissingPermissions(Manifest.permission.READ_SMS)
+      }
+      withContext(Dispatchers.IO) { readInboxMessage(context, id) }
+    }
+
     AsyncFunction("getWakeMetadataAsync") Coroutine { ->
       val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
       val preferences = context.getSharedPreferences(WAKE_PREFERENCES, Context.MODE_PRIVATE)
@@ -97,10 +108,9 @@ private fun parseQuery(options: Map<String, Any?>): InboxQuery {
       val dateMs = value.safeInteger("dateMs")
       val rawId = value["id"] as? String
         ?: throw IllegalArgumentException("SMS cursor id must be a positive integer string")
-      val id = rawId.toLongOrNull()
-        ?: throw IllegalArgumentException("SMS cursor id must be a positive integer string")
-      require(dateMs in startDateMs..endDateMs && id > 0L && id.toString() == rawId) {
-        "SMS cursor must use a canonical positive id inside the query range"
+      val id = parsePlatformId(rawId)
+      require(dateMs in startDateMs..endDateMs) {
+        "SMS cursor date must be inside the query range"
       }
       InboxCursor(dateMs, id)
     }
@@ -177,6 +187,66 @@ private fun queryInbox(context: Context, query: InboxQuery): Map<String, Any?> {
   }
 
   return mapOf("messages" to messages, "next" to lastCursor?.takeIf { hasMore }?.toMap())
+}
+
+private fun readInboxMessage(context: Context, id: Long): Map<String, Any?>? {
+  val idColumn = BaseColumns._ID
+  val projection = arrayOf(idColumn, Telephony.Sms.ADDRESS, Telephony.Sms.BODY, Telephony.Sms.DATE)
+  val cursor = try {
+    context.contentResolver.query(
+      Telephony.Sms.Inbox.CONTENT_URI,
+      projection,
+      "$idColumn = ?",
+      arrayOf(id.toString()),
+      null
+    )
+  } catch (failure: CancellationException) {
+    throw failure
+  } catch (_: SecurityException) {
+    throw Exceptions.MissingPermissions(Manifest.permission.READ_SMS)
+  } catch (_: Exception) {
+    throw IllegalStateException("Could not query SMS inbox")
+  }
+  return toInboxMessage(cursor, id)
+}
+
+internal fun parsePlatformId(platformId: String): Long {
+  val id = platformId.toLongOrNull()
+    ?: throw IllegalArgumentException("SMS platform id must be a canonical positive integer string")
+  require(id > 0L && id.toString() == platformId) {
+    "SMS platform id must be a canonical positive integer string"
+  }
+  return id
+}
+
+internal fun toInboxMessage(cursor: Cursor?, requestedId: Long): Map<String, Any?>? {
+  val resultCursor = cursor ?: throw IllegalStateException("SMS inbox provider did not return a cursor")
+  return try {
+    resultCursor.use {
+      val idIndex = resultCursor.getColumnIndexOrThrow(BaseColumns._ID)
+      val senderIndex = resultCursor.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
+      val bodyIndex = resultCursor.getColumnIndexOrThrow(Telephony.Sms.BODY)
+      val dateIndex = resultCursor.getColumnIndexOrThrow(Telephony.Sms.DATE)
+      if (!resultCursor.moveToNext()) return@use null
+
+      val rowCursor = resultCursor.toInboxCursor(idIndex, dateIndex)
+      require(rowCursor.id == requestedId) { "SMS provider returned a different message id" }
+      val message = mapOf(
+        "id" to rowCursor.id.toString(),
+        "dateMs" to rowCursor.dateMs.toDouble(),
+        "sender" to resultCursor.getStringOrNull(senderIndex).orEmpty(),
+        "body" to resultCursor.getStringOrNull(bodyIndex).orEmpty()
+      )
+      require(!resultCursor.moveToNext()) { "SMS provider returned duplicate message rows" }
+      message
+    }
+  } catch (failure: CancellationException) {
+    throw failure
+  } catch (_: SecurityException) {
+    throw Exceptions.MissingPermissions(Manifest.permission.READ_SMS)
+  } catch (_: Exception) {
+    throw IllegalStateException("Could not read SMS inbox message")
+  }
 }
 
 private fun Cursor.toInboxCursor(idIndex: Int, dateIndex: Int): InboxCursor {
