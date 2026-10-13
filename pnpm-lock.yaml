@@ -200,7 +200,7 @@ importers:
         specifier: 58.0.11
         version: 58.0.11(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@6.0.3)
       expo-crypto:
-        specifier: ~58.0.6
+        specifier: 58.0.6
         version: 58.0.6(expo@58.0.8)
       expo-dev-client:
         specifier: 58.0.13
@@ -212,7 +212,7 @@ importers:
         specifier: 58.0.8
         version: 58.0.8(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       expo-glass-effect:
-        specifier: ~58.0.3
+        specifier: 58.0.3
         version: 58.0.3(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       expo-haptics:
         specifier: 58.0.6
@@ -221,7 +221,7 @@ importers:
         specifier: 58.0.14
         version: 58.0.14(expo@58.0.8)(react-native-web@0.21.4(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       expo-intent-launcher:
-        specifier: ~58.0.3
+        specifier: 58.0.3
         version: 58.0.3(patch_hash=89400f25e50840745eab82afc8fd332447edae4ce6da21f8f35a34b8fa5f10b3)(expo@58.0.8)
       expo-linking:
         specifier: 58.0.12
@@ -230,7 +230,7 @@ importers:
         specifier: 58.0.18
         version: 58.0.18(5255ecfe42e77fdeba2cd35ef4b56053)
       expo-secure-store:
-        specifier: ~58.0.2
+        specifier: 58.0.2
         version: 58.0.2(expo@58.0.8)
       expo-splash-screen:
         specifier: 58.0.8
@@ -239,13 +239,13 @@ importers:
         specifier: 58.0.12
         version: 58.0.12(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       expo-status-bar:
-        specifier: ~58.0.3
+        specifier: 58.0.3
         version: 58.0.3(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       expo-symbols:
-        specifier: ~58.0.4
+        specifier: 58.0.4
         version: 58.0.4(expo-font@58.0.8)(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       expo-system-ui:
-        specifier: ~58.0.5
+        specifier: 58.0.5
         version: 58.0.5(expo@58.0.8)(react-native-web@0.21.4(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(supports-color@8.1.1)
       react:
         specifier: 19.3.0
@@ -257,13 +257,13 @@ importers:
         specifier: 0.88.0-rc.4
         version: 0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1)
       react-native-gesture-handler:
-        specifier: ~3.2.1
+        specifier: 3.2.1
         version: 3.2.1(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       react-native-reanimated:
         specifier: 4.7.0
         version: 4.7.0(react-native-worklets@0.13.0(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       react-native-safe-area-context:
-        specifier: ~5.9.1
+        specifier: 5.9.1
         version: 5.9.1(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       react-native-screens:
         specifier: 4.29.0
@@ -272,7 +272,7 @@ importers:
         specifier: 15.15.5
         version: 15.15.5(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       react-native-web:
-        specifier: ~0.21.4
+        specifier: 0.21.4
         version: 0.21.4(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       react-native-worklets:
         specifier: 0.13.0
@@ -285,7 +285,7 @@ importers:
         specifier: 26.6.4
         version: 26.6.4
       '@types/react':
-        specifier: ~19.3.0
+        specifier: 19.3.0
         version: 19.3.0
       babel-plugin-inline-import:
         specifier: 3.0.0
@@ -300,13 +300,13 @@ importers:
         specifier: 9.39.5
         version: 9.39.5(supports-color@8.1.1)
       eslint-config-expo:
-        specifier: ~58.0.4
+        specifier: 58.0.4
         version: 58.0.4(eslint@9.39.5(supports-color@8.1.1))(supports-color@8.1.1)(typescript@6.0.3)
       tsx:
         specifier: 4.23.15
         version: 4.23.15
       typescript:
-        specifier: ~6.0.3
+        specifier: 6.0.3
         version: 6.0.3
 
   packages/config: {}
