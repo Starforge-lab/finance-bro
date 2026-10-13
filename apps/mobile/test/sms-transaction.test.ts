@@ -101,11 +101,23 @@ it('enforces references and lets the main connection read while an isolated WAL 
     const journalMode = await primary.client.getFirstAsync<{ journal_mode: string }>('PRAGMA journal_mode = WAL');
     assert.equal(journalMode?.journal_mode, 'wal');
     await primary.ledger.migrateLedger();
+    let contenderUsesZeroTimeout = false;
     const createRunner = loadRunner(async (name, options) => {
       assert.equal(options.useNewConnection, true);
       assert.equal(options.enableChangeListener, true);
       const connection = openTestLedger(name);
-      return { ...connection.client, closeAsync: async () => { connection.sqlite.close(); } };
+      const useZeroTimeout = contenderUsesZeroTimeout;
+      contenderUsesZeroTimeout = false;
+      return {
+        ...connection.client,
+        execAsync: async (statement: string) => {
+          if (useZeroTimeout && statement === 'PRAGMA busy_timeout = 5000') {
+            await connection.client.execAsync('PRAGMA busy_timeout = 0');
+            assert.equal((await connection.client.getFirstAsync<{ timeout: number }>('PRAGMA busy_timeout'))?.timeout, 0);
+          } else await connection.client.execAsync(statement);
+        },
+        closeAsync: async () => { connection.sqlite.close(); },
+      };
     });
     const run = createRunner(filename);
     await assert.rejects(run(async (client) => {
@@ -119,6 +131,8 @@ it('enforces references and lets the main connection read while an isolated WAL 
     });
     await ready;
     assert.equal(primary.sqlite.prepare("SELECT count(*) AS count FROM accounts").get()?.count, 0);
+    contenderUsesZeroTimeout = true;
+    await assert.rejects(run(async () => { assert.fail('Concurrent task must not enter'); }), /locked/);
     release();
     await pending;
     assert.equal(primary.sqlite.prepare("SELECT count(*) AS count FROM accounts").get()?.count, 1);
