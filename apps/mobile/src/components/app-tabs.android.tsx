@@ -61,8 +61,9 @@ function CapsuleBar({ state, emitter, navigateToTab, insets }: BottomTabBarProps
 
   const pill = useAnimatedStyle(() => ({ transform: [{ translateX: x.get() }] }));
   const current = state.routes[state.index];
-  // Hide during Home's entry and paste forms.
-  if (current.name === 'index' && (current.params as { _entryOpen?: string } | undefined)?._entryOpen === '1') return null;
+  // Hide while either tab shows a full-screen entry or paste/review form.
+  const formOpen = (current.params as { _entryOpen?: string } | undefined)?._entryOpen === '1';
+  if (formOpen && (current.name === 'index' || current.name === 'settings')) return null;
 
   return <View role="tablist" style={[styles.capsule, {
     width: capsuleWidth, bottom: insets.bottom + 24, borderColor: colors.tabBarBorder, backgroundColor: colors.backgroundElement,

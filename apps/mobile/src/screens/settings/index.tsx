@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useRootNavigationState, useRouter } from 'expo-router';
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Crypto from 'expo-crypto';
@@ -43,6 +44,8 @@ const costLabels: Record<typeof costTypes[number], string> = { flexible: 'Change
 
 export default function SettingsScreen() {
   const theme = useTheme();
+  const router = useRouter();
+  const navigationState = useRootNavigationState();
   const { preference: themePreference, setPreference: setThemePreference } = useThemePreference();
   const dark = theme.background === Colors.dark.background;
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -50,6 +53,7 @@ export default function SettingsScreen() {
   const [ledgerForSms, setLedgerForSms] = useState<DataLayer | null>(null);
   const [smsReviewSession, setSmsReviewSession] = useState<{ ledger: DataLayer; review: AndroidSmsReviewSelection } | null>(null);
   const [smsPasteOpen, setSmsPasteOpen] = useState(false);
+  const smsEntryOpen = Boolean(smsReviewSession || smsPasteOpen);
   const [entryCount, setEntryCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -66,6 +70,11 @@ export default function SettingsScreen() {
   const [exportError, setExportError] = useState<string | null>(null);
   const [confirmRemoveDemo, setConfirmRemoveDemo] = useState(false);
   const operationGuard = useRef(false);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !navigationState?.key) return;
+    router.setParams({ _entryOpen: smsEntryOpen ? '1' : '0' });
+  }, [navigationState?.key, router, smsEntryOpen]);
 
   const refresh = useCallback(async (isCurrent: () => boolean = () => true) => {
     try {

@@ -32,6 +32,13 @@ export type AndroidSmsReviewSelection = {
   expectedPreparation: Extract<SmsReviewPreparation, { kind: 'ready' }>;
 };
 
+export type AndroidSmsPreviewPhase = 'permission' | 'source' | null;
+
+/** Let a user-started Android permission prompt finish, but stop preview work when hidden. */
+export function shouldAbortAndroidSmsPreviewOnHide(phase: AndroidSmsPreviewPhase): boolean {
+  return phase !== 'permission';
+}
+
 export function createAndroidSmsOperationGeneration() {
   let generation = 0;
   return {

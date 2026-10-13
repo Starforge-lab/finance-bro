@@ -349,9 +349,9 @@ export function PasteForm({
     let occurredAt: Date;
     try {
       amountPaise = parseInrAmount(amountText);
-      const candidateTime = smsReview
-        ? new Date(smsReview.receivedAt)
-        : prepared.candidate ? new Date(prepared.candidate.occurredAt) : undefined;
+      const candidateTime = prepared.candidate
+        ? new Date(prepared.candidate.occurredAt)
+        : smsReview ? new Date(smsReview.receivedAt) : undefined;
       const preserveTimeFrom = candidateTime && Number.isFinite(candidateTime.getTime()) ? candidateTime : undefined;
       occurredAt = separatePayment
         ? separatePaymentAt ?? parseIndiaDateTime(dateText, timeText)

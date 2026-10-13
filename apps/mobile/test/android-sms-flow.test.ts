@@ -8,6 +8,7 @@ import {
   getAndroidSmsCatchupFailure,
   runEnabledAndroidSmsCatchup,
   setAndroidSmsImportSettings,
+  shouldAbortAndroidSmsPreviewOnHide,
 } from '../src/imports/android-sms-flow';
 
 test('Android SMS adapters keep the source mapping exact and catch-up failures body-free', async (t) => {
@@ -19,6 +20,12 @@ test('Android SMS adapters keep the source mapping exact and catch-up failures b
     const disable = operations.next();
     assert.equal(operations.isCurrent(preview), false);
     assert.equal(operations.isCurrent(disable), true);
+  });
+
+  await t.test('does not interrupt an explicit Android permission prompt but cancels hidden source work', () => {
+    assert.equal(shouldAbortAndroidSmsPreviewOnHide('permission'), false);
+    assert.equal(shouldAbortAndroidSmsPreviewOnHide('source'), true);
+    assert.equal(shouldAbortAndroidSmsPreviewOnHide(null), true);
   });
 
   await t.test('serializes a disable behind a pending enable so the final native setting is off', async () => {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
+import { useFocusEffect } from 'expo-router';
+import { ActivityIndicator, AppState, Pressable, StyleSheet, View } from 'react-native';
 
 import { LedgerButton } from '@/components/ledger-controls';
 import { ThemedText } from '@/components/themed-text';
@@ -21,7 +22,9 @@ import {
   getAndroidSmsCatchupFailure,
   runEnabledAndroidSmsCatchup,
   setAndroidSmsImportSettings,
+  shouldAbortAndroidSmsPreviewOnHide,
   subscribeAndroidSmsCatchupFailure,
+  type AndroidSmsPreviewPhase,
   type AndroidSmsReviewSelection,
 } from '@/imports/android-sms-flow';
 import { getSmsReader, type SmsImportSettings, type SmsPermissionState, type SmsReaderModule } from '../../../modules/sms-reader';
@@ -109,6 +112,8 @@ export function SmsImportPanel({
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [previewCancelling, setPreviewCancelling] = useState(false);
   const previewController = useRef<AbortController | null>(null);
+  const previewPhase = useRef<AndroidSmsPreviewPhase>(null);
+  const routeFocused = useRef(false);
   const operation = useRef(createAndroidSmsOperationGeneration());
   const statusGeneration = useRef(0);
   const actionRef = useRef(false);
@@ -169,6 +174,7 @@ export function SmsImportPanel({
     actionRef.current = true;
     const controller = new AbortController();
     previewController.current = controller;
+    previewPhase.current = 'permission';
     setAction('preview');
     setPreviewCancelling(false);
     setFailure('');
@@ -176,24 +182,25 @@ export function SmsImportPanel({
     setPreview(null);
     try {
       let permissionState = await reader.getPermissionsAsync();
-      if (!isCurrent() || controller.signal.aborted) return;
+      if (!isCurrent() || controller.signal.aborted || !routeFocused.current || AppState.currentState !== 'active') return;
       if (!hasSmsAccess(permissionState)) {
         permissionState = await reader.requestPermissionsAsync();
-        if (!isCurrent() || controller.signal.aborted) return;
+        if (!isCurrent() || controller.signal.aborted || !routeFocused.current || AppState.currentState !== 'active') return;
       }
-      if (!isCurrent()) return;
+      if (!isCurrent() || !routeFocused.current || AppState.currentState !== 'active') return;
       setPermission(permissionState);
       if (!hasSmsAccess(permissionState)) {
         setFailure('SMS access was not granted. You can still add entries manually or paste a message.');
         return;
       }
 
+      previewPhase.current = 'source';
       const consent = await reader.getImportSettingsAsync();
-      if (!isCurrent() || controller.signal.aborted) return;
+      if (!isCurrent() || controller.signal.aborted || !routeFocused.current || AppState.currentState !== 'active') return;
       const endDateMs = Date.now();
       const startDateMs = consent.startDateMs ?? Math.max(1, endDateMs - ninetyDaysMs);
       const cursor = await ledger.getSmsImportCursor();
-      if (!isCurrent() || controller.signal.aborted) return;
+      if (!isCurrent() || controller.signal.aborted || !routeFocused.current || AppState.currentState !== 'active') return;
       const after = cursor && cursor.receivedAt >= startDateMs ? { dateMs: cursor.receivedAt, id: cursor.platformId } : undefined;
       const counted = await previewAndroidSms({
         reader,
@@ -212,6 +219,7 @@ export function SmsImportPanel({
     } finally {
       if (previewController.current === controller) {
         previewController.current = null;
+        previewPhase.current = null;
       }
       if (isCurrent()) {
         setPreviewCancelling(false);
@@ -231,6 +239,24 @@ export function SmsImportPanel({
     if (actionRef.current) return;
     setPreview(null);
   }, []);
+
+  const cancelPreviewWhenHidden = useCallback(() => {
+    if (shouldAbortAndroidSmsPreviewOnHide(previewPhase.current)) cancelPreview();
+  }, [cancelPreview]);
+
+  useFocusEffect(useCallback(() => {
+    routeFocused.current = true;
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') cancelPreviewWhenHidden();
+    });
+    return () => {
+      routeFocused.current = false;
+      subscription.remove();
+      // Route blur is explicit navigation; abort the preview even if the Android prompt is pending.
+      // This only aborts our continuation, not the OS permission dialog itself.
+      cancelPreview();
+    };
+  }, [cancelPreview, cancelPreviewWhenHidden]));
 
   const confirmAndCatchup = useCallback(async () => {
     if (!reader || !preview || actionRef.current || disableRef.current) return;
@@ -391,8 +417,8 @@ export function SmsImportPanel({
               History: {indiaDate(new Date(preview.startDateMs))} – {indiaDate(new Date(preview.endDateMs))}. This count-only preview changed no ledger data; import begins only after you confirm below.
             </ThemedText>
           </View> : null}
-          {failure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.over }]}>{failure}</ThemedText> : null}
-          {catchupFailure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.over }]}>{catchupFailureCopy(catchupFailure)}</ThemedText> : null}
+          {failure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.text }]}>{failure}</ThemedText> : null}
+          {catchupFailure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.text }]}>{catchupFailureCopy(catchupFailure)}</ThemedText> : null}
           {active ? <View style={styles.actions}>
             {preview ? <LedgerButton label={action === 'catchup' ? 'Importing…' : 'Confirm and catch up'} primary disabled={action !== null || loading} onPress={() => void confirmAndCatchup()} /> : null}
             <LedgerButton label={action === 'preview' ? 'Counting…' : 'Preview messages'} disabled={action !== null || loading || !settings} onPress={() => void beginPreview()} />
@@ -412,7 +438,7 @@ export function SmsImportPanel({
           <ThemedText style={[Type.note, { color: colors.textSecondary }]}>
             SMS import is unavailable in this app build. You can still add entries or paste a bank message from Home.
           </ThemedText>
-          {failure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.over }]}>{failure}</ThemedText> : null}
+          {failure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.text }]}>{failure}</ThemedText> : null}
         </>}
         <LedgerButton label="Paste a bank message" onPress={onPaste} />
       </View>
