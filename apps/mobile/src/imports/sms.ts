@@ -22,6 +22,12 @@ const verifiedRuleVersions: Readonly<Record<string, number>> = {};
 const smsCatchupCompletionPreference = 'sms.last_successful_catchup_at';
 
 export type SmsCursor = { receivedAt: number; platformId: string };
+export class StaleSmsCursorError extends Error {
+  constructor() {
+    super('SMS import cursor is stale; reload the current cursor before retrying');
+    this.name = 'StaleSmsCursorError';
+  }
+}
 export type SmsInboxRow = RawSms & { platformId: string };
 export type SmsImportBatchResult = {
   cursor: SmsCursor | null;
@@ -30,7 +36,10 @@ export type SmsImportBatchResult = {
   review: number;
   ignored: number;
 };
-export type SmsImportBatchOptions = { catchupCompletedAt?: number };
+export type SmsImportBatchOptions = {
+  catchupCompletedAt?: number | (() => number);
+  assertSourceAccess?: () => void | Promise<void>;
+};
 export type SmsImportHealth = {
   lastSuccessfulCatchupAt: number | null;
   pendingReviewCount: number;
@@ -108,12 +117,20 @@ function validateReviewPageOptions(value: unknown): asserts value is SmsReviewPa
   assertCursor(options.after ?? null, 'after');
 }
 
-function validateSmsImportBatchOptions(value: unknown): asserts value is SmsImportBatchOptions {
-  const options = readOwnDataRecord(value, 'SMS import batch options', ['catchupCompletedAt'], false);
-  const timestamp = options.catchupCompletedAt;
-  if (timestamp !== undefined && (!Number.isSafeInteger(timestamp) || (timestamp as number) <= 0)) {
-    throw new TypeError('catchupCompletedAt must be a positive safe integer');
+function snapshotSmsImportBatchOptions(value: unknown): SmsImportBatchOptions {
+  const options = readOwnDataRecord(value, 'SMS import batch options', ['catchupCompletedAt', 'assertSourceAccess'], false);
+  const completion = options.catchupCompletedAt;
+  if (completion !== undefined && typeof completion !== 'function' &&
+      (!Number.isSafeInteger(completion) || (completion as number) <= 0)) {
+    throw new TypeError('catchupCompletedAt must be a positive safe integer or a function');
   }
+  if (options.assertSourceAccess !== undefined && typeof options.assertSourceAccess !== 'function') {
+    throw new TypeError('assertSourceAccess must be a function');
+  }
+  return {
+    ...(completion === undefined ? {} : { catchupCompletedAt: completion as number | (() => number) }),
+    ...(options.assertSourceAccess === undefined ? {} : { assertSourceAccess: options.assertSourceAccess as () => void | Promise<void> }),
+  };
 }
 
 function parseStoredCatchupCompletion(value: string | undefined): number | null {
@@ -833,8 +850,9 @@ export function createSmsIngestion(
       expectedCursor: SmsCursor | null,
       options: SmsImportBatchOptions = {},
     ): Promise<SmsImportBatchResult> {
-      validateSmsImportBatchOptions(options);
-      const catchupCompletedAt = options.catchupCompletedAt;
+      const checkedOptions = snapshotSmsImportBatchOptions(options);
+      const catchupCompletedAt = checkedOptions.catchupCompletedAt;
+      const assertSourceAccess = checkedOptions.assertSourceAccess;
       validateBatch(batch, expectedCursor);
       const rows = batch.map(({ platformId, sender, body, receivedAt }) => ({ platformId, sender, body, receivedAt }));
       const checkedExpectedCursor = expectedCursor === null ? null : { ...expectedCursor };
@@ -843,138 +861,152 @@ export function createSmsIngestion(
       let result: SmsImportBatchResult | undefined;
       await runTransaction(async (transaction) => {
         const ledger = createLedger(transaction, migrations);
-        const state = await ledger.db.select().from(smsImportState).where(eq(smsImportState.id, 1)).get();
-        const cursor = currentCursor(state);
-        if ((cursor?.receivedAt ?? null) !== (checkedExpectedCursor?.receivedAt ?? null) ||
-            (cursor?.platformId ?? null) !== (checkedExpectedCursor?.platformId ?? null)) {
-          throw new Error('SMS import cursor is stale; reload the current cursor before retrying');
-        }
-
-        result = { cursor, inserted: 0, duplicate: 0, review: 0, ignored: 0 };
-        if (rows.length === 0) {
-          if (catchupCompletedAt !== undefined) await saveCatchupCompletion(ledger, catchupCompletedAt);
-          return;
-        }
-        if (!fingerprints) throw new Error('A platform fingerprint provider is required for SMS imports');
-        const fingerprinter = await fingerprints(await getFingerprintKeyPolicy(ledger));
-        if (!/^[a-f0-9]{64}$/.test(fingerprinter.keyId)) throw new TypeError('Invalid fingerprint key identifier');
-        if (state && state.keyId !== fingerprinter.keyId) throw new DuplicateReviewRequiredError();
-        if (await requiresDuplicateReview(ledger, fingerprinter.keyId)) throw new DuplicateReviewRequiredError();
-
-        for (const row of rows) {
-          const parsed = parseSms(row);
-          const prepared = await preparePastedSms(row, fingerprinter);
-          if (prepared.kind === 'ignored') {
-            const prior = await ledger.db.select({ platformId: smsImportRefs.platformId }).from(smsImportRefs)
-              .where(eq(smsImportRefs.platformId, row.platformId)).get();
-            if (prior) throw new Error('A previously imported SMS row changed; import stopped for review');
-            result.ignored += 1;
-            continue;
+        const saveCompletion = async () => {
+          if (catchupCompletedAt === undefined) return;
+          const completedAt = typeof catchupCompletedAt === 'function' ? catchupCompletedAt() : catchupCompletedAt;
+          if (!Number.isSafeInteger(completedAt) || completedAt <= 0) {
+            throw new TypeError('catchupCompletedAt must be a positive safe integer');
+          }
+          await saveCatchupCompletion(ledger, completedAt);
+        };
+        try {
+          await assertSourceAccess?.();
+          const state = await ledger.db.select().from(smsImportState).where(eq(smsImportState.id, 1)).get();
+          const cursor = currentCursor(state);
+          if ((cursor?.receivedAt ?? null) !== (checkedExpectedCursor?.receivedAt ?? null) ||
+              (cursor?.platformId ?? null) !== (checkedExpectedCursor?.platformId ?? null)) {
+            throw new StaleSmsCursorError();
           }
 
-          const senderHash = await fingerprinter.fingerprint(JSON.stringify(['sender', row.sender.trim().toUpperCase()]));
-          if (!/^[a-f0-9]{64}$/.test(senderHash)) throw new TypeError('Invalid keyed sender fingerprint');
-          const prior = await ledger.db.select().from(smsImportRefs)
-            .where(eq(smsImportRefs.platformId, row.platformId)).get();
-          if (prior) {
-            // Parser-derived identity can change; replay depends on the unchanged source.
-            if (prior.receivedAt !== row.receivedAt ||
-                prior.bodyHash !== prepared.identity.bodyHash || prior.senderHash !== senderHash ||
-                prior.keyId !== fingerprinter.keyId) {
-              throw new Error('A previously imported SMS row changed; import stopped for review');
-            }
-            result.duplicate += 1;
-            continue;
+          result = { cursor, inserted: 0, duplicate: 0, review: 0, ignored: 0 };
+          if (rows.length === 0) {
+            await saveCompletion();
+            return;
           }
+          if (!fingerprints) throw new Error('A platform fingerprint provider is required for SMS imports');
+          const fingerprinter = await fingerprints(await getFingerprintKeyPolicy(ledger));
+          if (!/^[a-f0-9]{64}$/.test(fingerprinter.keyId)) throw new TypeError('Invalid fingerprint key identifier');
+          if (state && state.keyId !== fingerprinter.keyId) throw new DuplicateReviewRequiredError();
+          if (await requiresDuplicateReview(ledger, fingerprinter.keyId)) throw new DuplicateReviewRequiredError();
 
-          const candidate = prepared.candidate;
-          const accountId = await resolveAccount(ledger, candidate);
-          const reason = getReviewReason(parsed, candidate, accountId, prepared.identity.dedupeKey);
-          const strongIdentity = prepared.identity.dedupeKey.startsWith('upi:');
-          if (strongIdentity) {
-            const matches = await ledger.db.select().from(transactions)
-              .where(eq(transactions.dedupeKey, prepared.identity.dedupeKey)).all();
-            if (matches.length > 0) {
-              const coherent = matches.length === 1 && candidate !== null && candidate.status === 'posted' &&
-                Number.isSafeInteger(candidate.amountPaise) && candidate.amountPaise > 0 &&
-                (matches[0]!.bodyHash === prepared.identity.bodyHash || matchingEvidence(matches[0]!, candidate, accountId));
-              if (coherent) {
-                await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'duplicate', null, matches[0]!.id);
-                result.duplicate += 1;
-              } else {
-                await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'review',
-                  matches.length > 1 ? 'ambiguous_evidence' : 'inconsistent_evidence', null);
-                result.review += 1;
-              }
+          for (const row of rows) {
+            const parsed = parseSms(row);
+            const prepared = await preparePastedSms(row, fingerprinter);
+            if (prepared.kind === 'ignored') {
+              const prior = await ledger.db.select({ platformId: smsImportRefs.platformId }).from(smsImportRefs)
+                .where(eq(smsImportRefs.platformId, row.platformId)).get();
+              if (prior) throw new Error('A previously imported SMS row changed; import stopped for review');
+              result.ignored += 1;
               continue;
             }
-          } else {
-            const weakMatch = await ledger.db.select({ id: transactions.id }).from(transactions)
-              .where(eq(transactions.dedupeKey, prepared.identity.dedupeKey)).limit(1).get();
-            if (weakMatch) {
-              await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'review', 'weak_overlap', null);
+
+            const senderHash = await fingerprinter.fingerprint(JSON.stringify(['sender', row.sender.trim().toUpperCase()]));
+            if (!/^[a-f0-9]{64}$/.test(senderHash)) throw new TypeError('Invalid keyed sender fingerprint');
+            const prior = await ledger.db.select().from(smsImportRefs)
+              .where(eq(smsImportRefs.platformId, row.platformId)).get();
+            if (prior) {
+              // Parser-derived identity can change; replay depends on the unchanged source.
+              if (prior.receivedAt !== row.receivedAt ||
+                  prior.bodyHash !== prepared.identity.bodyHash || prior.senderHash !== senderHash ||
+                  prior.keyId !== fingerprinter.keyId) {
+                throw new Error('A previously imported SMS row changed; import stopped for review');
+              }
+              result.duplicate += 1;
+              continue;
+            }
+
+            const candidate = prepared.candidate;
+            const accountId = await resolveAccount(ledger, candidate);
+            const reason = getReviewReason(parsed, candidate, accountId, prepared.identity.dedupeKey);
+            const strongIdentity = prepared.identity.dedupeKey.startsWith('upi:');
+            if (strongIdentity) {
+              const matches = await ledger.db.select().from(transactions)
+                .where(eq(transactions.dedupeKey, prepared.identity.dedupeKey)).all();
+              if (matches.length > 0) {
+                const coherent = matches.length === 1 && candidate !== null && candidate.status === 'posted' &&
+                  Number.isSafeInteger(candidate.amountPaise) && candidate.amountPaise > 0 &&
+                  (matches[0]!.bodyHash === prepared.identity.bodyHash || matchingEvidence(matches[0]!, candidate, accountId));
+                if (coherent) {
+                  await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'duplicate', null, matches[0]!.id);
+                  result.duplicate += 1;
+                } else {
+                  await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'review',
+                    matches.length > 1 ? 'ambiguous_evidence' : 'inconsistent_evidence', null);
+                  result.review += 1;
+                }
+                continue;
+              }
+            } else {
+              const weakMatch = await ledger.db.select({ id: transactions.id }).from(transactions)
+                .where(eq(transactions.dedupeKey, prepared.identity.dedupeKey)).limit(1).get();
+              if (weakMatch) {
+                await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'review', 'weak_overlap', null);
+                result.review += 1;
+                continue;
+              }
+            }
+
+            if (reason) {
+              await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'review', reason, null);
               result.review += 1;
               continue;
             }
+
+            if (!candidate || parsed.kind !== 'transaction') throw new Error('Verified SMS transaction data is incomplete');
+            const transactionId = `sms:${row.platformId}`;
+            const saved = await ledger.upsertImportedTransaction({
+              id: transactionId,
+              amountPaise: candidate.amountPaise,
+              direction: candidate.direction,
+              kind: candidate.kind,
+              status: 'posted',
+              accountId,
+              counterparty: candidate.counterparty,
+              merchantId: null,
+              categoryId: null,
+              occurredAt: new Date(candidate.occurredAt),
+              note: null,
+              source: 'sms',
+              smsRefId: `android-sms:${row.platformId}`,
+              upiRef: candidate.upiRef,
+              dedupeKey: prepared.identity.dedupeKey,
+              bodyHash: prepared.identity.bodyHash,
+              ruleId: parsed.ruleId,
+              ruleVersion: parsed.ruleVersion,
+              linkedTxnId: null,
+              excludeFromStats: false,
+            });
+            if (!saved) {
+              await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'review', 'inconsistent_evidence', null);
+              result.review += 1;
+              continue;
+            }
+            await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'saved', null, transactionId);
+            result.inserted += 1;
           }
 
-          if (reason) {
-            await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'review', reason, null);
-            result.review += 1;
-            continue;
+          const last = rows[rows.length - 1]!;
+          const nextCursor = { receivedAt: last.receivedAt, platformId: last.platformId };
+          if (state) {
+            await ledger.db.update(smsImportState).set({
+              cursorReceivedAt: nextCursor.receivedAt,
+              cursorPlatformId: nextCursor.platformId,
+              keyId: fingerprinter.keyId,
+            }).where(eq(smsImportState.id, 1)).run();
+          } else {
+            await ledger.db.insert(smsImportState).values({
+              id: 1,
+              cursorReceivedAt: nextCursor.receivedAt,
+              cursorPlatformId: nextCursor.platformId,
+              keyId: fingerprinter.keyId,
+            }).run();
           }
-
-          if (!candidate || parsed.kind !== 'transaction') throw new Error('Verified SMS transaction data is incomplete');
-          const transactionId = `sms:${row.platformId}`;
-          const saved = await ledger.upsertImportedTransaction({
-            id: transactionId,
-            amountPaise: candidate.amountPaise,
-            direction: candidate.direction,
-            kind: candidate.kind,
-            status: 'posted',
-            accountId,
-            counterparty: candidate.counterparty,
-            merchantId: null,
-            categoryId: null,
-            occurredAt: new Date(candidate.occurredAt),
-            note: null,
-            source: 'sms',
-            smsRefId: `android-sms:${row.platformId}`,
-            upiRef: candidate.upiRef,
-            dedupeKey: prepared.identity.dedupeKey,
-            bodyHash: prepared.identity.bodyHash,
-            ruleId: parsed.ruleId,
-            ruleVersion: parsed.ruleVersion,
-            linkedTxnId: null,
-            excludeFromStats: false,
-          });
-          if (!saved) {
-            await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'review', 'inconsistent_evidence', null);
-            result.review += 1;
-            continue;
-          }
-          await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'saved', null, transactionId);
-          result.inserted += 1;
+          result.cursor = nextCursor;
+          await saveCompletion();
+        } finally {
+          // A failed final check intentionally takes precedence over a writer error so revocation wins.
+          await assertSourceAccess?.();
         }
-
-        const last = rows[rows.length - 1]!;
-        const nextCursor = { receivedAt: last.receivedAt, platformId: last.platformId };
-        if (state) {
-          await ledger.db.update(smsImportState).set({
-            cursorReceivedAt: nextCursor.receivedAt,
-            cursorPlatformId: nextCursor.platformId,
-            keyId: fingerprinter.keyId,
-          }).where(eq(smsImportState.id, 1)).run();
-        } else {
-          await ledger.db.insert(smsImportState).values({
-            id: 1,
-            cursorReceivedAt: nextCursor.receivedAt,
-            cursorPlatformId: nextCursor.platformId,
-            keyId: fingerprinter.keyId,
-          }).run();
-        }
-        result.cursor = nextCursor;
-        if (catchupCompletedAt !== undefined) await saveCatchupCompletion(ledger, catchupCompletedAt);
       });
 
       if (!result) throw new Error('SMS import transaction completed without a result');

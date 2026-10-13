@@ -281,13 +281,20 @@ describe('Android SMS ingestion storage seam', () => {
       const api = createApi(fixture);
       await api.migrateLedger();
       const completedAt = 1_800_000_000_007;
-      const options = { catchupCompletedAt: completedAt };
+      let capturedChecks = 0;
+      let replacedChecks = 0;
+      let capturedClockCalls = 0;
+      const options = {
+        catchupCompletedAt: () => { capturedClockCalls += 1; return completedAt; },
+        assertSourceAccess: () => { capturedChecks += 1; },
+      };
       const row = smsRow('150');
       Object.defineProperty(row, 'body', {
         configurable: true,
         enumerable: true,
         get() {
-          options.catchupCompletedAt = 0;
+          options.catchupCompletedAt = () => { throw new Error('replacement clock called'); };
+          options.assertSourceAccess = () => { replacedChecks += 1; };
           return strongSms.body;
         },
       });
@@ -295,6 +302,37 @@ describe('Android SMS ingestion storage seam', () => {
       await api.importSmsBatch([row], null, options);
 
       assert.equal((await api.getSmsImportHealth()).lastSuccessfulCatchupAt, completedAt);
+      assert.equal(capturedClockCalls, 1);
+      assert.equal(capturedChecks, 2);
+      assert.equal(replacedChecks, 0);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('checks source access inside the writer transaction and rolls back when it is revoked', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      let checks = 0;
+      const revoked = new Error('source access revoked');
+      await assert.rejects(api.importSmsBatch([smsRow('151')], null, {
+        assertSourceAccess() {
+          checks += 1;
+          if (checks === 2) throw revoked;
+        },
+      }), (error: unknown) => error === revoked);
+
+      assert.equal(checks, 2);
+      assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 0);
+      assert.equal(await fixture.ledger.db.select().from(smsImportState).get(), undefined);
+      assert.equal(await fixture.ledger.db.select().from(importKeyState).get(), undefined);
+      assert.equal(await api.getSmsImportCursor(), null);
+      assert.equal((await api.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
+
+      await assert.rejects(api.importSmsBatch([], null, { assertSourceAccess: true } as never), /assertSourceAccess must be a function/);
+      const accessor: Record<string, unknown> = {};
+      Object.defineProperty(accessor, 'assertSourceAccess', { get: () => () => {} });
+      await assert.rejects(api.importSmsBatch([], null, accessor as never), /plain values/);
     } finally { fixture.sqlite.close(); }
   });
 

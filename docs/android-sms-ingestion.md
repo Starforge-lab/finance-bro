@@ -20,14 +20,17 @@ next bounded page. A stale cursor stops the batch; callers must reload it before
 retrying.
 
 Only the caller that has exhausted the source pages may pass
-`{ catchupCompletedAt }`, a positive safe-integer completion timestamp. This
-explicit checkpoint is committed in the same writer transaction as the final
-batch. An empty final page records the checkpoint without creating SMS cursor or
-key state; an ordinary empty batch remains a no-op. Passing the option on an
-intermediate page would falsely claim a completed catch-up, so source exhaustion
-remains the caller's responsibility. The timestamp is stored as a reserved,
-body-free preference value and does not change the theme preference or the
-protected-key creation policy.
+`{ catchupCompletedAt }`, either a positive safe-integer timestamp or a
+zero-argument function that returns one. The function is snapshotted with the
+options and invoked after row work inside the final writer transaction, so the
+checkpoint time reflects the final commit attempt. This explicit checkpoint is
+committed in the same writer transaction as the final batch. An empty final page
+records the checkpoint without creating SMS cursor or key state; an ordinary
+empty batch remains a no-op. Passing the option on an intermediate page would
+falsely claim a completed catch-up, so source exhaustion remains the caller's
+responsibility. The timestamp is stored as a reserved, body-free preference
+value and does not change the theme preference or the protected-key creation
+policy.
 
 `DataLayer.getSmsImportHealth()` is read-only. It returns the last successful
 catch-up time, the current pending-review count, and the non-posted-alert subset
@@ -36,10 +39,36 @@ create a fingerprint key. Catch-up failures and unavailable outcomes are not
 stored as history; callers can report the current operation result, but this API
 does not fabricate durable failed-operation or unavailable counts.
 
+`catchUpAndroidSms` is the framework-free foreground coordinator for part of
+#44. Its caller supplies the native reader, the shared data layer, an explicit
+date range, an `AbortSignal`, and a clock. The caller must obtain revocable user
+consent and complete a cancellable history preview before invoking it; neither
+the preview nor a permission-request flow is implemented or wired here. The
+coordinator never requests permission. It requires both SMS permissions before
+each query and after each read, and checks them again inside each writer
+transaction before work and before commit. It reads pages of at most 100 rows in
+adjacent inclusive windows no wider than 90 days, validates compound ordering
+and numeric Android IDs before writing a page, and checkpoints completion only
+after the final window is exhausted. Earlier committed pages remain resumable
+when a later page is cancelled or access is revoked. Results and coordinator
+errors contain no message body or sender. The current native query method has no
+cancellation parameter, so an in-flight platform query can finish before the
+coordinator observes cancellation and stops further work.
+Known saved-key unavailability and duplicate-review requirements are returned
+as distinct body-free catch-up error codes so a future caller can offer safe
+recovery without inspecting arbitrary storage errors.
+
+If the final access check fails, that revocation or cancellation error takes
+precedence over another error from the writer callback, and the active SQLite
+transaction rolls back. This does not make platform-protected key writes
+transactional: a protected key provider may have completed an external write
+before SQLite rolls back, so providers must tolerate that boundary.
+
 The Android connection enables and verifies foreign-key enforcement before
 `BEGIN IMMEDIATE`. All batch queries use that connection. References, accepted
-transactions, fingerprint key state and the final cursor commit together or roll
-back together. Other platforms keep the existing manual/paste API; SMS batch
+transactions, SQLite fingerprint key state and the final cursor commit together
+or roll back together. Protected key-store writes happen outside SQLite and can
+survive a transaction rollback. Other platforms keep the existing manual/paste API; SMS batch
 commit is unavailable there. Expo's exclusive transaction helper opens another
 connection and starts the transaction before its callback, so it cannot enable
 connection-local foreign keys inside the callback. The explicit connection also
@@ -131,9 +160,11 @@ are not a verified acceptance corpus. Generic parsing therefore stays in review.
   history. The missing-key creation guard is implemented and tested in
   source/platform mocks and an isolated real browser key-store probe; visible
   recovery actions and actual Android store/lifecycle proof remain incomplete.
-- #44 supplies opt-in permissions, cancellable history preview, bounded inbox
-  pages, catch-up and receiver integration. Permission changes must stop further
-  reads/writes safely; this storage API cannot establish source consent itself.
+- #44 still needs opt-in/preview UI, permission-request wiring, native-reader
+  integration, and receiver integration. The foreground coordinator handles
+  bounded catch-up only after its caller has established consent and preview;
+  source consent is not durable or established by this storage API. An in-flight
+  native query cannot be interrupted by the current reader method.
 - #16 and #56 retain their provider, lifecycle, device and release gates. Node
   SQLite tests and mocked native-runner tests do not establish Android behavior.
 

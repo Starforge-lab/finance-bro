@@ -64,6 +64,15 @@ export type { NewBudget, BudgetPatch, NewBill, BillPatch, BillStatus } from './p
 export type { TransactionFilters } from './queries';
 export { DuplicateReviewRequiredError } from '../imports/key-state';
 export { FingerprintKeyUnavailableError } from '../imports/fingerprint';
+export { AndroidSmsCatchupError, catchUpAndroidSms } from '../imports/android-sms-catchup';
+export type {
+  AndroidSmsCatchupErrorCode,
+  AndroidSmsCatchupOptions,
+  AndroidSmsCatchupResult,
+  AndroidSmsReader,
+  AndroidSmsReaderCursor,
+  AndroidSmsReaderMessage,
+} from '../imports/android-sms-catchup';
 export type {
   NewAccount,
   AccountPatch,
