@@ -430,14 +430,21 @@ describe('Android SMS foreground catch-up coordinator', () => {
       await assert.rejects(catchup(reader.reader, fixture.api), (error: unknown) =>
         error instanceof AndroidSmsCatchupError && error.code === 'source_unavailable' && !error.message.includes(body));
 
-      const invalidClockReader = fakeReader(() => ({ messages: [sms('40')], next: null }));
-      await assert.rejects(catchUpAndroidSms({
-        reader: invalidClockReader.reader, storage: fixture.api, startDateMs: start, endDateMs: start,
-        clock: () => Number.MAX_SAFE_INTEGER + 1,
-      }), (error: unknown) => error instanceof AndroidSmsCatchupError && error.code === 'invalid_clock');
-      assert.deepEqual(await fixture.api.getSmsImportCursor(), null);
-      assert.equal((await fixture.fixture.ledger.db.select().from(smsImportRefs).all()).length, 0);
-      assert.equal((await fixture.api.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
+      const invalidClocks = [
+        () => Number.MAX_SAFE_INTEGER + 1,
+        () => { throw new Error(body); },
+      ];
+      for (const clock of invalidClocks) {
+        const invalidClockReader = fakeReader(() => ({ messages: [sms('40')], next: null }));
+        await assert.rejects(catchUpAndroidSms({
+          reader: invalidClockReader.reader, storage: fixture.api, startDateMs: start, endDateMs: start,
+          clock,
+        }), (error: unknown) => error instanceof AndroidSmsCatchupError &&
+          error.code === 'invalid_clock' && !error.message.includes(body));
+        assert.deepEqual(await fixture.api.getSmsImportCursor(), null);
+        assert.equal((await fixture.fixture.ledger.db.select().from(smsImportRefs).all()).length, 0);
+        assert.equal((await fixture.api.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
+      }
     } finally { fixture.fixture.sqlite.close(); }
   });
 });
