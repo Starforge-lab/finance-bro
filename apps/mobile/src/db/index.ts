@@ -11,9 +11,14 @@ let openClient: SQLite.SQLiteDatabase | undefined;
 async function openLedger(): Promise<DataLayer> {
   const databaseName = 'finance-bro.db';
   const client = await SQLite.openDatabaseAsync(databaseName, { enableChangeListener: true });
-  const runSmsTransaction = Platform.OS === 'android' ? createSmsTransactionRunner(databaseName) : undefined;
-  const ledger = createDataLayer(client, ledgerMigrations, getFingerprinter, runSmsTransaction);
   try {
+    if (Platform.OS === 'android') {
+      await client.execAsync('PRAGMA busy_timeout = 5000');
+      const journalMode = await client.getFirstAsync<{ journal_mode: string }>('PRAGMA journal_mode = WAL');
+      if (journalMode?.journal_mode.toLowerCase() !== 'wal') throw new Error('Could not enable WAL for the ledger database');
+    }
+    const runSmsTransaction = Platform.OS === 'android' ? createSmsTransactionRunner(databaseName) : undefined;
+    const ledger = createDataLayer(client, ledgerMigrations, getFingerprinter, runSmsTransaction);
     await ledger.migrateLedger();
     openClient = client;
     return ledger;

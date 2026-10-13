@@ -53,7 +53,7 @@ it('initialises an isolated Android connection before BEGIN and commits only the
     assert.equal(client, test.transaction);
     test.calls.push('TASK');
   });
-  assert.deepEqual(test.calls, ['OPEN', 'PRAGMA foreign_keys = ON', 'VERIFY FOREIGN KEYS', 'BEGIN IMMEDIATE', 'TASK', 'COMMIT', 'CLOSE']);
+  assert.deepEqual(test.calls, ['OPEN', 'PRAGMA busy_timeout = 5000', 'PRAGMA foreign_keys = ON', 'VERIFY FOREIGN KEYS', 'BEGIN IMMEDIATE', 'TASK', 'COMMIT', 'CLOSE']);
 });
 
 it('fails before opening on other platforms and before starting with unenforced references', async () => {
@@ -62,7 +62,13 @@ it('fails before opening on other platforms and before starting with unenforced 
   assert.deepEqual(ios.calls, []);
   const disabled = fixture({ foreignKeys: 0 });
   await assert.rejects(disabled.run(async () => { assert.fail('Task must not run'); }), /enforce ledger references/);
-  assert.deepEqual(disabled.calls, ['OPEN', 'PRAGMA foreign_keys = ON', 'VERIFY FOREIGN KEYS', 'CLOSE']);
+  assert.deepEqual(disabled.calls, ['OPEN', 'PRAGMA busy_timeout = 5000', 'PRAGMA foreign_keys = ON', 'VERIFY FOREIGN KEYS', 'CLOSE']);
+});
+
+it('closes a connection if the busy timeout cannot be configured before BEGIN', async () => {
+  const test = fixture({ failStatement: 'PRAGMA busy_timeout = 5000' });
+  await assert.rejects(test.run(async () => { assert.fail('Task must not run'); }), (error) => error === test.failure);
+  assert.deepEqual(test.calls, ['OPEN', 'PRAGMA busy_timeout = 5000', 'CLOSE']);
 });
 
 it('rolls back task/commit failures, preserves the original error and always closes', async () => {
@@ -79,10 +85,10 @@ it('rolls back task/commit failures, preserves the original error and always clo
 it('closes a connection whose BEGIN fails without rolling back an unstarted transaction', async () => {
   const test = fixture({ failStatement: 'BEGIN IMMEDIATE' });
   await assert.rejects(test.run(async () => { assert.fail('Task must not run'); }), (error) => error === test.failure);
-  assert.deepEqual(test.calls, ['OPEN', 'PRAGMA foreign_keys = ON', 'VERIFY FOREIGN KEYS', 'BEGIN IMMEDIATE', 'CLOSE']);
+  assert.deepEqual(test.calls, ['OPEN', 'PRAGMA busy_timeout = 5000', 'PRAGMA foreign_keys = ON', 'VERIFY FOREIGN KEYS', 'BEGIN IMMEDIATE', 'CLOSE']);
 });
 
-it('enforces references and excludes concurrent writers on separate real SQLite connections', async () => {
+it('enforces references and lets the main connection read while an isolated WAL writer is pending', async () => {
   const { filename, directory } = temporaryFile();
   const primary = openTestLedger(filename);
   let release!: () => void;
@@ -91,9 +97,13 @@ it('enforces references and excludes concurrent writers on separate real SQLite 
   const ready = new Promise<void>((resolve) => { entered = resolve; });
   let pending: Promise<void> | undefined;
   try {
+    await primary.client.execAsync('PRAGMA busy_timeout = 5000');
+    const journalMode = await primary.client.getFirstAsync<{ journal_mode: string }>('PRAGMA journal_mode = WAL');
+    assert.equal(journalMode?.journal_mode, 'wal');
     await primary.ledger.migrateLedger();
     const createRunner = loadRunner(async (name, options) => {
       assert.equal(options.useNewConnection, true);
+      assert.equal(options.enableChangeListener, true);
       const connection = openTestLedger(name);
       return { ...connection.client, closeAsync: async () => { connection.sqlite.close(); } };
     });
@@ -103,11 +113,11 @@ it('enforces references and excludes concurrent writers on separate real SQLite 
     }), /FOREIGN KEY/);
     pending = run(async (client) => {
       await client.execAsync("INSERT INTO accounts(id,name,type) VALUES('first','Fictional account','bank')");
+      assert.equal((await client.getFirstAsync<{ timeout: number }>('PRAGMA busy_timeout'))?.timeout, 5000);
       entered();
       await pause;
     });
     await ready;
-    await assert.rejects(run(async () => { assert.fail('Concurrent task must not enter'); }), /locked/);
     assert.equal(primary.sqlite.prepare("SELECT count(*) AS count FROM accounts").get()?.count, 0);
     release();
     await pending;
