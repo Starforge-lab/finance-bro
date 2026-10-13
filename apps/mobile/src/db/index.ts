@@ -47,10 +47,14 @@ export type {
   SmsOriginalReader,
   SmsReviewPage,
   SmsReviewPageOptions,
+  SmsReviewConfirmationOptions,
+  SmsReviewConfirmationResult,
+  SmsReviewConfirmationUnavailableReason,
   SmsReviewPreparation,
   SmsReviewRow,
   SmsReviewUnavailableReason,
 } from '../imports/sms';
+export type { ReviewCorrections } from '../imports/paste';
 export { parseInrAmount, saveManualEntry, editManualAmount } from './manual';
 export type { ManualEntry } from './manual';
 export type { ThemePreference } from './preferences';

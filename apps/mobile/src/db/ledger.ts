@@ -77,6 +77,14 @@ export type ImportedTransaction = Omit<
 > & {
   source: Exclude<TransactionInsert['source'], 'manual'>;
 };
+export type ReviewedSmsTransaction = Omit<ImportedTransaction, 'source' | 'ruleId' | 'ruleVersion' | 'smsRefId' | 'dedupeKey' | 'bodyHash'> & {
+  source: 'sms';
+  smsRefId: string;
+  dedupeKey: string;
+  bodyHash: string;
+  ruleId: string | null;
+  ruleVersion: number | null;
+};
 export type TransactionPatch = Partial<
   Pick<
     TransactionInsert,
@@ -95,6 +103,13 @@ export type TransactionPatch = Partial<
     | 'excludeFromStats'
   >
 >;
+
+export class InvalidTransactionReferenceError extends RangeError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidTransactionReferenceError';
+  }
+}
 
 export function assertValidAmountPaise(amountPaise: number): void {
   if (!Number.isSafeInteger(amountPaise) || amountPaise <= 0) {
@@ -172,7 +187,11 @@ function assertValidProvenance(input: Record<string, unknown>): void {
 
 function assertValidTransactionValues(
   input: Record<string, unknown>,
-  { imported = false, statusOptional = false }: { imported?: boolean; statusOptional?: boolean } = {},
+  {
+    imported = false,
+    statusOptional = false,
+    allowUnruledReviewedSms = false,
+  }: { imported?: boolean; statusOptional?: boolean; allowUnruledReviewedSms?: boolean } = {},
 ): void {
   assertId(input.id);
   if (typeof input.amountPaise !== 'number') throw new TypeError('amountPaise must be a positive safe integer');
@@ -188,11 +207,26 @@ function assertValidTransactionValues(
     assertValidProvenance(input);
     assertText(input.dedupeKey, 'dedupeKey', { nonEmpty: true });
     assertText(input.bodyHash, 'bodyHash', { nonEmpty: true });
-    if ((input.source === 'sms' || input.source === 'ios_intent') && (input.ruleId == null || input.ruleVersion == null)) {
+    if ((input.source === 'sms' || input.source === 'ios_intent') &&
+        !(allowUnruledReviewedSms && input.source === 'sms') &&
+        (input.ruleId == null || input.ruleVersion == null)) {
       throw new TypeError(`${input.source} transactions require rule provenance`);
     }
     if (input.source === 'sms') assertText(input.smsRefId, 'smsRefId', { nonEmpty: true });
   }
+}
+
+function assertTransactionDirection(input: Record<string, unknown>): void {
+  if (input.kind === 'expense' && input.direction !== 'debit') throw new TypeError('Expense transactions must be debits');
+  if (input.kind === 'income' && input.direction !== 'credit') throw new TypeError('Income transactions must be credits');
+}
+
+/** Validate a human-reviewed SMS transaction before any asynchronous storage work. */
+export function assertValidReviewedSmsTransaction(input: ReviewedSmsTransaction): void {
+  assertRecord(input, 'transaction');
+  if (input.source !== 'sms') throw new TypeError('Reviewed SMS transactions must use the sms source');
+  assertValidTransactionValues(input, { imported: true, allowUnruledReviewedSms: true });
+  assertTransactionDirection(input);
 }
 
 function assertValidReviewedPaste(input: ReviewedPasteTransaction): void {
@@ -275,19 +309,18 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
 
   async function assertTransactionReferences(input: Record<string, unknown>): Promise<void> {
     if (typeof input.accountId === 'string' && !await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.id, input.accountId)).get()) {
-      throw new RangeError('accountId must refer to an existing account');
+      throw new InvalidTransactionReferenceError('accountId must refer to an existing account');
     }
     if (typeof input.categoryId === 'string' && !await db.select({ id: categories.id }).from(categories).where(eq(categories.id, input.categoryId)).get()) {
-      throw new RangeError('categoryId must refer to an existing category');
+      throw new InvalidTransactionReferenceError('categoryId must refer to an existing category');
     }
     if (typeof input.linkedTxnId === 'string' && !await db.select({ id: transactions.id }).from(transactions).where(eq(transactions.id, input.linkedTxnId)).get()) {
-      throw new RangeError('linkedTxnId must refer to an existing transaction');
+      throw new InvalidTransactionReferenceError('linkedTxnId must refer to an existing transaction');
     }
   }
 
   async function assertTransactionSemantics(input: Record<string, unknown>): Promise<void> {
-    if (input.kind === 'expense' && input.direction !== 'debit') throw new TypeError('Expense transactions must be debits');
-    if (input.kind === 'income' && input.direction !== 'credit') throw new TypeError('Income transactions must be credits');
+    assertTransactionDirection(input);
 
     const requiredCategoryKind = input.kind === 'expense' ||
       ((input.kind === 'refund' || input.kind === 'reversal') && input.direction === 'credit')
@@ -297,7 +330,7 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
       const category = await db.select({ kind: categories.kind }).from(categories)
         .where(eq(categories.id, input.categoryId)).get();
       if (category?.kind !== requiredCategoryKind) {
-        throw new RangeError(`${input.kind} transactions require a ${requiredCategoryKind} category`);
+        throw new InvalidTransactionReferenceError(`${input.kind} transactions require a ${requiredCategoryKind} category`);
       }
     }
   }
@@ -538,6 +571,38 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
           ),
         })
         .returning({ id: transactions.id }).all().then((rows) => rows.length > 0);
+    },
+    async insertReviewedSmsTransaction(input: ReviewedSmsTransaction): Promise<boolean> {
+      assertValidReviewedSmsTransaction(input);
+      await assertTransactionReferences(input);
+      await assertTransactionSemantics(input);
+      const createdAt = now();
+      return db.insert(transactions).values({
+        id: input.id,
+        amountPaise: input.amountPaise,
+        direction: input.direction,
+        kind: input.kind,
+        status: input.status,
+        accountId: input.accountId,
+        counterparty: input.counterparty,
+        merchantId: input.merchantId,
+        categoryId: input.categoryId,
+        occurredAt: input.occurredAt,
+        note: input.note,
+        source: 'sms',
+        smsRefId: input.smsRefId,
+        upiRef: input.upiRef,
+        dedupeKey: input.dedupeKey,
+        bodyHash: input.bodyHash,
+        ruleId: input.ruleId,
+        ruleVersion: input.ruleVersion,
+        linkedTxnId: input.linkedTxnId,
+        excludeFromStats: input.excludeFromStats,
+        createdAt,
+        updatedAt: createdAt,
+        deletedAt: null,
+        userEdited: true,
+      }).onConflictDoNothing().returning({ id: transactions.id }).all().then((rows) => rows.length > 0);
     },
     async insertReviewedPaste(input: ReviewedPasteTransaction): Promise<boolean> {
       assertValidReviewedPaste(input);

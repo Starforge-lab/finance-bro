@@ -52,12 +52,25 @@ they are not immutable source proof. The reference is rechecked after the async
 read so a concurrently resolved item cannot return ready. Preparation is read-only
 and returns no original text or sender label.
 
+`confirmSmsReview(platformId, expected, readOriginal, corrections, options)` is
+the transactional human-confirmation boundary. It copies and validates the
+reviewed values before awaiting, then rereads the exact inbox row and protected
+key state inside the Android writer transaction. It compares the fresh parser
+preparation with the selected snapshot, inserts the canonical `sms:<platformId>`
+transaction and resolves the reference together, or rolls both back. It never
+advances the batch cursor. Corrections and existing edited or deleted
+transactions are preserved; an unknown format may be saved only after the
+reviewer supplies all required transaction fields, and its rule ID/version stay
+paired as null. A weak-identity overlap stays pending unless the reviewer
+explicitly confirms a distinct payment. That choice cannot override a strong
+identity conflict. Failures return body-free reasons; cancellation propagates.
+
 Unavailable results distinguish a resolved reference, missing original, changed
-source, no-longer-financial parse, inaccessible key, unreadable source and database
-failure. Error text is not returned; cancellation propagates from the reader and
-key operations. The caller must obtain revocable source consent. This API is not
-yet connected to the native reader or a screen, and it does not confirm a save;
-confirmation must revalidate the source and key rather than trust an old preparation.
+source, no-longer-financial parse, inaccessible key, unreadable source, stale
+selection, ambiguous overlap, invalid corrected references and database failure. Error text is not returned;
+cancellation propagates from the reader and key operations. The caller must
+obtain revocable source consent. The confirmation API is not yet connected to
+the native reader or a screen.
 
 The data layer checks persisted state before requesting a protected key. Any
 import key state, SMS cursor state, review reference or imported transaction
