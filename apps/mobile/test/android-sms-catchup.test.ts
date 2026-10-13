@@ -11,10 +11,12 @@ import { FingerprintKeyUnavailableError, type FingerprintKeyProvider, type Finge
 import {
   AndroidSmsCatchupError,
   catchUpAndroidSms,
+  previewAndroidSms,
   type AndroidSmsReader,
   type AndroidSmsReaderCursor,
   type AndroidSmsReaderMessage,
 } from '../src/imports/android-sms-catchup';
+import { runEnabledAndroidSmsCatchup } from '../src/imports/android-sms-flow';
 import { ledgerMigrations, openTestLedger } from './helpers/ledger';
 
 const start = 1_800_000_000_000;
@@ -91,6 +93,72 @@ async function catchup(
 }
 
 describe('Android SMS foreground catch-up coordinator', () => {
+  it('counts a resumed preview in bounded windows and returns no inbox content', async () => {
+    const after = { dateMs: start, id: '100' };
+    const end = start + maxWindowMs + 1;
+    const reader = fakeReader((options, index) => {
+      if (index === 0) {
+        assert.deepEqual(options.after, after);
+        return { messages: [sms('101', start + 1)], next: null };
+      }
+      return { messages: [sms('102', start + maxWindowMs)], next: null };
+    });
+
+    const result = await previewAndroidSms({ reader: reader.reader, startDateMs: start, endDateMs: end, after });
+
+    assert.deepEqual(result, { count: 2 });
+    assert.equal(JSON.stringify(result).includes(body), false);
+    assert.deepEqual(reader.calls.map(({ startDateMs, endDateMs }) => [startDateMs, endDateMs]), [
+      [start, start + maxWindowMs - 1],
+      [start + maxWindowMs, end],
+    ]);
+  });
+
+  it('cancels the count preview after a read and stops counting after permission revocation', async () => {
+    const controller = new AbortController();
+    const cancelled = fakeReader(() => {
+      controller.abort(body);
+      return { messages: [], next: null };
+    });
+    await assert.rejects(previewAndroidSms({
+      reader: cancelled.reader, startDateMs: start, endDateMs: start, signal: controller.signal,
+    }), (error: unknown) => error instanceof Error && error.name === 'AbortError' && !error.message.includes(body));
+
+    const revoked = fakeReader(() => {
+      revoked.state.readSms = false;
+      revoked.state.granted = false;
+      return { messages: [sms('103')], next: null };
+    });
+    await assert.rejects(previewAndroidSms({ reader: revoked.reader, startDateMs: start, endDateMs: start }), (error: unknown) =>
+      error instanceof AndroidSmsCatchupError && error.code === 'permission_denied');
+    assert.equal(revoked.calls.length, 1);
+  });
+
+  it('stops a catch-up transaction when the saved import setting is disabled during a read', async () => {
+    const fixture = openApi();
+    let enabled = true;
+    let queries = 0;
+    try {
+      await fixture.api.migrateLedger();
+      const trackedStorage = storageSpy(fixture.api);
+      const reader = {
+        async getPermissionsAsync() { return permissions; },
+        async getImportSettingsAsync() { return { enabled, startDateMs: start }; },
+        async queryInboxAsync() {
+          queries += 1;
+          enabled = false;
+          return { messages: [sms('104')], next: null };
+        },
+      };
+
+      await assert.rejects(runEnabledAndroidSmsCatchup(reader, trackedStorage.storage, start, start), (error: unknown) =>
+        error instanceof AndroidSmsCatchupError && error.code === 'permission_denied');
+      assert.equal(queries, 1);
+      assert.equal(trackedStorage.writes, 0);
+      assert.equal(await fixture.api.getSmsImportCursor(), null);
+    } finally { fixture.fixture.sqlite.close(); }
+  });
+
   it('does not read the inbox or write when either permission is denied, and stops after post-read revocation', async () => {
     const fixture = openApi();
     try {

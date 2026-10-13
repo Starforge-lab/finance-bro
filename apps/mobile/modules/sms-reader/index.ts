@@ -35,9 +35,22 @@ export type SmsWakeMetadata = {
   lastMultipartCount: number;
 };
 
+export type SmsImportSettings = {
+  enabled: boolean;
+  startDateMs: number | null;
+};
+
+export type SmsImportSettingsUpdate = {
+  enabled: boolean;
+  startDateMs?: number;
+  previewEndDateMs?: number;
+};
+
 export type SmsReaderModule = {
   getPermissionsAsync(): Promise<SmsPermissionState>;
   requestPermissionsAsync(): Promise<SmsPermissionState>;
+  getImportSettingsAsync(): Promise<SmsImportSettings>;
+  setImportSettingsAsync(settings: SmsImportSettingsUpdate): Promise<SmsImportSettings>;
   queryInboxAsync(options: SmsInboxQuery): Promise<SmsInboxQueryResult>;
   readInboxMessageAsync(platformId: string): Promise<SmsInboxMessage | null>;
   getWakeMetadataAsync(): Promise<SmsWakeMetadata>;

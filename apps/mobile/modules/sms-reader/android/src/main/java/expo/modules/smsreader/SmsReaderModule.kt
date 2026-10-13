@@ -17,8 +17,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 private const val MAX_BATCH_SIZE = 100
-private const val MAX_RANGE_MS = 90L * 24 * 60 * 60 * 1000
-private const val MAX_SAFE_INTEGER = 9_007_199_254_740_991L
 private const val WAKE_PREFERENCES = "finance-bro.sms-reader.wake"
 private const val EVENT_COUNT = "eventCount"
 private const val LAST_RECEIVED_AT_MS = "lastReceivedAtMs"
@@ -49,6 +47,16 @@ class SmsReaderModule : Module() {
     AsyncFunction("requestPermissionsAsync") { promise: Promise ->
       val manager = appContext.permissions ?: throw Exceptions.PermissionsModuleNotFound()
       manager.askForPermissions(permissionResult(promise), *SMS_PERMISSIONS)
+    }
+
+    AsyncFunction("getImportSettingsAsync") Coroutine { ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      withContext(Dispatchers.IO) { readImportSettings(context.smsImportSettingsPreferences()).toMap() }
+    }
+
+    AsyncFunction("setImportSettingsAsync") Coroutine { options: Map<String, Any?> ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      withContext(Dispatchers.IO) { setImportSettings(context.smsImportSettingsPreferences(), options).toMap() }
     }
 
     AsyncFunction("queryInboxAsync") Coroutine { options: Map<String, Any?> ->

@@ -13,9 +13,11 @@ private const val LAST_PART_COUNT = "lastPartCount"
 class SmsWakeReceiver : BroadcastReceiver() {
   override fun onReceive(context: Context, intent: Intent) {
     if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
+    val settings = readImportSettings(context.smsImportSettingsPreferences())
+    val partCount = readPartCountIfImportEnabled(settings.enabled) {
+      Telephony.Sms.Intents.getMessagesFromIntent(intent)?.size ?: 0
+    } ?: return
 
-    val partCount = runCatching { Telephony.Sms.Intents.getMessagesFromIntent(intent)?.size ?: 0 }
-      .getOrDefault(0)
     if (partCount == 0) return
 
     val preferences = context.getSharedPreferences(WAKE_PREFERENCES, Context.MODE_PRIVATE)
@@ -26,4 +28,9 @@ class SmsWakeReceiver : BroadcastReceiver() {
       .putInt(LAST_PART_COUNT, partCount)
       .apply()
   }
+}
+
+internal fun readPartCountIfImportEnabled(enabled: Boolean, readPartCount: () -> Int): Int? {
+  if (!enabled) return null
+  return runCatching(readPartCount).getOrDefault(0)
 }

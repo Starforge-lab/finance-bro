@@ -28,6 +28,14 @@ export type AndroidSmsCatchupOptions = {
   clock: () => number;
 };
 
+export type AndroidSmsPreviewOptions = {
+  reader: AndroidSmsReader;
+  startDateMs: number;
+  endDateMs: number;
+  after?: AndroidSmsReaderCursor;
+  signal?: AbortSignal;
+};
+
 export type AndroidSmsCatchupResult = Pick<SmsImportBatchResult, 'inserted' | 'duplicate' | 'review' | 'ignored'> & {
   completedAt: number;
 };
@@ -194,6 +202,86 @@ function readReaderCursor(value: unknown): ReaderCursor {
   }
   assertPlatformId(cursor.id);
   return { dateMs: cursor.dateMs as number, id: cursor.id };
+}
+
+/** Count the consented history without returning or storing message content. */
+export async function previewAndroidSms(value: AndroidSmsPreviewOptions): Promise<{ count: number }> {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new TypeError('Android SMS preview options must be a plain object');
+  }
+  const keys = Reflect.ownKeys(value);
+  const allowed = ['reader', 'startDateMs', 'endDateMs', 'after', 'signal'];
+  if (keys.some((key) => typeof key !== 'string' || !allowed.includes(key)) ||
+      !['reader', 'startDateMs', 'endDateMs'].every((key) => keys.includes(key))) {
+    throw new TypeError('Android SMS preview options have an invalid shape');
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !('value' in descriptor)) throw new TypeError('Android SMS preview options must contain plain values');
+  }
+  const { reader, startDateMs, endDateMs, signal } = value;
+  const after = value.after === undefined ? undefined : readReaderCursor(value.after);
+  if (!reader || typeof reader.getPermissionsAsync !== 'function' || typeof reader.queryInboxAsync !== 'function') {
+    throw new TypeError('Android SMS preview reader is invalid');
+  }
+  if (!Number.isSafeInteger(startDateMs) || startDateMs <= 0 ||
+      !Number.isSafeInteger(endDateMs) || endDateMs < startDateMs || (after && after.dateMs < startDateMs) ||
+      (after && after.dateMs > endDateMs)) {
+    throw new RangeError('Android SMS preview dates must be positive safe integers in ascending order');
+  }
+  if (signal !== undefined && (!signal || typeof signal.aborted !== 'boolean')) {
+    throw new TypeError('Android SMS preview signal is invalid');
+  }
+
+  const checkAccess = async () => {
+    throwIfAborted(signal);
+    let permissions: { readSms: boolean; receiveSms: boolean; granted: boolean };
+    try { permissions = await reader.getPermissionsAsync(); }
+    catch {
+      throwIfAborted(signal);
+      throw new AndroidSmsCatchupError('permission_unavailable');
+    }
+    throwIfAborted(signal);
+    if (!permissions || permissions.granted !== true || permissions.readSms !== true || permissions.receiveSms !== true) {
+      throw new AndroidSmsCatchupError('permission_denied');
+    }
+  };
+
+  await checkAccess();
+  let windowStart = after?.dateMs ?? startDateMs;
+  let count = 0;
+  while (true) {
+    throwIfAborted(signal);
+    const windowEnd = endDateMs - windowStart >= maxWindowMs ? windowStart + maxWindowMs - 1 : endDateMs;
+    let pageAfter = windowStart === (after?.dateMs ?? startDateMs) ? after : undefined;
+    while (true) {
+      await checkAccess();
+      let rawPage: unknown;
+      try {
+        rawPage = await reader.queryInboxAsync({
+          startDateMs: windowStart,
+          endDateMs: windowEnd,
+          ...(pageAfter ? { after: pageAfter } : {}),
+          limit: batchSize,
+        });
+      } catch {
+        throwIfAborted(signal);
+        throw new AndroidSmsCatchupError('source_unavailable');
+      }
+      throwIfAborted(signal);
+      const page = sourcePage(rawPage, windowStart, windowEnd, pageAfter ?? after ?? null);
+      rawPage = undefined;
+      await checkAccess();
+      count += page.messages.length;
+      if (!Number.isSafeInteger(count)) throw new AndroidSmsCatchupError('invalid_source_page');
+      if (page.next === null) {
+        if (windowEnd === endDateMs) return { count };
+        break;
+      }
+      pageAfter = page.next;
+    }
+    windowStart = windowEnd + 1;
+  }
 }
 
 export async function catchUpAndroidSms(value: AndroidSmsCatchupOptions): Promise<AndroidSmsCatchupResult> {

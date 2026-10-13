@@ -36,7 +36,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   android: {
     package: IS_SMS_PROBE ? `${BASE_ID}.smsqa.dev` : IS_DEV ? `${BASE_ID}.dev` : BASE_ID,
-    blockedPermissions: IS_SMS_PROBE ? [] : ['android.permission.READ_SMS', 'android.permission.RECEIVE_SMS'],
     adaptiveIcon: {
       backgroundColor: '#E6F4FE',
       foregroundImage: './assets/images/android-icon-foreground.png',
@@ -47,7 +46,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   web: { bundler: 'metro', output: 'single' },
   plugins: [
-    ['./modules/sms-reader/app.plugin.js', { enabled: IS_SMS_PROBE }],
+    ['./modules/sms-reader/app.plugin.js', { enabled: true }],
     ...(IS_SOURCE_CHECK ? ['./plugins/withUnsignedAndroidRelease.cjs'] : []),
     ['expo-router', {
       headers: {

@@ -17,6 +17,9 @@ import { useTheme } from '@/hooks/use-theme';
 import { indiaDate } from '@/utils/display';
 import { saveCsv } from '@/exports/save-csv';
 import { ExportCleanupError } from '@/exports/save-csv-write';
+import { SmsImportPanel } from './sms-import-panel';
+import type { AndroidSmsReviewSelection } from '@/imports/android-sms-flow';
+import { PasteForm } from '@/screens/home/paste-form';
 
 type Account = Awaited<ReturnType<DataLayer['listAccounts']>>[number];
 type Category = Awaited<ReturnType<DataLayer['listCategories']>>[number];
@@ -44,6 +47,9 @@ export default function SettingsScreen() {
   const dark = theme.background === Colors.dark.background;
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [ledgerForSms, setLedgerForSms] = useState<DataLayer | null>(null);
+  const [smsReviewSession, setSmsReviewSession] = useState<{ ledger: DataLayer; review: AndroidSmsReviewSelection } | null>(null);
+  const [smsPasteOpen, setSmsPasteOpen] = useState(false);
   const [entryCount, setEntryCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -70,6 +76,7 @@ export default function SettingsScreen() {
         ledger.listTransactions(),
       ]);
       if (!isCurrent()) return;
+      setLedgerForSms(ledger);
       setAccounts(nextAccounts);
       setCategories(nextCategories);
       setEntryCount(entries.length);
@@ -261,7 +268,14 @@ export default function SettingsScreen() {
 
   return (
     <ThemedView style={styles.fill}>
-      <SafeAreaView edges={['top']} style={styles.fill}>
+      {smsReviewSession || (smsPasteOpen && ledgerForSms) ? (
+        <PasteForm
+          ledger={smsReviewSession?.ledger ?? ledgerForSms!}
+          {...(smsReviewSession ? { smsReview: smsReviewSession.review } : {})}
+          onSaved={() => { setSmsReviewSession(null); setSmsPasteOpen(false); }}
+          onCancel={() => { setSmsReviewSession(null); setSmsPasteOpen(false); }}
+        />
+      ) : <SafeAreaView edges={['top']} style={styles.fill}>
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
           <ThemedText style={Type.screenTitle}>Settings</ThemedText>
 
@@ -422,6 +436,14 @@ export default function SettingsScreen() {
             </SettingsGroup>
           </View>
 
+          {Platform.OS === 'android' && ledgerForSms ? <View style={styles.section}>
+            <SmsImportPanel
+              ledger={ledgerForSms}
+              onReview={(review) => setSmsReviewSession({ ledger: ledgerForSms, review })}
+              onPaste={() => setSmsPasteOpen(true)}
+            />
+          </View> : null}
+
           <View style={styles.section}>
             <SectionHeading title="Your data" theme={theme} />
             <SettingsGroup theme={theme}>
@@ -466,7 +488,7 @@ export default function SettingsScreen() {
             </SettingsGroup>
           </View> : null}
         </ScrollView>
-      </SafeAreaView>
+      </SafeAreaView>}
     </ThemedView>
   );
 }
