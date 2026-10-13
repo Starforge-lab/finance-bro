@@ -6,16 +6,17 @@ import { SpaceMono_700Bold } from '@expo-google-fonts/space-mono/700Bold';
 import { useFonts } from 'expo-font';
 import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { useColorScheme } from 'react-native';
 
 import AppTabs from '@/components/app-tabs';
+import { getLedger, type ThemePreference } from '@/db';
+import { AppearanceProvider, useColorScheme } from '@/hooks/appearance';
 
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
-  const scheme = useColorScheme();
+  const [theme, setTheme] = useState<ThemePreference | null>(null);
   const [loaded, error] = useFonts({
     BricolageGrotesque_400Regular,
     BricolageGrotesque_600SemiBold,
@@ -24,13 +25,29 @@ export default function RootLayout() {
     SpaceMono_700Bold,
   });
 
-  // A font that fails to load falls back to the system face; don't hold the splash for it.
+  // The saved theme is read before the splash lifts so the first frame is already in the right scheme.
+  // If the ledger can't open, follow the system; the screens report the storage error themselves.
   useEffect(() => {
-    if (loaded || error) SplashScreen.hideAsync();
-  }, [loaded, error]);
+    getLedger().then((ledger) => ledger.getThemePreference()).catch((): ThemePreference => 'system').then(setTheme);
+  }, []);
 
-  if (!loaded && !error) return null;
+  // A font that fails to load falls back to the system face; don't hold the splash for it.
+  const ready = (loaded || Boolean(error)) && theme !== null;
+  useEffect(() => {
+    if (ready) SplashScreen.hideAsync();
+  }, [ready]);
 
+  if (!ready) return null;
+
+  return (
+    <AppearanceProvider initial={theme}>
+      <Shell />
+    </AppearanceProvider>
+  );
+}
+
+function Shell() {
+  const scheme = useColorScheme();
   return (
     <ThemeProvider value={scheme === 'dark' ? DarkTheme : DefaultTheme}>
       <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />

@@ -4,6 +4,14 @@ Work for [#43](https://github.com/Starforge-lab/finance-bro/issues/43), part of
 the Android-SMS-only [2.0 scope](v2-roadmap.md). This is the storage boundary,
 not a permission flow, inbox reader, background receiver or completed import feature.
 
+SMS storage is now migration `0007`, following dev's category and preference
+migrations. The seeded dev schema version 7 upgrades to version 8 without losing
+existing ledger or preference data. Earlier unmerged SMS draft revisions used
+the same migration numbers as dev for different tables; those prototype databases
+are not an upgrade source for this revision. A conflicting prototype schema fails
+migration transactionally rather than resetting its records. Use a fresh isolated
+fictional ledger for prototype checks; no prototype conversion is implemented.
+
 `DataLayer.importSmsBatch(rows, expectedCursor)` accepts at most 100 already-read
 Android inbox rows, ordered by received timestamp and numeric platform row ID.
 IDs stay canonical decimal strings through the Android signed-64-bit range.

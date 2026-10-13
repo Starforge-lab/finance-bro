@@ -6,7 +6,8 @@ import { createLedgerQueries } from '../src/db/queries';
 import { createLedgerCsvExporter } from '../src/exports/csv';
 import type { NewTransaction } from '../src/db/ledger';
 import { accounts, categories } from '../src/db/schema';
-import { openTestLedger } from './helpers/ledger';
+import { createDataLayer } from '../src/db/service';
+import { ledgerMigrations, openTestLedger } from './helpers/ledger';
 
 function transaction(id: string, occurredAt: string, overrides: Partial<NewTransaction> = {}): NewTransaction {
   return {
@@ -133,4 +134,27 @@ describe('ledger queries', () => {
       sqlite.close();
     }
   });
+});
+
+it('lists only months that hold entries, newest first, with their spending', async () => {
+  const fixture = openTestLedger();
+  const ledger = createDataLayer(fixture.client, ledgerMigrations);
+  try {
+    await ledger.migrateLedger();
+    const add = (id: string, at: string, amountPaise: number, extra: Record<string, unknown> = {}) => ledger.createTransaction({
+      id, amountPaise, direction: 'debit', kind: 'expense', status: 'posted', source: 'manual', occurredAt: new Date(at), ...extra,
+    } as never);
+    await add('jul', '2026-07-10T10:00:00Z', 5_000);
+    // 31 Aug 20:00 UTC is 1 Sep in India.
+    await add('late', '2026-08-31T20:00:00Z', 1_000);
+    await add('sep', '2026-09-05T10:00:00Z', 2_000);
+    await add('sep-failed', '2026-09-06T10:00:00Z', 9_999, { status: 'failed' });
+    await add('sep-refund', '2026-09-07T10:00:00Z', 500, { direction: 'credit', kind: 'refund' });
+    await add('gone', '2026-06-01T10:00:00Z', 700);
+    await ledger.softDeleteTransaction('gone');
+    assert.deepEqual(await ledger.listEntryMonths(), [
+      { month: '2026-09', expensePaise: 2_500, entryCount: 4 },
+      { month: '2026-07', expensePaise: 5_000, entryCount: 1 },
+    ]);
+  } finally { fixture.sqlite.close(); }
 });

@@ -40,15 +40,22 @@
     {
       "idx": 5,
       "version": "6",
-      "when": 1791816924064,
-      "tag": "0005_stale_klaw",
+      "when": 1791469347158,
+      "tag": "0005_category_fixed",
       "breakpoints": true
     },
     {
       "idx": 6,
       "version": "6",
-      "when": 1791817547280,
-      "tag": "0006_lumpy_micromax",
+      "when": 1791471936080,
+      "tag": "0006_preferences",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1791891657524,
+      "tag": "0007_certain_thunderbolt_ross",
       "breakpoints": true
     }
   ]

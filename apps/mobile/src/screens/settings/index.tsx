@@ -1,15 +1,18 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
 import * as Crypto from 'expo-crypto';
 
-import { LedgerButton } from '@/components/ledger-controls';
+import { Icon, accountIcon, categoryIcon } from '@/components/icon';
+import { LedgerButton, Segmented } from '@/components/ledger-controls';
+import { Bone, SkeletonGroup } from '@/components/skeleton';
+import { useThemePreference } from '@/hooks/appearance';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors, Fonts, Radius, Shadow, Spacing, Stroke, Type } from '@/constants/theme';
 import { accountTypes, categoryKinds } from '@/db/schema';
-import { getLedger, type DataLayer, type NewAccount, type NewCategory } from '@/db';
+import { getLedger, getLedgerClient, type DataLayer, type NewAccount, type NewCategory } from '@/db';
+import { useLedgerVersion } from '@/hooks/use-ledger-version';
 import { useTheme } from '@/hooks/use-theme';
 import { indiaDate } from '@/utils/display';
 import { saveCsv } from '@/exports/save-csv';
@@ -20,7 +23,7 @@ type Category = Awaited<ReturnType<DataLayer['listCategories']>>[number];
 type AccountKind = typeof accountTypes[number];
 type CategoryKind = typeof categoryKinds[number];
 type AccountFields = Pick<NewAccount, 'name' | 'type'> & { institution?: string | null; last4?: string | null };
-type CategoryFields = Pick<NewCategory, 'name' | 'kind'>;
+type CategoryFields = Pick<NewCategory, 'name' | 'kind' | 'isFixed'>;
 type Theme = ReturnType<typeof useTheme>;
 
 const accountLabels: Record<AccountKind, string> = {
@@ -32,9 +35,12 @@ const accountLabels: Record<AccountKind, string> = {
 };
 
 const categoryLabels: Record<CategoryKind, string> = { expense: 'Expense', income: 'Income' };
+const costTypes = ['flexible', 'fixed'] as const;
+const costLabels: Record<typeof costTypes[number], string> = { flexible: 'Changes month to month', fixed: 'Fixed each month' };
 
 export default function SettingsScreen() {
   const theme = useTheme();
+  const { preference: themePreference, setPreference: setThemePreference } = useThemePreference();
   const dark = theme.background === Colors.dark.background;
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -52,6 +58,7 @@ export default function SettingsScreen() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [confirmRemoveDemo, setConfirmRemoveDemo] = useState(false);
   const operationGuard = useRef(false);
 
   const refresh = useCallback(async (isCurrent: () => boolean = () => true) => {
@@ -74,12 +81,14 @@ export default function SettingsScreen() {
     }
   }, []);
 
-  useFocusEffect(useCallback(() => {
-    let focused = true;
-    setLoading(true);
-    void refresh(() => focused);
-    return () => { focused = false; };
-  }, [refresh]));
+  const version = useLedgerVersion();
+  useEffect(() => {
+    let current = true;
+    // refresh only sets state after its awaited reads.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void refresh(() => current);
+    return () => { current = false; };
+  }, [refresh, version]);
 
   const saveAccount = useCallback(async (fields: AccountFields, id?: string, createId?: string): Promise<string | null> => {
     if (operationGuard.current) return 'Another settings action is finishing. Try again in a moment.';
@@ -212,6 +221,38 @@ export default function SettingsScreen() {
     }
   }, []);
 
+  const demoAction = useCallback(async (action: 'load' | 'remove') => {
+    // Development builds only: the folded-away branch keeps the fixture out of release bundles.
+    if (__DEV__) {
+      if (operationGuard.current) return;
+      operationGuard.current = true;
+      setPending(`demo:${action}`);
+      setNotice(null);
+      try {
+        const { seedDemoLedger, removeDemoLedger, LedgerNotEmptyError } = await import('@/dev/seed-demo');
+        const [ledger, client] = await Promise.all([getLedger(), getLedgerClient()]);
+        if (action === 'load') {
+          try {
+            const loaded = await seedDemoLedger(client, ledger, new Date());
+            setNotice({ text: loaded ? 'Test data loaded: three months for a fresher in Noida.' : 'Test data is already loaded.' });
+          } catch (error) {
+            setNotice({ text: error instanceof LedgerNotEmptyError ? error.message : 'Could not load test data. Nothing was added.', error: true });
+          }
+        } else {
+          const removed = await removeDemoLedger(client);
+          setConfirmRemoveDemo(false);
+          setNotice({ text: removed ? `Removed ${removed} test records. Your own entries were kept.` : 'There was no test data to remove.' });
+        }
+        await refresh();
+      } catch {
+        setNotice({ text: 'Could not change test data. Your ledger is unchanged.', error: true });
+      } finally {
+        setPending(null);
+        operationGuard.current = false;
+      }
+    }
+  }, [refresh]);
+
   const activeAccounts = accounts.filter((account) => !account.archived);
   const archivedAccounts = accounts.filter((account) => account.archived);
   const expenses = categories.filter((category) => category.kind === 'expense');
@@ -230,7 +271,7 @@ export default function SettingsScreen() {
           }]}>
             <ThemedText style={[styles.heroTitle, { color: theme.heroText }]}>Your money stays here.</ThemedText>
             <ThemedText style={[Type.body, { color: theme.heroTextSecondary }]}>
-              Stored on this device; pasted message text is never saved.
+              On this device only. Message text is never saved.
             </ThemedText>
             <View style={[styles.stats, { borderColor: theme.heroRule }]}>
               <Stat label="Entries" value={entryCount === null ? '—' : String(entryCount)} theme={theme} />
@@ -239,7 +280,6 @@ export default function SettingsScreen() {
             </View>
           </View>
 
-          {loading ? <View accessibilityRole="progressbar" accessibilityLabel="Loading settings" style={[styles.loadLine, { backgroundColor: theme.backgroundSelected }]}><ActivityIndicator color={theme.textSecondary} /></View> : null}
           {loadError ? <View style={styles.messageLine}>
             <ThemedText accessibilityRole="alert" style={[Type.note, { color: theme.over }]}>Settings couldn’t load. Your saved data is still on this device.</ThemedText>
             <LedgerButton label="Retry" onPress={() => { setLoading(true); void refresh(); }} />
@@ -247,17 +287,15 @@ export default function SettingsScreen() {
           {notice ? <ThemedText accessibilityRole="alert" style={[Type.note, styles.message, { color: notice.error ? theme.over : theme.text }]}>{notice.text}</ThemedText> : null}
 
           <View style={styles.section}>
-            <SectionHeading title="Sources" theme={theme} />
-            <SettingsGroup theme={theme}>
-              <StaticRow title="Add manually" detail="Add an expense or income." theme={theme} />
-              <StaticRow last title="Paste a message" detail="Check details before saving." theme={theme} />
-            </SettingsGroup>
+            <SectionHeading title="Appearance" theme={theme} />
+            <Segmented label="Theme" value={themePreference} onChange={(value) => { setNotice(null); void setThemePreference(value).catch(() => setNotice({ text: 'Theme changed for now but couldn’t be saved. It may reset next time.', error: true })); }}
+              options={[{ value: 'system', label: 'Auto', icon: 'system' }, { value: 'light', label: 'Light', icon: 'light' }, { value: 'dark', label: 'Dark', icon: 'dark' }]} />
           </View>
 
           <View style={styles.section}>
             <SectionHeading title="Accounts" theme={theme} />
             <SettingsGroup theme={theme}>
-              {loading && accounts.length === 0 ? <LoadingRow theme={theme} /> : null}
+              {loading && accounts.length === 0 ? <LoadingRow /> : null}
               {!loading && activeAccounts.length === 0 ? <StaticRow title="No accounts added." theme={theme} /> : null}
               {activeAccounts.map((account, index) => (
                 <AccountRow
@@ -332,7 +370,7 @@ export default function SettingsScreen() {
                 last={!categoriesOpen}
               />
               {categoriesOpen ? <View style={styles.categoryContents}>
-                {loading ? <LoadingRow theme={theme} /> : null}
+                {loading ? <LoadingRow /> : null}
                 {!loading && categories.length === 0 ? <ThemedText style={[Type.note, styles.emptyCopy]}>No categories yet.</ThemedText> : null}
                 {expenses.length > 0 ? <ThemedText style={[Type.label, styles.kindHeading]}>Expenses</ThemedText> : null}
                 {expenses.map((category, index) => (
@@ -399,14 +437,34 @@ export default function SettingsScreen() {
               >
                 <View style={styles.rowCopy}>
                   <ThemedText style={Type.rowTitle}>Export to CSV</ThemedText>
-                  <ThemedText style={Type.note}>{Platform.OS === 'ios' ? 'Not available on iOS yet' : `${entryCount ?? '—'} entries`}</ThemedText>
+                  <ThemedText style={[Type.label, { color: theme.textSecondary }]}>{Platform.OS === 'ios' ? 'Not available on iOS yet' : `${entryCount ?? '—'} entries · unencrypted file`}</ThemedText>
                 </View>
                 {pending === 'export' ? <ActivityIndicator color={theme.textSecondary} /> : null}
               </Pressable>
               {exportError ? <ThemedText accessibilityRole="alert" style={[Type.note, styles.exportError, { color: theme.over }]}>{exportError}</ThemedText> : null}
             </SettingsGroup>
-            <ThemedText style={[Type.note, styles.exportNote]}>Local file · not encrypted.</ThemedText>
           </View>
+
+          {__DEV__ ? <View style={styles.section}>
+            <SectionHeading title="Test data" detail="Development builds only" theme={theme} />
+            <SettingsGroup theme={theme}>
+              <View style={styles.inlinePanel}>
+                <ThemedText style={Type.note}>
+                  Three months of fictional entries, budgets and bills for a fresher in Noida. Loads only into an empty ledger.
+                </ThemedText>
+              </View>
+              {confirmRemoveDemo ? <View style={styles.inlinePanel}>
+                <ThemedText style={Type.note}>Remove every test record? Entries you added yourself stay.</ThemedText>
+                <View style={styles.demoActions}>
+                  <LedgerButton label={pending === 'demo:remove' ? 'Removing…' : 'Remove'} disabled={busy} onPress={() => void demoAction('remove')} />
+                  <LedgerButton label="Keep" disabled={busy} onPress={() => setConfirmRemoveDemo(false)} />
+                </View>
+              </View> : <View style={styles.rowActions}>
+                <LedgerButton label={pending === 'demo:load' ? 'Loading…' : 'Load test data'} primary disabled={busy || loading} onPress={() => void demoAction('load')} />
+                <LedgerButton label="Remove test data" disabled={busy || loading} onPress={() => setConfirmRemoveDemo(true)} />
+              </View>}
+            </SettingsGroup>
+          </View> : null}
         </ScrollView>
       </SafeAreaView>
     </ThemedView>
@@ -448,10 +506,10 @@ function StaticRow({ title, detail, theme, last = false }: { title: string; deta
   </View>;
 }
 
-function LoadingRow({ theme }: { theme: Theme }) {
-  return <View accessibilityLiveRegion="polite" style={[styles.loadingRow, { backgroundColor: theme.backgroundSelected }]}>
-    <ThemedText style={Type.note}>Loading saved settings…</ThemedText>
-  </View>;
+function LoadingRow() {
+  return <SkeletonGroup label="Loading saved settings" style={styles.loadingRow}>
+    <Bone width="45%" height={16} /><Bone width="30%" height={12} />
+  </SkeletonGroup>;
 }
 
 function DisclosureRow({ title, detail, expanded, theme, onPress, last = false }: {
@@ -465,7 +523,8 @@ function DisclosureRow({ title, detail, expanded, theme, onPress, last = false }
     style={({ pressed }) => [styles.disclosureRow, !last && { borderBottomColor: theme.rule, borderBottomWidth: StyleSheet.hairlineWidth }, { opacity: pressed ? 0.72 : 1 }]}
   >
     <ThemedText style={[Type.rowTitle, styles.disclosureTitle]}>{title}</ThemedText>
-    <ThemedText style={[Type.note, { color: theme.textSecondary }]}>{expanded ? 'Hide' : detail}</ThemedText>
+    <ThemedText style={[Type.amountSmall, { color: theme.textSecondary }]}>{detail}</ThemedText>
+    <Icon name={expanded ? 'expand' : 'next'} size={20} color={theme.textSecondary} />
   </Pressable>;
 }
 
@@ -488,14 +547,15 @@ function AccountRow({ account, theme, archived = false, expanded, editing, confi
       onPress={onToggle}
       style={({ pressed }) => [styles.dataRow, !last && { borderBottomColor: theme.rule, borderBottomWidth: StyleSheet.hairlineWidth }, { opacity: pressed ? 0.72 : 1 }]}
     >
+      <View style={[styles.rowGlyph, { borderColor: theme.border }]}><Icon name={accountIcon(account.type)} size={18} color={theme.text} /></View>
       <View style={styles.rowCopy}>
         <ThemedText style={Type.rowTitle}>{account.name}</ThemedText>
         <ThemedText style={[Type.note, { color: theme.textSecondary }]}>{archived ? `${info} · Archived` : info}</ThemedText>
       </View>
-      <ThemedText style={[Type.label, { color: theme.textSecondary }]}>{expanded ? 'Actions' : 'Manage'}</ThemedText>
+      <Icon name={expanded ? 'expand' : 'next'} size={20} color={theme.textSecondary} />
     </Pressable>
     {expanded && !editing && !confirmingArchive ? <View style={styles.rowActions}>
-      <LedgerButton label="Edit account" disabled={disabled} onPress={onEdit} />
+      <LedgerButton label="Edit" icon="edit" disabled={disabled} onPress={onEdit} />
       {!archived ? <DestructiveButton label="Archive" disabled={disabled} theme={theme} onPress={onAskArchive} /> : null}
     </View> : null}
     {confirmingArchive ? <View style={styles.inlinePanel}>
@@ -523,14 +583,15 @@ function CategoryRow({ category, theme, expanded, editing, confirmingDelete, pen
       onPress={onToggle}
       style={({ pressed }) => [styles.dataRow, !last && { borderBottomColor: theme.rule, borderBottomWidth: StyleSheet.hairlineWidth }, { opacity: pressed ? 0.72 : 1 }]}
     >
+      <View style={[styles.rowGlyph, { borderColor: theme.border }]}><Icon name={categoryIcon(category.name)} size={18} color={theme.text} /></View>
       <View style={styles.rowCopy}>
         <ThemedText style={Type.rowTitle}>{category.name}</ThemedText>
-        {category.isSystem ? <ThemedText style={[Type.note, { color: theme.textSecondary }]}>Built-in</ThemedText> : null}
+        {category.isSystem || category.isFixed ? <ThemedText style={[Type.label, { color: theme.textSecondary }]}>{[category.isSystem ? 'Built-in' : null, category.isFixed ? 'Fixed each month' : null].filter(Boolean).join(' · ')}</ThemedText> : null}
       </View>
-      <ThemedText style={[Type.label, { color: theme.textSecondary }]}>{expanded ? 'Actions' : 'Manage'}</ThemedText>
+      <Icon name={expanded ? 'expand' : 'next'} size={20} color={theme.textSecondary} />
     </Pressable>
     {expanded && !editing && !confirmingDelete ? <View style={styles.rowActions}>
-      <LedgerButton label="Edit category" disabled={disabled} onPress={onEdit} />
+      <LedgerButton label="Edit" icon="edit" disabled={disabled} onPress={onEdit} />
       <DestructiveButton label={category.isSystem ? 'Built-in' : 'Remove'} disabled={disabled || category.isSystem} theme={theme} onPress={onAskDelete} />
     </View> : null}
     {category.isSystem && expanded ? <ThemedText style={[Type.note, styles.inlineHint]}>Built-in categories can’t be removed.</ThemedText> : null}
@@ -602,6 +663,7 @@ function CategoryEditor({ category, theme, pending, disabled = false, onCancel, 
 }) {
   const [name, setName] = useState(category?.name ?? '');
   const [kind, setKind] = useState<CategoryKind | null>(category?.kind ?? null);
+  const [fixed, setFixed] = useState(category?.isFixed ?? false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const createId = useRef<string | null>(null);
@@ -618,7 +680,7 @@ function CategoryEditor({ category, theme, pending, disabled = false, onCancel, 
         createId.current ??= Crypto.randomUUID();
         stableCreateId = createId.current;
       }
-      const issue = await onSave({ name: cleanName, kind }, stableCreateId);
+      const issue = await onSave({ name: cleanName, kind, isFixed: kind === 'expense' && fixed }, stableCreateId);
       if (issue) setError(issue); else onCancel();
     } finally { setSaving(false); }
   };
@@ -628,6 +690,11 @@ function CategoryEditor({ category, theme, pending, disabled = false, onCancel, 
     <Field label="Category name" value={name} onChangeText={setName} theme={theme} placeholder="For example, groceries" editable={!locked} />
     <ThemedText style={[Type.label, styles.fieldLabel]}>Use for</ThemedText>
     <ChoiceList values={categoryKinds} selected={kind} labels={categoryLabels} onSelect={setKind} disabled={locked} />
+    {kind === 'expense' ? <>
+      <ThemedText style={[Type.label, styles.fieldLabel]}>Spending pattern</ThemedText>
+      <ChoiceList values={costTypes} selected={fixed ? 'fixed' : 'flexible'} labels={costLabels} onSelect={(value) => setFixed(value === 'fixed')} disabled={locked} />
+      <ThemedText style={[Type.note, { color: theme.textSecondary }]}>Fixed costs like rent or EMIs are set apart when Home compares your pace with last month.</ThemedText>
+    </> : null}
     {error ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: theme.over }]}>{error}</ThemedText> : null}
     <View style={styles.rowActions}>
       <LedgerButton label="Cancel" disabled={locked} onPress={onCancel} />
@@ -678,6 +745,7 @@ const styles = StyleSheet.create({
   staticRow: { minHeight: 72, paddingHorizontal: 16, paddingVertical: 12, justifyContent: 'center' },
   dataRow: { minHeight: 68, paddingHorizontal: 16, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   rowCopy: { flex: 1, gap: 2 },
+  rowGlyph: { width: 36, height: 36, borderWidth: 2, borderRadius: Radius.tile, alignItems: 'center', justifyContent: 'center' },
   disclosureRow: { minHeight: 64, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   disclosureTitle: { flex: 1 },
   rowActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingVertical: 10 },
@@ -689,6 +757,7 @@ const styles = StyleSheet.create({
   emptyCopy: { paddingHorizontal: 16, paddingVertical: 16 },
   editor: { marginHorizontal: 16, marginVertical: 10, paddingTop: 14, borderTopWidth: StyleSheet.hairlineWidth, gap: 12 },
   inlinePanel: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12, gap: 8 },
+  demoActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   inlineHint: { paddingHorizontal: 16, paddingBottom: 8 },
   destructiveButton: { minHeight: 44, minWidth: 48, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 14, borderWidth: Stroke.ink, borderRadius: Radius.pill },
   destructiveText: { fontFamily: 'BricolageGrotesque_600SemiBold' },
@@ -696,11 +765,10 @@ const styles = StyleSheet.create({
   fieldLabel: { marginBottom: 1 },
   input: { minHeight: 48, paddingHorizontal: 12, paddingVertical: 8, borderWidth: Stroke.ink, borderRadius: Radius.control },
   choices: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  loadLine: { marginTop: 12, height: 32, borderRadius: Radius.control, alignItems: 'center', justifyContent: 'center' },
   messageLine: { marginTop: 12, gap: 8, alignItems: 'flex-start' },
   message: { marginTop: 12 },
   exportRow: { minHeight: 68, paddingHorizontal: 16, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   exportError: { padding: 16 },
   exportNote: { marginTop: 8, maxWidth: 480 },
-  loadingRow: { minHeight: 64, paddingHorizontal: 16, alignItems: 'flex-start', justifyContent: 'center' },
+  loadingRow: { minHeight: 64, paddingHorizontal: 16, alignItems: 'flex-start', justifyContent: 'center', gap: 8 },
 });

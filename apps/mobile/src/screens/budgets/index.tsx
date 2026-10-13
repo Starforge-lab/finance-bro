@@ -1,15 +1,18 @@
 import * as Crypto from 'expo-crypto';
-import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useColorScheme } from 'react-native';
+import { useRouter } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useColorScheme } from '@/hooks/appearance';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { LedgerButton, MonthNavigation } from '@/components/ledger-controls';
+import { LedgerButton, MonthPicker } from '@/components/ledger-controls';
+import { Bone, SkeletonGroup } from '@/components/skeleton';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Categories, Fonts, Radius, Spacing, Stroke, Type } from '@/constants/theme';
 import { getLedger, parseInrAmount, type DataLayer } from '@/db';
 import { amountInput, indiaDate, money, parseIndiaDate } from '@/utils/display';
+import { useLedgerVersion } from '@/hooks/use-ledger-version';
 import { useTheme } from '@/hooks/use-theme';
 import { confirmSave } from '@/utils/confirm-save';
 
@@ -41,14 +44,16 @@ function billDateLabel(value: string) {
   }).format(parseIndiaDate(value));
 }
 
-function exactMoney(paise: bigint) {
+/** Display money for bigint totals: whole rupees, paise only when there are some. */
+function bigMoney(paise: bigint) {
   const negative = paise < 0n;
   const value = negative ? -paise : paise;
   const rupees = (value / 100n).toString();
   const grouped = rupees.length <= 3
     ? rupees
     : `${rupees.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',')},${rupees.slice(-3)}`;
-  return `${negative ? '−' : ''}₹${grouped}.${String(value % 100n).padStart(2, '0')}`;
+  const fraction = value % 100n;
+  return `${negative ? '−' : ''}₹${grouped}${fraction ? `.${String(fraction).padStart(2, '0')}` : ''}`;
 }
 
 function errorMessage(error: unknown) {
@@ -151,7 +156,7 @@ export function Budgets() {
   const [confirmBillDelete, setConfirmBillDelete] = useState('');
 
   const requestId = useRef(0);
-  const isFocused = useRef(false);
+  const mounted = useRef(false);
   const pendingRef = useRef(false);
   const budgetCreateId = useRef<string | null>(null);
   const billCreateId = useRef<string | null>(null);
@@ -169,35 +174,38 @@ export function Budgets() {
         ledger.listBills(indiaDate()),
         ledger.getMonthlySummary(month),
       ]);
-      if (!isFocused.current || request !== requestId.current) return;
+      if (!mounted.current || request !== requestId.current) return;
       setCategories(nextCategories);
       setBudgets(nextBudgets);
       setBills(nextBills);
       setSummary(nextSummary);
       setLoadedMonth(month);
     } catch {
-      if (!isFocused.current || request !== requestId.current) return;
+      if (!mounted.current || request !== requestId.current) return;
       setLoadError(true);
     } finally {
-      if (isFocused.current && request === requestId.current) setLoading(false);
+      if (mounted.current && request === requestId.current) setLoading(false);
     }
   }, [month]);
 
-  useFocusEffect(useCallback(() => {
-    isFocused.current = true;
+  const version = useLedgerVersion();
+  useEffect(() => {
+    mounted.current = true;
+    // Reloads when the month or the ledger changes; load's state updates are the point.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
     return () => {
-      isFocused.current = false;
+      mounted.current = false;
       requestId.current += 1;
     };
-  }, [load]));
+  }, [load, version]);
 
   const runWrite = useCallback(async (
     area: ActionArea,
     key: string,
     write: (ledger: DataLayer) => Promise<unknown>,
   ) => {
-    if (pendingRef.current || loading || loadedMonth !== month || loadError) return false;
+    if (pendingRef.current || loadedMonth !== month || loadError) return false;
     pendingRef.current = true;
     setPending(key);
     setActionIssue(null);
@@ -217,7 +225,7 @@ export function Budgets() {
       pendingRef.current = false;
       setPending('');
     }
-  }, [load, loadError, loadedMonth, loading, month]);
+  }, [load, loadError, loadedMonth, month]);
 
   const selectMonth = (value: string) => {
     if (!isMonth(value)) return;
@@ -246,7 +254,8 @@ export function Budgets() {
   const heroFill = totalBudget > 0n
     ? Math.min(100, Number((BigInt(Math.max(0, summary?.expensePaise ?? 0)) * 10_000n) / totalBudget) / 100)
     : 0;
-  const writesDisabled = !!pending || loading || loadedMonth !== month || loadError;
+  const writesDisabled = !!pending || loadedMonth !== month || loadError;
+  const firstLoad = loading && !summaryReady;
 
   const setMonthLimit = async () => {
     try {
@@ -377,13 +386,13 @@ export function Budgets() {
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets>
           <View style={styles.header}>
             <ThemedText accessibilityRole="header" style={Type.screenTitle}>Budgets</ThemedText>
-            <MonthNavigation month={month} onChange={selectMonth} />
+            <MonthPicker month={month} onChange={selectMonth} />
           </View>
 
           {summaryReady ? (
             <View style={[styles.hero, { backgroundColor: colors.heroBackground, borderColor: colors.heroBackground }]}>
               <View style={styles.heroLabelRow}>
-                <ThemedText style={[Type.label, { color: colors.heroTextSecondary }]}>Budget left</ThemedText>
+                <ThemedText style={[Type.label, { color: colors.heroTextSecondary }]}>Left to spend</ThemedText>
                 {totalRemaining !== null && totalRemaining < 0n && <View style={[styles.overBadge, { backgroundColor: colors.over }]}>
                   <Text style={[Type.label, { color: colors.heroText }]}>Over</Text>
                 </View>}
@@ -393,16 +402,16 @@ export function Budgets() {
                   styles.heroAmount,
                   Type.amountHero,
                   { color: colors.heroText },
-                  String(totalRemaining === null ? 0 : exactMoney(totalRemaining)).length > 13 && styles.heroAmountCompact,
+                  String(totalRemaining === null ? 0 : bigMoney(totalRemaining)).length > 13 && styles.heroAmountCompact,
                 ]}>
-                {totalRemaining === null ? 'Set a limit' : exactMoney(totalRemaining)}
+                {totalRemaining === null ? 'Set a limit' : bigMoney(totalRemaining)}
               </ThemedText>
-              <ThemedText style={[Type.body, { color: colors.heroText }]}>
+              <ThemedText style={[Type.note, { color: colors.heroTextSecondary }]}>
                 {totalRemaining === null
-                  ? `Set a monthly spending limit.`
+                  ? 'Add a category limit to start.'
                   : totalRemaining < 0n
-                    ? `${exactMoney(-totalRemaining)} over your limits.`
-                    : `${exactMoney(recordedSpend)} spent this month.`}
+                    ? `${bigMoney(-totalRemaining)} over · ${bigMoney(recordedSpend)} spent of ${bigMoney(totalBudget)}`
+                    : `${bigMoney(recordedSpend)} spent of ${bigMoney(totalBudget)}`}
               </ThemedText>
               {totalBudget > 0n && <>
                 <View accessibilityRole="progressbar" accessibilityLabel="Spending compared with combined category limits" accessibilityValue={{ min: 0, max: 100, now: heroFill }} aria-valuemin={0} aria-valuemax={100} aria-valuenow={heroFill} style={[styles.heroTrack, { backgroundColor: colors.heroRule }]}>
@@ -410,26 +419,14 @@ export function Budgets() {
                 </View>
 
               </>}
-              <View style={[styles.heroStats, { borderTopColor: colors.heroRule }]}>
-                <HeroStat label="Limits" value={exactMoney(totalBudget)} color={colors.heroText} secondaryColor={colors.heroTextSecondary} highlightBackground={colors.accent} highlightForeground={colors.onAccent} dark={dark} />
-                <HeroStat label="Spent" value={exactMoney(recordedSpend)} color={colors.heroText} secondaryColor={colors.heroTextSecondary} highlightBackground={colors.accent} highlightForeground={colors.onAccent} dark={dark} />
-                <HeroStat
-                  label="Remaining"
-                  value={totalRemaining === null ? '—' : exactMoney(totalRemaining)}
-                  color={totalRemaining === null ? colors.heroTextSecondary : totalRemaining < 0n ? colors.over : colors.accent}
-                  secondaryColor={colors.heroTextSecondary}
-                  highlightValue={totalRemaining !== null && totalRemaining >= 0n}
-                  highlightBackground={colors.accent}
-                  highlightForeground={colors.onAccent}
-                  dark={dark}
-                />
-              </View>
             </View>
           ) : loading ? (
-            <View accessibilityRole="progressbar" accessibilityLabel="Loading budget totals" style={[styles.loadPanel, { borderColor: colors.rule }]}>
-              <ActivityIndicator color={colors.text} />
-              <ThemedText style={Type.note} themeColor="textSecondary">Opening your local ledger…</ThemedText>
-            </View>
+            <SkeletonGroup label="Loading budget totals" style={[styles.hero, { borderColor: colors.track }]}>
+              <Bone width={90} height={12} />
+              <Bone width="70%" height={46} radius={Radius.tile} />
+              <Bone width="55%" height={16} />
+              <Bone height={14} />
+            </SkeletonGroup>
           ) : (
             <View style={[styles.loadPanel, { borderColor: colors.rule }]}>
               <ThemedText style={Type.body}>Monthly totals could not be loaded.</ThemedText>
@@ -447,6 +444,7 @@ export function Budgets() {
               <ThemedText accessibilityRole="header" style={Type.sectionTitle}>Categories</ThemedText>
               {categories.length > 0 && <LedgerButton
                 label={createBudgetOpen ? 'Cancel' : 'Add limit'}
+                icon={createBudgetOpen ? 'close' : 'add'}
                 primary={false}
                 disabled={writesDisabled || (!createBudgetOpen && availableCategories.length === 0)}
                 onPress={() => {
@@ -480,14 +478,14 @@ export function Budgets() {
                       </View>
                       <View style={styles.categoryAmounts}>
                         <ThemedText style={[Type.amountSmall, over && { color: colors.over }]}>{money(budget.spentPaise)}</ThemedText>
-                        <ThemedText style={Type.note}>/ {money(budget.amountPaise)}</ThemedText>
+                        <ThemedText style={[Type.label, { color: colors.textSecondary }]}>/ {money(budget.amountPaise)}</ThemedText>
                       </View>
                     </View>
                     <View accessibilityRole="progressbar" accessibilityLabel={`${name} spending`} accessibilityValue={{ min: 0, max: budget.amountPaise, now: Math.min(budget.amountPaise, Math.max(0, budget.spentPaise)) }} aria-valuemin={0} aria-valuemax={budget.amountPaise} aria-valuenow={Math.min(budget.amountPaise, Math.max(0, budget.spentPaise))} style={[styles.categoryTrack, { backgroundColor: colors.track }]}>
                       <View style={[styles.categoryFill, { width: `${fill}%`, backgroundColor: over ? colors.over : colors.fill }]} />
                     </View>
-                    <ThemedText style={[Type.note, over && { color: colors.over }]}>
-                      {over ? `${money(-budget.remainingPaise)} over this limit` : `${money(budget.remainingPaise)} remaining`}
+                    <ThemedText style={[Type.label, { color: over ? colors.over : colors.textSecondary }]}>
+                      {over ? `${money(-budget.remainingPaise)} over` : `${money(budget.remainingPaise)} left`}
                     </ThemedText>
                   </Pressable>
 
@@ -531,7 +529,12 @@ export function Budgets() {
               {categories.length === 0
                 ? <LedgerButton label="Open Settings" primary onPress={() => router.navigate('/settings')} />
                 : <LedgerButton label="Set a limit" primary disabled={writesDisabled || !availableCategories.length} onPress={() => setCreateBudgetOpen(true)} />}
-            </View> : loading ? <ThemedText themeColor="textSecondary" style={Type.note}>Updating category limits…</ThemedText> : null}
+            </View> : firstLoad ? <SkeletonGroup label="Loading category limits">
+              {[0, 1, 2].map((key) => <View key={key} style={[styles.categoryRow, styles.skeletonRow, { borderBottomColor: colors.rule }]}>
+                <View style={styles.categoryTitleRow}><Bone width="40%" height={16} /><Bone width={110} height={14} /></View>
+                <Bone height={10} /><Bone width={120} height={12} />
+              </View>)}
+            </SkeletonGroup> : null}
 
             {createBudgetOpen && <PrintedPanel colors={colors} dark={dark}>
               <ThemedText style={Type.rowTitle}>Set a category limit</ThemedText>
@@ -616,7 +619,13 @@ export function Budgets() {
             </View> : summaryReady && !loading && !loadError ? <View style={[styles.emptyState, { borderColor: colors.textMuted }]}>
               <ThemedText style={Type.rowTitle}>No bills saved yet.</ThemedText>
               <ThemedText themeColor="textSecondary" style={Type.note}>Add a bill to track its due date.</ThemedText>
-            </View> : loading ? <ThemedText themeColor="textSecondary" style={Type.note}>Checking due dates…</ThemedText> : null}
+            </View> : firstLoad ? <SkeletonGroup label="Loading bills">
+              {[0, 1].map((key) => <View key={key} style={[styles.billRow, { borderBottomColor: colors.rule }]}><View style={styles.billButton}>
+                <Bone width={44} height={44} radius={Radius.tile} />
+                <View style={styles.billDescription}><Bone width="55%" height={16} /><Bone width="40%" height={12} /></View>
+                <Bone width={70} height={14} />
+              </View></View>)}
+            </SkeletonGroup> : null}
 
             {createBillOpen && <PrintedPanel colors={colors} dark={dark}>
               <ThemedText style={Type.rowTitle}>Add a bill</ThemedText>
@@ -637,20 +646,6 @@ export function Budgets() {
   </ThemedView>;
 }
 
-function HeroStat({ label, value, color, secondaryColor, highlightValue = false, highlightBackground, highlightForeground, dark = false }: {
-  label: string; value: string; color: string; secondaryColor: string; highlightValue?: boolean;
-  highlightBackground: string; highlightForeground: string; dark?: boolean;
-}) {
-  return <View style={styles.heroStat}>
-    <ThemedText style={[Type.label, { color: secondaryColor }]}>{label}</ThemedText>
-    <ThemedText numberOfLines={1} adjustsFontSizeToFit style={[
-      Type.amountSmall,
-      { color: highlightValue && dark ? highlightForeground : color, flexShrink: 1 },
-      highlightValue && dark && [styles.statHighlight, { backgroundColor: highlightBackground }],
-    ]}>{value}</ThemedText>
-  </View>;
-}
-
 function DateTile({ date, colors }: { date: string; colors: ReturnType<typeof useTheme> }) {
   const month = new Intl.DateTimeFormat('en-IN', { month: 'short', timeZone: 'Asia/Kolkata' }).format(parseIndiaDate(date));
   return <View accessible={false} style={[styles.dateTile, { borderColor: colors.border, backgroundColor: colors.backgroundElement }]}>
@@ -662,7 +657,7 @@ function DateTile({ date, colors }: { date: string; colors: ReturnType<typeof us
 const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1 },
-  content: { width: '100%', maxWidth: 520, alignSelf: 'center', paddingHorizontal: Spacing.gutter, paddingTop: Spacing.five, paddingBottom: Spacing.tabBarClearance, gap: Spacing.section },
+  content: { width: '100%', maxWidth: 520, alignSelf: 'center', paddingHorizontal: Spacing.gutter, paddingTop: 40, paddingBottom: Spacing.tabBarClearance, gap: Spacing.section },
   header: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
   heroLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
   overBadge: { borderRadius: Radius.pill, paddingHorizontal: Spacing.two, paddingVertical: Spacing.one },
@@ -671,8 +666,6 @@ const styles = StyleSheet.create({
   heroAmountCompact: { fontSize: 30, lineHeight: 36, letterSpacing: -1 },
   heroTrack: { height: 14, borderRadius: Radius.bar, overflow: 'hidden' },
   heroFill: { height: '100%', borderRadius: Radius.bar },
-  heroStats: { flexDirection: 'row', gap: Spacing.two, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: Spacing.three },
-  heroStat: { flex: 1, minWidth: 0, gap: Spacing.one },
   statHighlight: { alignSelf: 'flex-start', borderRadius: 4, paddingHorizontal: Spacing.one },
   section: { gap: Spacing.three },
   sectionHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
@@ -708,5 +701,6 @@ const styles = StyleSheet.create({
   billDescription: { flex: 1, minWidth: 0, gap: Spacing.one },
   errorNotice: { borderWidth: Stroke.hairline, borderRadius: Radius.control, padding: Spacing.two },
   refreshError: { borderWidth: Stroke.hairline, borderRadius: Radius.control, padding: Spacing.two, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
+  skeletonRow: { gap: 10 },
   loadPanel: { minHeight: 104, borderWidth: Stroke.hairline, borderRadius: Radius.card, padding: Spacing.three, justifyContent: 'center', alignItems: 'flex-start', gap: Spacing.two },
 });

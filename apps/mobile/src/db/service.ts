@@ -2,6 +2,7 @@ import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { createLedger, type LedgerMigrations, type LedgerSQLiteClient, type LedgerSQLiteTransactionRunner } from './ledger';
 import { smsImportRefs, transactions } from './schema';
 import { createPlanning } from './planning';
+import { createPreferences } from './preferences';
 import { createLedgerQueries } from './queries';
 import { createLedgerCsvExporter } from '../exports/csv';
 import { saveManualEntry, type ManualEntry } from './manual';
@@ -129,6 +130,7 @@ export function createDataLayer(
     ...manualLedger,
     ...queries,
     ...planning,
+    ...createPreferences(db),
     ...createLedgerCsvExporter(db),
     ...smsIngestion,
     saveManualEntry: (input: ManualEntry) => saveManualEntry(ledger, input),

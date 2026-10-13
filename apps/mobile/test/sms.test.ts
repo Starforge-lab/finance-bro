@@ -64,23 +64,27 @@ function smsRow(platformId: string, raw = strongSms, receivedAt = raw.receivedAt
 }
 
 describe('Android SMS ingestion storage seam', () => {
-  it('adds storage tables without losing pre-existing ledger data', async () => {
+  it('adds SMS storage to the current dev schema without losing existing data', async () => {
     const fixture = openTestLedger();
     try {
       const oldMigrations: LedgerMigrations = {
-        journal: { entries: ledgerMigrations.journal.entries.slice(0, 5) },
-        migrations: Object.fromEntries(Object.entries(ledgerMigrations.migrations).filter(([key]) => Number(key.slice(1)) < 5)),
+        journal: { entries: ledgerMigrations.journal.entries.slice(0, 7) },
+        migrations: Object.fromEntries(Object.entries(ledgerMigrations.migrations).filter(([key]) => Number(key.slice(1)) < 7)),
       };
       const oldApi = createDataLayer(fixture.client, oldMigrations);
       await oldApi.migrateLedger();
       fixture.sqlite.exec(`INSERT INTO accounts(id,name,type,archived) VALUES('old-account','Old account','bank',0)`);
+      fixture.sqlite.exec(`INSERT INTO categories(id,name,kind,is_fixed) VALUES('old-category','Old category','expense',1)`);
+      fixture.sqlite.exec(`INSERT INTO preferences(key,value) VALUES('theme','dark')`);
       fixture.sqlite.exec("INSERT INTO transactions(id,amount_paise,direction,kind,source,occurred_at,created_at,updated_at) VALUES('old-row',100,'debit','expense','manual',1,1,1)");
 
       const api = createApi(fixture);
       await api.migrateLedger();
       assert.equal((await api.getTransaction('old-row'))?.amountPaise, 100);
+      assert.equal((fixture.sqlite.prepare('SELECT value FROM preferences WHERE key = ?').get('theme') as { value: string }).value, 'dark');
+      assert.equal((fixture.sqlite.prepare('SELECT is_fixed FROM categories WHERE id = ?').get('old-category') as { is_fixed: number }).is_fixed, 1);
       assert.equal(await api.getSmsImportCursor(), null);
-      assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 7);
+      assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 8);
       for (const [table, name] of [
         ['transactions', 'transactions_dedupe_key_idx'],
         ['sms_import_refs', 'sms_import_refs_dedupe_key_idx'],
@@ -88,6 +92,24 @@ describe('Android SMS ingestion storage seam', () => {
         const indexes = fixture.sqlite.prepare(`PRAGMA index_list('${table}')`).all() as Array<{ name: string; unique: number }>;
         assert.equal(indexes.find((index) => index.name === name)?.unique, 0);
       }
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('rejects the superseded prototype migration lineage without resetting its records', async () => {
+    const fixture = openTestLedger();
+    try {
+      const prototypeBase: LedgerMigrations = {
+        journal: { entries: ledgerMigrations.journal.entries.slice(0, 5) },
+        migrations: Object.fromEntries(Object.entries(ledgerMigrations.migrations).filter(([key]) => Number(key.slice(1)) < 5)),
+      };
+      await createDataLayer(fixture.client, prototypeBase).migrateLedger();
+      fixture.sqlite.exec(ledgerMigrations.migrations.m0007!);
+      fixture.sqlite.exec("PRAGMA user_version = 7; INSERT INTO transactions(id,amount_paise,direction,kind,source,occurred_at,created_at,updated_at) VALUES('prototype-row',100,'debit','expense','manual',1,1,1)");
+      const api = createApi(fixture);
+      await assert.rejects(api.migrateLedger(), /already exists/);
+      assert.equal((await api.getTransaction('prototype-row'))?.amountPaise, 100);
+      assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 7);
+      assert.equal(fixture.sqlite.prepare("SELECT name FROM sqlite_master WHERE name = 'preferences'").get(), undefined);
     } finally { fixture.sqlite.close(); }
   });
 

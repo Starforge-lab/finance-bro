@@ -18,6 +18,7 @@ CREATE TABLE `sms_import_refs` (
 	CONSTRAINT "sms_import_refs_rule_pair" CHECK(("sms_import_refs"."rule_id" is null and "sms_import_refs"."rule_version" is null) or ("sms_import_refs"."rule_id" is not null and "sms_import_refs"."rule_version" is not null))
 );
 --> statement-breakpoint
+CREATE INDEX `sms_import_refs_dedupe_key_idx` ON `sms_import_refs` (`dedupe_key`);--> statement-breakpoint
 CREATE TABLE `sms_import_state` (
 	`id` integer PRIMARY KEY NOT NULL,
 	`cursor_received_at` integer,
@@ -26,3 +27,5 @@ CREATE TABLE `sms_import_state` (
 	CONSTRAINT "sms_import_state_singleton" CHECK("sms_import_state"."id" = 1),
 	CONSTRAINT "sms_import_state_cursor_pair" CHECK(("sms_import_state"."cursor_received_at" is null and "sms_import_state"."cursor_platform_id" is null) or ("sms_import_state"."cursor_received_at" is not null and "sms_import_state"."cursor_platform_id" is not null))
 );
+--> statement-breakpoint
+CREATE INDEX `transactions_dedupe_key_idx` ON `transactions` (`dedupe_key`);
