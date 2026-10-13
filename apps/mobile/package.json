@@ -63,9 +63,7 @@
   "expo": {
     "autolinking": {
       "android": {
-        "buildFromSource": [
-          "expo-intent-launcher"
-        ]
+        "buildFromSource": ["expo-intent-launcher"]
       }
     }
   },
