@@ -17,5 +17,16 @@ export function createPreferences(db: Ledger['db']) {
       await db.insert(preferences).values({ key: 'theme', value })
         .onConflictDoUpdate({ target: preferences.key, set: { value } }).run();
     },
+    /** When a Shortcuts link last delivered a message; a timestamp only, never the text. */
+    async getLastLinkedMessageAt(): Promise<Date | null> {
+      const row = await db.select({ value: preferences.value }).from(preferences).where(eq(preferences.key, 'lastLinkedMessageAt')).get();
+      const time = Number(row?.value);
+      return row && Number.isFinite(time) ? new Date(time) : null;
+    },
+    async markLinkedMessage(): Promise<void> {
+      const value = String(Date.now());
+      await db.insert(preferences).values({ key: 'lastLinkedMessageAt', value })
+        .onConflictDoUpdate({ target: preferences.key, set: { value } }).run();
+    },
   };
 }

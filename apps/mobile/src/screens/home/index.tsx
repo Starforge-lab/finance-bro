@@ -1,4 +1,4 @@
-import { useRootNavigationState, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRootNavigationState, useRouter } from 'expo-router';
 import { useEffect, useRef, useState, type ComponentRef } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useColorScheme } from '@/hooks/appearance';
@@ -57,6 +57,18 @@ export function Home() {
     router.setParams({ _entryOpen: mode === 'feed' ? '0' : '1' });
   }, [mode, navigationState?.key, router]);
   const [selected, setSelected] = useState<Row>();
+  // An iOS Shortcuts automation opens financebro://?sms=<message>. The text is held in memory for review
+  // and stripped from the route at once, so it is never saved or left in navigation state.
+  // shortcut: opens the app for every message and can't run while locked, upgrade to the App Intent in #45.
+  const { sms } = useLocalSearchParams<{ sms?: string }>();
+  const [incoming, setIncoming] = useState<string>();
+  const linked = typeof sms === 'string' && sms ? sms.slice(0, 2000) : undefined;
+  if (linked && linked !== incoming) { setIncoming(linked); setSelected(undefined); setMode('paste'); }
+  useEffect(() => {
+    if (!linked) return;
+    router.setParams({ sms: undefined });
+    void getLedger().then((data) => data.markLinkedMessage()).catch(() => {});
+  }, [linked, router]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const deleteGuard = useRef(false);
@@ -79,7 +91,7 @@ export function Home() {
     // A retry or a ledger write must reload even when the month is unchanged.
   }, [month, revision, version]);
   function finish() {
-    setMode('feed'); setSelected(undefined); setConfirmDelete(false); setError('');
+    setMode('feed'); setSelected(undefined); setConfirmDelete(false); setError(''); setIncoming(undefined);
     setRevision((value) => value + 1);
   }
   async function remove() {
@@ -94,7 +106,7 @@ export function Home() {
   if (mode !== 'feed' && ledger) {
     return mode === 'entry'
       ? <EntryForm ledger={ledger} transaction={selected} onSaved={finish} onCancel={finish} />
-      : <PasteForm ledger={ledger} onSaved={finish} onCancel={finish} />;
+      : <PasteForm key={incoming} ledger={ledger} initialBody={incoming} onSaved={finish} onCancel={finish} />;
   }
   const today = rows.filter((row) => indiaDate(row.occurredAt) === indiaDate());
   const pulls = today.slice(0, 3);
