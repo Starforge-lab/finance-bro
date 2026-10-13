@@ -525,7 +525,7 @@ function ShortcutGuide({ theme }: { theme: Theme }) {
   const copy = (kind: 'prompt' | 'link') => void Clipboard.setStringAsync(kind === 'prompt' ? shortcutPrompt : importLink).then(() => setCopied(kind));
   return <View style={styles.inlinePanel}>
     <ThemedText style={[Type.note, { color: theme.textSecondary }]}>
-      iPhone doesn’t let apps read messages. A Shortcuts automation can hand each new bank message to Finance Bro, which opens with it ready to review. Nothing is saved until you confirm, and the message text is never stored. Older messages can’t be imported this way; paste those from Home.
+      iPhone doesn’t let apps read messages. A Shortcuts automation can hand each new bank message to Finance Bro, which opens with it ready to review. Nothing is saved until you confirm, and Finance Bro keeps the reviewed entry, not the message text. Older messages can’t be imported this way; paste those from Home.
     </ThemedText>
     <ThemedText style={Type.body}>1. Copy the prompt.</ThemedText>
     <ThemedText style={Type.body}>2. Open Shortcuts, tap + and paste it into Describe a Shortcut.</ThemedText>

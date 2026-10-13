@@ -15,6 +15,7 @@ import { getLedger, type DataLayer } from '@/db';
 import { useLedgerVersion } from '@/hooks/use-ledger-version';
 import { useTheme } from '@/hooks/use-theme';
 import { exactMoney, indiaDate, money } from '@/utils/display';
+import { emptyInbox, finishLinked, LINKED_SMS_LIMIT, receiveLinked } from '@/utils/linked-sms';
 import { buildMonthPace, shiftMonth, topCategoryBars } from '@/utils/month-pace';
 import { ease, fadeIn } from '@/utils/motion';
 import { EntryForm } from './entry-form';
@@ -57,17 +58,25 @@ export function Home() {
     router.setParams({ _entryOpen: mode === 'feed' ? '0' : '1' });
   }, [mode, navigationState?.key, router]);
   const [selected, setSelected] = useState<Row>();
-  // An iOS Shortcuts automation opens financebro://?sms=<message>. The text is held in memory for review
-  // and stripped from the route at once, so it is never saved or left in navigation state.
+  // An iOS Shortcuts automation opens financebro://?sms=<message>. The app holds the text in memory for review
+  // and drops it from its own route at once; what iOS keeps of the opened link is outside the app's control.
   // shortcut: opens the app for every message and can't run while locked, upgrade to the App Intent in #45.
   const { sms } = useLocalSearchParams<{ sms?: string }>();
-  const [incoming, setIncoming] = useState<string>();
-  const linked = typeof sms === 'string' && sms ? sms.slice(0, 2000) : undefined;
-  if (linked && linked !== incoming) { setIncoming(linked); setSelected(undefined); setMode('paste'); }
+  const linked = typeof sms === 'string' && sms ? sms : undefined;
+  const [inbox, setInbox] = useState(emptyInbox);
+  const [seenLink, setSeenLink] = useState<string>();
+  if (linked !== seenLink) {
+    setSeenLink(linked);
+    if (linked) {
+      const next = receiveLinked(inbox, linked, mode !== 'feed');
+      setInbox(next);
+      if (next.seq !== inbox.seq) { setSelected(undefined); setMode('paste'); }
+    }
+  }
   useEffect(() => {
     if (!linked) return;
     router.setParams({ sms: undefined });
-    void getLedger().then((data) => data.markLinkedMessage()).catch(() => {});
+    if (linked.length <= LINKED_SMS_LIMIT) void getLedger().then((data) => data.markLinkedMessage()).catch(() => {});
   }, [linked, router]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -91,7 +100,9 @@ export function Home() {
     // A retry or a ledger write must reload even when the month is unchanged.
   }, [month, revision, version]);
   function finish() {
-    setMode('feed'); setSelected(undefined); setConfirmDelete(false); setError(''); setIncoming(undefined);
+    const next = finishLinked(inbox);
+    setInbox(next);
+    setMode(next.open === undefined ? 'feed' : 'paste'); setSelected(undefined); setConfirmDelete(false); setError('');
     setRevision((value) => value + 1);
   }
   async function remove() {
@@ -106,7 +117,7 @@ export function Home() {
   if (mode !== 'feed' && ledger) {
     return mode === 'entry'
       ? <EntryForm ledger={ledger} transaction={selected} onSaved={finish} onCancel={finish} />
-      : <PasteForm key={incoming} ledger={ledger} initialBody={incoming} onSaved={finish} onCancel={finish} />;
+      : <PasteForm key={inbox.seq} ledger={ledger} initialBody={inbox.open} onSaved={finish} onCancel={finish} />;
   }
   const today = rows.filter((row) => indiaDate(row.occurredAt) === indiaDate());
   const pulls = today.slice(0, 3);
@@ -173,6 +184,9 @@ export function Home() {
             spent{budgetTotal ? ` of ${money(budgetTotal)}` : ''} · <Text style={{ fontFamily: Fonts.monoBold }}>{rows.length}</Text> {rows.length === 1 ? 'entry' : 'entries'}
           </ThemedText>
         </Animated.View> : null}
+        {inbox.rejected ? <Pressable accessibilityRole="alert" accessibilityHint="Dismisses this notice" onPress={() => setInbox((value) => ({ ...value, rejected: false }))} style={styles.textAction}>
+          <ThemedText style={Type.note}>A message sent from Shortcuts was too long to import and was not read. Paste it here to review it. Tap to dismiss.</ThemedText>
+        </Pressable> : null}
         {error && !loaded ? <View style={styles.section}><ThemedText accessibilityRole="alert">{error}</ThemedText><LedgerButton label="Retry" onPress={() => setRevision((value) => value + 1)} /></View> : null}
         {error && loaded ? <Pressable accessibilityRole="button" accessibilityLabel="Couldn’t refresh. Retry" onPress={() => setRevision((value) => value + 1)} style={styles.textAction}>
           <ThemedText themeColor="textSecondary" style={Type.note}>Couldn’t refresh · <ThemedText style={[Type.note, { textDecorationLine: 'underline' }]}>Retry</ThemedText></ThemedText>
