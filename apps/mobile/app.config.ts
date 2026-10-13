@@ -6,6 +6,11 @@ import type { ConfigContext, ExpoConfig } from 'expo/config';
  */
 const IS_DEV = process.env.APP_VARIANT === 'development';
 const IS_SMS_PROBE = IS_DEV && process.env.ANDROID_SMS_PROBE === '1';
+const IS_SOURCE_CHECK = process.env.ANDROID_RELEASE_SOURCE_CHECK === '1';
+
+if (IS_SOURCE_CHECK && IS_DEV) {
+  throw new Error('The Android release source check requires the production variant');
+}
 
 // Working id; the product name is decided after v1. Must be final before the first store upload.
 const BASE_ID = 'com.rohangupta.financebro';
@@ -43,6 +48,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   web: { bundler: 'metro', output: 'single' },
   plugins: [
     ['./modules/sms-reader/app.plugin.js', { enabled: IS_SMS_PROBE }],
+    ...(IS_SOURCE_CHECK ? ['./plugins/withUnsignedAndroidRelease.cjs'] : []),
     ['expo-router', {
       headers: {
         'Cross-Origin-Embedder-Policy': 'credentialless',

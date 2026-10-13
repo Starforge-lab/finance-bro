@@ -33,8 +33,8 @@ type CategoryInsert = typeof categories.$inferInsert;
 
 export type NewAccount = Pick<AccountInsert, 'id' | 'name' | 'type'> & Partial<Pick<AccountInsert, 'institution' | 'last4' | 'isOwn'>>;
 export type AccountPatch = Partial<Pick<AccountInsert, 'name' | 'institution' | 'type' | 'last4' | 'isOwn'>>;
-export type NewCategory = Pick<CategoryInsert, 'id' | 'name' | 'kind'> & Partial<Pick<CategoryInsert, 'icon' | 'color' | 'sortOrder'>>;
-export type CategoryPatch = Partial<Pick<CategoryInsert, 'name' | 'icon' | 'color' | 'kind' | 'sortOrder'>>;
+export type NewCategory = Pick<CategoryInsert, 'id' | 'name' | 'kind'> & Partial<Pick<CategoryInsert, 'icon' | 'color' | 'sortOrder' | 'isFixed'>>;
+export type CategoryPatch = Partial<Pick<CategoryInsert, 'name' | 'icon' | 'color' | 'kind' | 'sortOrder' | 'isFixed'>>;
 
 export type ReviewedPasteTransaction = Pick<
   TransactionRow,
@@ -217,6 +217,7 @@ function assertValidCategory(input: unknown): asserts input is NewCategory {
   assertText(input.icon, 'icon', { nullable: true, optional: true });
   assertText(input.color, 'color', { nullable: true, optional: true });
   assertSafeInteger(input.sortOrder, 'sortOrder', true);
+  assertBoolean(input.isFixed, 'isFixed', true);
 }
 
 export async function migrateLedger(client: LedgerSQLiteClient, migrations: LedgerMigrations): Promise<void> {
@@ -350,6 +351,7 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
         icon: input.icon,
         color: input.color,
         sortOrder: input.sortOrder,
+        isFixed: input.isFixed,
       }).run();
     },
     async listCategories(kind?: typeof categoryKinds[number]) {
@@ -366,12 +368,14 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
       if (patch.icon !== undefined) assertText(patch.icon, 'icon', { nullable: true });
       if (patch.color !== undefined) assertText(patch.color, 'color', { nullable: true });
       if (patch.sortOrder !== undefined) assertSafeInteger(patch.sortOrder, 'sortOrder');
+      assertBoolean(patch.isFixed, 'isFixed', true);
       const changes = Object.fromEntries(Object.entries({
         name: patch.name?.trim(),
         kind: patch.kind,
         icon: patch.icon,
         color: patch.color,
         sortOrder: patch.sortOrder,
+        isFixed: patch.isFixed,
       }).filter(([, value]) => value !== undefined)) as CategoryPatch;
       if (Object.keys(changes).length === 0) return false;
       if (patch.kind !== undefined) {

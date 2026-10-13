@@ -17,7 +17,9 @@ For an urgent fix, branch `hotfix/<name>` from `main`, open a pull request into 
 
 ## GitHub protection
 
-The active repository rulesets require pull requests for `main` and `dev`, one code-owner approval after the latest push, resolved review comments, and the `Validate and bundle` check on an up-to-date branch. They block force pushes and branch deletion, and have no bypass actors. The `main` ruleset permits merge commits only. The `dev` ruleset permits both merge commits and squash merges so release and sync PRs can preserve ancestry while everyday changes stay compact.
+The active repository rulesets require pull requests for `main` and `dev`, resolved review comments, and the `Validate and bundle` check on an up-to-date branch. Suvo and Rohan may merge their own PRs on either branch without peer or code-owner approval, as confirmed on 12 October 2026. Reviews remain useful and may be requested, but approval after the latest push and extra approval for unattributed changes are not required. These rules do not waive a PR's acceptance criteria or the scoped release/device gates.
+
+The rulesets block force pushes and branch deletion, and have no bypass actors. The `main` ruleset permits merge commits only. The `dev` ruleset permits both merge commits and squash merges so release and sync PRs can preserve ancestry while everyday changes stay compact.
 
 The source-branch names and feature-to-`dev` routing above are team conventions; the target-branch rulesets do not enforce them. GitHub applies the merge-method restrictions by target branch.
 

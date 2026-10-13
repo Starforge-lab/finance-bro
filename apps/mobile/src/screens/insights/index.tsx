@@ -1,13 +1,16 @@
-import { useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, useColorScheme, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useColorScheme } from '@/hooks/appearance';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { MonthNavigation } from '@/components/ledger-controls';
+import { Icon, categoryIcon } from '@/components/icon';
+import { MonthPicker } from '@/components/ledger-controls';
+import { Bone, SkeletonGroup } from '@/components/skeleton';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Fonts, Radius, Spacing, Stroke, Type } from '@/constants/theme';
 import { getLedger, type DataLayer } from '@/db';
+import { useLedgerVersion } from '@/hooks/use-ledger-version';
 import { useTheme } from '@/hooks/use-theme';
 import { indiaDate, money, parseIndiaDate } from '@/utils/display';
 
@@ -18,9 +21,6 @@ type Merchant = { key: string; name: string; amountPaise: bigint; count: number 
 
 const monthNames = new Intl.DateTimeFormat('en-IN', { month: 'long', timeZone: 'Asia/Kolkata' });
 const shortMonthNames = new Intl.DateTimeFormat('en-IN', { month: 'short', timeZone: 'Asia/Kolkata' });
-const compactRupees = new Intl.NumberFormat('en-IN', {
-  style: 'currency', currency: 'INR', notation: 'compact', maximumFractionDigits: 1,
-});
 
 function shiftMonth(value: string, offset: number): string | null {
   const [year, month] = value.split('-').map(Number);
@@ -38,17 +38,25 @@ function monthLabel(value: string) {
   return monthNames.format(monthDate(value));
 }
 
+/** Short rupees for chart labels (₹840, ₹21.9k, ₹1.2L). Hermes has no compact Intl notation, so it's done by hand. */
 function compactMoney(paise: number) {
-  return compactRupees.format(paise / 100);
+  const rupees = Math.abs(paise) / 100;
+  const sign = paise < 0 ? '−' : '';
+  const short = (value: number, unit: string) => `${Number(value.toFixed(value < 10 ? 1 : 0))}${unit}`;
+  if (rupees >= 100_000) return `${sign}₹${short(rupees / 100_000, 'L')}`;
+  if (rupees >= 1_000) return `${sign}₹${short(rupees / 1_000, 'k')}`;
+  return `${sign}₹${Math.round(rupees)}`;
 }
 
-function exactMoney(paise: bigint) {
+/** Display money for bigint totals: whole rupees, paise only when there are some. */
+function bigMoney(paise: bigint) {
   const absolute = paise < 0n ? -paise : paise;
   const whole = (absolute / 100n).toString();
   const grouped = whole.length <= 3
     ? whole
     : `${whole.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',')},${whole.slice(-3)}`;
-  return `${paise < 0n ? '−' : ''}₹${grouped}.${String(absolute % 100n).padStart(2, '0')}`;
+  const fraction = absolute % 100n;
+  return `${paise < 0n ? '−' : ''}₹${grouped}${fraction ? `.${String(fraction).padStart(2, '0')}` : ''}`;
 }
 
 function merchantRows(rows: Transaction[]): Merchant[] {
@@ -89,16 +97,13 @@ export function Insights() {
   const [history, setHistory] = useState<Summary[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [bills, setBills] = useState<Bill[]>([]);
-  const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [revision, setRevision] = useState(0);
-  const [moreOpen, setMoreOpen] = useState(false);
   const [totalsOpen, setTotalsOpen] = useState(false);
 
-  useFocusEffect(useCallback(() => {
+  const version = useLedgerVersion();
+  useEffect(() => {
     let active = true;
-    setLoading(true);
-    setFailed(false);
     void getLedger().then(async (ledger) => {
       const months = Array.from({ length: 6 }, (_, index) => shiftMonth(month, index - 5))
         .filter((value): value is string => value !== null);
@@ -111,15 +116,14 @@ export function Insights() {
       setHistory(summaries);
       setTransactions(entries);
       setBills(upcoming.filter((bill) => bill.status === 'upcoming'));
+      setFailed(false);
     }).catch(() => {
       if (active) setFailed(true);
-    }).finally(() => {
-      if (active) setLoading(false);
     });
     return () => { active = false; };
     // Retry reloads the currently selected period.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [month, revision]));
+     
+  }, [month, revision, version]);
 
   const summary = history.find((item) => item.month === month);
   const merchants = useMemo(() => merchantRows(transactions), [transactions]);
@@ -128,8 +132,10 @@ export function Insights() {
     .filter((category) => category.expensePaise > 0)
     .sort((left, right) => right.expensePaise - left.expensePaise)[0];
   const previousMonth = history.length > 1 ? history[history.length - 2] : undefined;
-  const historyTotal = history.reduce((total, item) => total + BigInt(item.expensePaise), 0n);
-  const divisor = BigInt(Math.max(1, history.length));
+  // Months before the ledger has any spending would drag the average toward zero.
+  const recorded = history.filter((item) => item.expensePaise !== 0);
+  const historyTotal = recorded.reduce((total, item) => total + BigInt(item.expensePaise), 0n);
+  const divisor = BigInt(Math.max(1, recorded.length));
   const averagePaise = Number((historyTotal + (historyTotal < 0n ? -divisor / 2n : divisor / 2n)) / divisor);
   const averageY = averagePosition(history, averagePaise);
 
@@ -139,14 +145,22 @@ export function Insights() {
         <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.header}>
             <ThemedText style={Type.screenTitle}>Insights</ThemedText>
-            <MonthNavigation month={month} onChange={setMonth} />
+            <MonthPicker month={month} onChange={setMonth} />
           </View>
 
-          {loading ? (
-            <View accessibilityRole="progressbar" accessibilityLabel="Loading recorded insights" style={styles.state}>
-              <ThemedText style={Type.body}>Loading your recorded month…</ThemedText>
-            </View>
-          ) : failed || !summary ? (
+          {!summary && !failed ? (
+            <SkeletonGroup label="Loading recorded insights" style={styles.state}>
+              <View style={[styles.hero, styles.heroSkeleton, { borderColor: colors.track }]}>
+                <Bone width={110} height={16} />
+                <Bone width="65%" height={46} radius={Radius.tile} />
+                <View style={[styles.heroStats, { borderColor: colors.track }]}>
+                  {[0, 1, 2].map((key) => <View key={key} style={styles.skeletonStat}><Bone width="50%" height={12} /><Bone width="85%" height={16} /></View>)}
+                </View>
+              </View>
+              <Bone width="80%" height={16} />
+              <Bone width={150} height={44} radius={Radius.pill} />
+            </SkeletonGroup>
+          ) : !summary ? (
             <View accessibilityLiveRegion="polite" style={styles.state}>
               <ThemedText style={Type.body}>Your recorded insights could not be loaded. Your ledger has not been reset.</ThemedText>
               <Pressable accessibilityRole="button" onPress={() => setRevision((value) => value + 1)}
@@ -155,7 +169,10 @@ export function Insights() {
               </Pressable>
             </View>
           ) : (
-            <>
+            <View style={styles.body}>
+              {failed ? <Pressable accessibilityRole="button" accessibilityLabel="Couldn’t refresh. Retry" onPress={() => setRevision((value) => value + 1)} style={styles.refresh}>
+                <ThemedText themeColor="textSecondary" style={Type.note}>Couldn’t refresh · <ThemedText style={[Type.note, { textDecorationLine: 'underline' }]}>Retry</ThemedText></ThemedText>
+              </Pressable> : null}
               <View style={[styles.hero, { backgroundColor: colors.heroBackground }]}>
                 <ThemedText style={[Type.body, { color: colors.heroText }]}>
                   {summary.expensePaise < 0 ? 'Refunds exceed spending by' : 'You’ve spent'}
@@ -171,12 +188,7 @@ export function Insights() {
                 </View>
               </View>
 
-              {largestCategory && <ThemedText style={[Type.body, { color: colors.textSecondary }]}>
-                Most recorded spending is in {largestCategory.categoryName ?? 'Uncategorized'}: {money(largestCategory.expensePaise)}.
-              </ThemedText>}
-
-              <Disclosure label="More insights" expanded={moreOpen} onPress={() => setMoreOpen((open) => !open)} colors={colors} />
-              {moreOpen && <>
+              <>
                 <View style={styles.section}>
                   <View style={styles.sectionHeading}>
                     <ThemedText style={Type.sectionTitle}>Six months</ThemedText>
@@ -195,12 +207,13 @@ export function Insights() {
                 <View style={styles.section}>
                   <ThemedText style={Type.sectionTitle}>Worth knowing</ThemedText>
                   {largestCategory ? <View style={[styles.insightCard, cardDepth(dark, colors.shadow), { backgroundColor: colors.backgroundElement, borderColor: colors.border }]}>
-                    <View style={[styles.badge, { backgroundColor: colors.backgroundSelected }]}>
-                      <ThemedText style={[Type.label, { color: colors.text }]}>Category comparison</ThemedText>
+                    <View style={styles.insightTitle}>
+                      <Icon name={categoryIcon(largestCategory.categoryName)} size={22} color={colors.text} />
+                      <ThemedText style={[Type.rowTitle, styles.grow]}>{largestCategory.categoryName ?? 'Uncategorized'} leads</ThemedText>
+                      <ThemedText style={Type.amountSmall}>{money(largestCategory.expensePaise)}</ThemedText>
                     </View>
-                    <ThemedText style={Type.rowTitle}>{largestCategory.categoryName ?? 'Uncategorized'}</ThemedText>
-                    <ThemedText style={[Type.body, { color: colors.textSecondary }]}>
-                      {monthLabel(month)}: {money(largestCategory.expensePaise)}. {previousMonth ? `${monthLabel(previousMonth.month)}: ${money(previousMonth.categories.find((item) => item.categoryId === largestCategory.categoryId)?.expensePaise ?? 0)}.` : 'No earlier month is available.'}
+                    <ThemedText style={[Type.note, { color: colors.textSecondary }]}>
+                      {previousMonth ? `${monthLabel(previousMonth.month)}: ${money(previousMonth.categories.find((item) => item.categoryId === largestCategory.categoryId)?.expensePaise ?? 0)}` : 'No earlier month to compare'}
                     </ThemedText>
                   </View> : <ThemedText style={[Type.body, { color: colors.textSecondary }]}>No posted category spending to compare.</ThemedText>}
                 </View>
@@ -219,7 +232,7 @@ export function Insights() {
                           <View style={[styles.merchantFill, { width: `${Number(merchant.amountPaise * 100n / maxMerchant)}%`, backgroundColor: colors.fill }]} />
                         </View>
                       </View>
-                      <ThemedText adjustsFontSizeToFit minimumFontScale={0.7} numberOfLines={1} style={Type.amountSmall}>{exactMoney(merchant.amountPaise)}</ThemedText>
+                      <ThemedText adjustsFontSizeToFit minimumFontScale={0.7} numberOfLines={1} style={Type.amountSmall}>{bigMoney(merchant.amountPaise)}</ThemedText>
                     </View>
                   )) : <ThemedText style={[Type.body, { color: colors.textSecondary }]}>No named merchants in this month’s posted spending.</ThemedText>}
                 </View>
@@ -233,13 +246,13 @@ export function Insights() {
                     <BillRow key={bill.id} bill={bill} colors={colors} first={index === 0} />
                   )) : <ThemedText style={[Type.body, { color: colors.textSecondary }]}>No unpaid future bill reminders.</ThemedText>}
                 </View>
-              </>}
+              </>
 
               <Disclosure label="How totals work" expanded={totalsOpen} onPress={() => setTotalsOpen((open) => !open)} colors={colors} />
               {totalsOpen && <ThemedText style={[Type.note, styles.rules, { color: colors.textSecondary }]}>
                 India calendar months. Posted debit expenses count as spending and posted credit income as income. A posted credit refund or reversal reduces spending in its receipt month. Transfers, cash withdrawals, pending, failed, deleted, and excluded entries are omitted. These totals show recorded cash flow, not balance or forecast.
               </ThemedText>}
-            </>
+            </View>
           )}
         </ScrollView>
       </SafeAreaView>
@@ -332,11 +345,13 @@ function BillRow({ bill, colors, first }: { bill: Bill; colors: ReturnType<typeo
 
 const styles = StyleSheet.create({
   container: { flex: 1 }, safe: { flex: 1 },
-  content: { paddingHorizontal: Spacing.gutter, paddingTop: 52, paddingBottom: Spacing.tabBarClearance, gap: Spacing.section, width: '100%', maxWidth: 520, alignSelf: 'center' },
+  content: { paddingHorizontal: Spacing.gutter, paddingTop: 40, paddingBottom: Spacing.tabBarClearance, gap: Spacing.section, width: '100%', maxWidth: 520, alignSelf: 'center' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: Spacing.two },
   state: { gap: Spacing.three }, pill: { minHeight: 44, alignSelf: 'flex-start', justifyContent: 'center', paddingHorizontal: Spacing.three, borderWidth: Stroke.ink, borderRadius: Radius.pill },
   hero: { padding: 22, borderRadius: Radius.hero, gap: Spacing.two },
   heroAmount: { marginTop: 2 },
+  body: { gap: Spacing.section }, refresh: { minHeight: 44, justifyContent: 'center' },
+  heroSkeleton: { borderWidth: Stroke.ink }, skeletonStat: { flex: 1, gap: 8 },
   heroStats: { flexDirection: 'row', marginTop: Spacing.two, paddingTop: Spacing.three, borderTopWidth: Stroke.hairline, gap: Spacing.two },
   heroStat: { flex: 1, minWidth: 0, gap: Spacing.two },
   heroStatAmount: { flexShrink: 1 }, keptChip: { alignSelf: 'flex-start', paddingHorizontal: 4, borderRadius: 4 },
@@ -351,7 +366,8 @@ const styles = StyleSheet.create({
   chevron: { width: 9, height: 9, marginRight: 4, borderRightWidth: 2, borderBottomWidth: 2, transform: [{ rotate: '45deg' }] },
   chevronOpen: { transform: [{ rotate: '225deg' }] },
   insightCard: { padding: Spacing.three, borderWidth: Stroke.ink, borderRadius: Radius.card, gap: Spacing.two },
-  badge: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 5, borderRadius: Radius.pill },
+  insightTitle: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  grow: { flex: 1, minWidth: 0 },
   rules: { lineHeight: 20 },
   merchantRow: { minHeight: 76, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   rank: { width: 28 }, merchantInfo: { flex: 1, minWidth: 0, gap: Spacing.two },

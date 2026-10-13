@@ -6,6 +6,10 @@ The frontend connects the shared local data API to Home, entry/edit/delete, past
 
 The user requested minimal text, minimal overwhelm and low effort after a full workday. Home names the purpose; new entries require only an amount. Date defaults to today and preserves the current India clock; edits preserve the original clock. Category, account and note are optional details. Filters, the full entry list, additional insights and calculation explanations start collapsed. Validation, explicit save errors and discard protection remain.
 
+Home, Budgets and Insights use a month sheet with entry months plus the current and viewed month. Previous/next controls inside the sheet keep transaction-free and future budget months reachable.
+
+On Home's chart, tapping a category filters the entry list; Uncategorized is a distinct filter, and tapping the selected category again clears it.
+
 Android uses Router tabs for the reference floating capsule, with symmetric side insets and fully visible labels. Entry and paste hide that capsule. The entry footer avoids the keyboard and bottom system area. iOS retains NativeTabs and requires Rohan's device validation.
 
 ## Observed validation
@@ -47,9 +51,13 @@ These are targeted keyboard/accessibility-tree checks, not a complete screen-rea
 
 ## Requested visual demo
 
-On 2026-10-08, the user requested seeded data to inspect the full visuals and confirmed the development app would not be used for real finances until later. The development phone's ledger now retains an explicitly seeded fictional fixture: 31 entries across six months, two demo accounts, seven categories, six monthly budgets and five bills. Current-month recorded income is ₹85,000.00, spending ₹34,823.00 and combined budget remaining ₹6,177.00; these are demonstration records, not bank balances or forecasts. Three recent entries fill the fanned cards; all six expense categories have activity. Shopping is over its limit; the fixture includes a refund and pending/excluded/transfer records that do not count as spending, plus upcoming, overdue and paid bills.
+On 2026-10-08, the user requested seeded data to inspect the full visuals and confirmed the development app would not be used for real finances until later. A first fixture (31 entries over six months) was seeded on the Motorola.
 
-The reusable fixture in `apps/mobile/src/dev/seed-demo.ts` is not called by normal startup. It uses the existing validated data API inside one transaction. Its final transaction ID prevents repeat seeds even if a demo entry was edited or deleted. Two tests cover the seed, six-month history, totals, duplicate prevention, protected edits/deletions and rollback/retry after a simulated storage failure. The one-time development hook was restored after seeding. The fictional records were intentionally retained at the user's request; earlier isolated QA databases remain removed.
+The fixture was then replaced by a realistic one in `apps/mobile/src/dev/seed-demo.ts` (ids `demo-v2-*`). It covers the three previous calendar months plus the current month to date for a fictional first-job IT fresher in Noida: ₹32,000 take-home on the 1st, ₹9,500 PG rent in Sector 62, office cafeteria, chai, weekend Swiggy/Zomato, Blinkit/Zepto, Rapido, Delhi Metro outings, Jio, Spotify, Netflix, a pharmacy run, a haircut and a monthly movie. About 230 entries for a run in early October. Five accounts (SBI salary, Kotak 811 savings, an SBI credit card, Paytm UPI Lite, cash), eight expense and four income categories, monthly budgets for every month and six bills (upcoming, overdue and paid). Brands are real so screens look like the shipped app; the person, employer, account digits and UPI references are invented.
+
+Second-order cases are deliberate and tested: monthly savings and UPI Lite top-ups as two-leg own-account transfers, the credit-card bill paying the previous month's card spend, an ATM withdrawal funding cash spends, two failed UPI payments each followed by a successful retry, a pending order, a reimbursable cab excluded from stats, a returned purchase refunded and linked to its original, freelance income, quarterly savings interest and small cashback. The second month raises the Travel budget for a train trip home; the third month's festive sale puts Shopping, and only Shopping, over budget.
+
+The plan is a pure function of the current time with a per-month seeded random generator, so earlier months don't change from day to day and nothing is dated in the future; today always gets three entries for Home's fanned cards. Loading runs inside one transaction through the validated data API, only into an empty ledger (real entries or the older fixture make it refuse instead of mixing in fake data), and is a no-op once loaded, so edited or deleted demo entries stay as they are. Development builds show **Settings → Test data** with *Load test data* and *Remove test data*; removal deletes demo rows, detaches real entries that pointed at demo accounts or categories, and retains any demo categories (and their parents) still used by real budgets, along with all other real data. To move a phone from the first fixture to this one, remove test data and then load it. The section and the fixture code are compiled out of release builds. Six tests cover determinism, coverage, totals against the ledger rules, the single over-budget category, load-once/refusal/removal, and rollback after a simulated storage failure.
 
 Physical Android checks observed populated Home, Budgets, the six-month Insights chart and Settings after restart. Home was left open for the user. Local development screenshots are not published to GitHub. Project checks now include 30 mobile/data tests plus 31 parser tests; all passed, along with typecheck and lint.
 
@@ -61,9 +69,17 @@ CSV write failures now attempt deletion of the created file. If deletion also fa
 
 Frozen installation, typecheck, lint, 34 mobile/data tests plus 31 parser tests, SDK dependency check, Expo Doctor (20/20), and Android/iOS/web exports passed. These checks do not prove Android destination cancellation, filesystem error behavior or physical haptics. Android's existing folder picker retains persisted directory grants; replacing it with a single-file destination or releasing grants is still required. Rohan's design-system PR #33 is now merged into dev; #31 and #37 remain open.
 
+## Android CSV single-file destination follow-up
+
+The Android exporter now opens the system `ACTION_CREATE_DOCUMENT` picker for one `text/csv` file instead of requesting a persistable folder grant. Cancel returns without creating a file; a successful result must include a document URI, and a failed write attempts to delete only that selected file. Automated checks cover cancellation, malformed picker results, selected-URI writes and cleanup. This does not verify Android document-provider behavior on a device; the rebuilt development client still needs a real-device cancel, successful save/readback and write-failure check. iOS implementation and device validation remain Rohan's work.
+
 ## Identical no-reference paste collisions — 2026-10-09
 
 When the sender/body identity already exists and the parsed message has no UPI reference, review offers “Same message” by default or an explicit “Separate payment” choice. The separate path exposes the existing India date/time and requires a different actual time to the nearest second; two purchases in the same second must be entered manually. A selected timestamp produces a stable retry identity. UPI-reference matches remain unsplittable. Automated SQLite tests cover two identical purchases, a retry of the selected timestamp, corrected/deleted replay protection, same-second validation, key identity and absence of raw message text. This source revision has not yet had a browser or physical-device interaction check.
+
+## PR review browser checkpoint — 2026-10-08
+
+On the combined #40/#41 revision, browser checks with fictional data confirmed that tapping Uncategorized shows only the uncategorized entry, and tapping it again restores all entries. The month sheet reached a future month with no entries, retained the current month, and returned to it. A fictional November category budget persisted after reload and remained reachable through Next month despite having no transactions. These checks do not establish native-device, large-text or screen-reader behavior for the revised controls.
 
 ## Remaining release gates
 

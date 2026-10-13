@@ -29,6 +29,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: node apps/mobile/modules/sms-reader/self-check.cjs
+      - name: Check Android unsigned release config plugin
+        run: node --test apps/mobile/test/with-unsigned-android-release.test.cjs
       - run: pnpm --dir apps/mobile exec expo install --check
       - run: pnpm --dir apps/mobile dlx expo-doctor
       - run: pnpm build

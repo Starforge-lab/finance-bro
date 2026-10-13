@@ -44,6 +44,7 @@ For the isolated Android SMS feasibility client, dispatch the workflow with `and
 ## Workflow
 
 1. Open or pick an issue. Follow [the manual-first roadmap](docs/mvp-roadmap.md) and confirm the issue's acceptance criteria. For parser work, use an anonymised SMS sample.
+   When a finance workflow decision needs competitor evidence, consult the relevant row in [the benchmark research](docs/research/2026-10-07-personal-finance-benchmarks.md). Carry applicable failure-mode checks into validation; follow agreed issue scope rather than copying a competitor's feature set.
 2. Create a short-lived branch from the default `dev` branch: `feat/…`, `fix/…`, `parser/<institution>-…`, or `chore/…`. See the [branching guide](docs/branching.md) for PR targets and release syncs.
 3. Write a failing test first for parser and matching logic.
 4. Run the checks below before pushing.

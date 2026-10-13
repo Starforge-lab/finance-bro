@@ -19,8 +19,8 @@ describe('planning storage', () => {
     const old = openTestLedger(filename);
     try {
       await migrateLedger(old.client, olderMigrations);
-      await old.ledger.db.insert(accounts).values({ id: 'cash', name: 'Cash', type: 'cash' }).run();
-      await old.ledger.db.insert(categories).values({ id: 'food', name: 'Food', kind: 'expense' }).run();
+      // Raw SQL: the current ORM schema has columns this older ledger doesn't.
+      old.sqlite.exec("INSERT INTO accounts (id, name, type) VALUES ('cash', 'Cash', 'cash'); INSERT INTO categories (id, name, kind) VALUES ('food', 'Food', 'expense');");
       await old.ledger.createTransaction({
         id: 'old-txn', amountPaise: 12300, direction: 'debit', kind: 'expense',
         occurredAt: new Date('2026-10-06T12:00:00.000Z'), source: 'manual',

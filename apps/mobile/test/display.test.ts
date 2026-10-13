@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { amountInput, indiaDate, indiaTime, money, parseIndiaDate, parseIndiaDateTime } from '../src/utils/display';
+import { amountInput, exactMoney, indiaDate, indiaTime, money, parseIndiaDate, parseIndiaDateTime } from '../src/utils/display';
 
-test('UI money keeps every paise and dates use the India calendar', () => {
+test('exact money keeps every paise, display money drops only zero paise, and dates use the India calendar', () => {
   assert.equal(amountInput(Number.MAX_SAFE_INTEGER), '90071992547409.91');
   assert.equal(money(Number.MAX_SAFE_INTEGER), '₹9,00,71,99,25,47,409.91');
   assert.equal(money(-1), '−₹0.01');
-  assert.equal(money(0), '₹0.00');
+  assert.equal(money(0), '₹0');
+  assert.equal(money(1_113_400), '₹11,134');
+  assert.equal(money(13_950), '₹139.50');
+  assert.equal(money(-50_000), '−₹500');
+  assert.equal(exactMoney(0), '₹0.00');
+  assert.equal(exactMoney(1_113_400), '₹11,134.00');
   assert.throws(() => money(0.1), RangeError);
   assert.equal(indiaDate(new Date('2026-09-30T18:30:00Z')), '2026-10-01');
   assert.equal(parseIndiaDate('2024-02-29').toISOString(), '2024-02-28T18:30:00.000Z');

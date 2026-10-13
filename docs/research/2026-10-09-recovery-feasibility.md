@@ -2,11 +2,15 @@
 
 **Decision:** `serenity-kit/react-native-libsodium` is the strongest single binding candidate found for Finance Bro’s selected libsodium APIs: it has native JSI implementations for Argon2id and XChaCha20-Poly1305 plus a React Native Web path to libsodium.js WASM. Its API fit is good enough for a bounded integration spike, but **the binding/source-build gate is not cleared**. The published native package extracts prebuilt libsodium binaries, its own source-build script still pins libsodium 1.0.21-stable, and its example targets React Native 0.83 while this app is on Expo SDK 58 / RN 0.88. Do not freeze the backup format or add the runtime dependency until source-built Android and exact SDK58 native compatibility are demonstrated.
 
-This note addresses feasibility for [#42](https://github.com/Starforge-lab/finance-bro/issues/42) against the F-Droid source-build requirement in [#56](https://github.com/Starforge-lab/finance-bro/issues/56). It is research, not an implementation decision to ship the dependency.
+Scope update (2026-10-10): encrypted recovery is deferred beyond the Android
+SMS-only 2.0 release. This historical research is retained for later work,
+not as a prerequisite for automatic SMS ingestion.
+
+This note addresses feasibility for [#42](https://github.com/Starforge-lab/finance-bro/issues/42) against the F-Droid source-build requirement in [#27](https://github.com/Starforge-lab/finance-bro/issues/27). It is research, not an implementation decision to ship the dependency.
 
 ## Candidate and API evidence
 
-The app currently uses Expo `~58.0.6`, `expo-sqlite ~58.0.10`, and `react-native 0.88.0-rc.3` ([mobile package manifest](../../apps/mobile/package.json)). Expo’s SDK 58 reference maps SDK 58 to RN 0.88. The candidate README documents Android, iOS, and web; an Expo config plugin; and a New Architecture example, but that example follows RN 0.83 defaults. The candidate declares broad React/RN peer ranges, which is not proof it builds against RN 0.88. The native compatibility edge therefore remains unverified. [Expo SDK 58 reference](https://docs.expo.dev/versions/v58.0.0/) · [candidate README](https://github.com/serenity-kit/react-native-libsodium/blob/v1.7.0/README.md) · [candidate package manifest](https://github.com/serenity-kit/react-native-libsodium/blob/v1.7.0/package.json)
+The 2026-10-09 research snapshot used Expo `~58.0.6`, `expo-sqlite ~58.0.10`, and `react-native 0.88.0-rc.3`. The SDK refresh in #74 advances the [mobile package manifest](../../apps/mobile/package.json) to Expo `~58.0.7`, `expo-sqlite ~58.0.11`, and `react-native 0.88.0-rc.4`; any resumed compatibility spike must use that exact updated graph. Recovery remains deferred and this note does not establish native compatibility on either graph. Expo’s SDK 58 reference maps SDK 58 to RN 0.88. The candidate README documents Android, iOS, and web; an Expo config plugin; and a New Architecture example, but that example follows RN 0.83 defaults. The candidate declares broad React/RN peer ranges, which is not proof it builds against RN 0.88. The native compatibility edge therefore remains unverified. [Expo SDK 58 reference](https://docs.expo.dev/versions/v58.0.0/) · [candidate README](https://github.com/serenity-kit/react-native-libsodium/blob/v1.7.0/README.md) · [candidate package manifest](https://github.com/serenity-kit/react-native-libsodium/blob/v1.7.0/package.json)
 
 | Runtime | Concrete API path | Evidence and limits |
 | --- | --- | --- |
