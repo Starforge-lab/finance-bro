@@ -12,11 +12,29 @@ are not an upgrade source for this revision. A conflicting prototype schema fail
 migration transactionally rather than resetting its records. Use a fresh isolated
 fictional ledger for prototype checks; no prototype conversion is implemented.
 
-`DataLayer.importSmsBatch(rows, expectedCursor)` accepts at most 100 already-read
-Android inbox rows, ordered by received timestamp and numeric platform row ID.
-IDs stay canonical decimal strings through the Android signed-64-bit range.
-The caller obtains `getSmsImportCursor()` before reading its next bounded page.
-A stale cursor stops the batch; callers must reload it before retrying.
+`DataLayer.importSmsBatch(rows, expectedCursor, options?)` accepts at most 100
+already-read Android inbox rows, ordered by received timestamp and numeric
+platform row ID. IDs stay canonical decimal strings through the Android
+signed-64-bit range. The caller obtains `getSmsImportCursor()` before reading its
+next bounded page. A stale cursor stops the batch; callers must reload it before
+retrying.
+
+Only the caller that has exhausted the source pages may pass
+`{ catchupCompletedAt }`, a positive safe-integer completion timestamp. This
+explicit checkpoint is committed in the same writer transaction as the final
+batch. An empty final page records the checkpoint without creating SMS cursor or
+key state; an ordinary empty batch remains a no-op. Passing the option on an
+intermediate page would falsely claim a completed catch-up, so source exhaustion
+remains the caller's responsibility. The timestamp is stored as a reserved,
+body-free preference value and does not change the theme preference or the
+protected-key creation policy.
+
+`DataLayer.getSmsImportHealth()` is read-only. It returns the last successful
+catch-up time, the current pending-review count, and the non-posted-alert subset
+of that count. It reads no inbox rows and does not request permissions or load or
+create a fingerprint key. Catch-up failures and unavailable outcomes are not
+stored as history; callers can report the current operation result, but this API
+does not fabricate durable failed-operation or unavailable counts.
 
 The Android connection enables and verifies foreign-key enforcement before
 `BEGIN IMMEDIATE`. All batch queries use that connection. References, accepted
@@ -105,10 +123,13 @@ are not a verified acceptance corpus. Generic parsing therefore stays in review.
 - Matching Android tests of the connection, migration, concurrent saves, rollback
   and restart are required before this native storage path is ready to merge.
 - #46 must establish the eligible rule corpus before any automatic saving claim.
-- #43 still needs native review-reader wiring, confirmation/recovery actions, health state,
-  protected-key unavailability/loss lifecycle proof and full native cross-source
-  regression evidence. The missing-key creation guard is implemented and tested
-  in source/platform mocks and an isolated real browser key-store probe; visible
+- #43 still needs native review-reader wiring, confirmation/recovery actions,
+  failed/unavailable operation-count semantics and presentation, protected-key
+  unavailability/loss lifecycle proof and full native cross-source regression
+  evidence. The storage health API reports persisted pending reviews and the
+  non-posted-alert subset; it does not retain failed/unavailable operation
+  history. The missing-key creation guard is implemented and tested in
+  source/platform mocks and an isolated real browser key-store probe; visible
   recovery actions and actual Android store/lifecycle proof remain incomplete.
 - #44 supplies opt-in permissions, cancellable history preview, bounded inbox
   pages, catch-up and receiver integration. Permission changes must stop further

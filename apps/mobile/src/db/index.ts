@@ -43,7 +43,9 @@ export type { DataLayer } from './service';
 export type {
   SmsCursor,
   SmsInboxRow,
+  SmsImportBatchOptions,
   SmsImportBatchResult,
+  SmsImportHealth,
   SmsOriginalReader,
   SmsReviewPage,
   SmsReviewPageOptions,

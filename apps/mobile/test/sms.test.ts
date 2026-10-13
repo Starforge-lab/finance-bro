@@ -8,8 +8,8 @@ import { eq } from 'drizzle-orm';
 import { describe, it } from 'node:test';
 import { createDataLayer } from '../src/db/service';
 import type { LedgerSQLiteClient, LedgerSQLiteTransactionRunner, LedgerMigrations } from '../src/db/ledger';
-import { importKeyState, smsImportRefs, smsImportState, transactions } from '../src/db/schema';
-import type { FingerprintKeyProvider, Fingerprinter } from '../src/imports/fingerprint';
+import { importKeyState, preferences, smsImportRefs, smsImportState, transactions } from '../src/db/schema';
+import { FingerprintKeyUnavailableError, type FingerprintKeyProvider, type Fingerprinter } from '../src/imports/fingerprint';
 import { ledgerMigrations, openTestLedger, temporaryFile } from './helpers/ledger';
 
 const strongSms = {
@@ -149,14 +149,16 @@ describe('Android SMS ingestion storage seam', () => {
       const time = strongSms.receivedAt;
       await assert.rejects(api.importSmsBatch([smsRow('10', strongSms, time), smsRow('2', strongSms, time)], null), /ordered/);
 
-      const outcomes = await Promise.allSettled([
-        api.importSmsBatch([smsRow('2', strongSms, time), smsRow('10', strongSms, time)], null),
-        api.importSmsBatch([smsRow('2', strongSms, time), smsRow('10', strongSms, time)], null),
-      ]);
+      const completionTimes = [1_800_000_000_001, 1_800_000_000_002];
+      const outcomes = await Promise.allSettled(completionTimes.map((catchupCompletedAt) =>
+        api.importSmsBatch([smsRow('2', strongSms, time), smsRow('10', strongSms, time)], null, { catchupCompletedAt }),
+      ));
       assert.equal(outcomes.filter((entry) => entry.status === 'fulfilled').length, 1);
       assert.equal(outcomes.filter((entry) => entry.status === 'rejected').length, 1);
       assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 2);
       assert.deepEqual(await api.getSmsImportCursor(), { receivedAt: time, platformId: '10' });
+      const winner = outcomes.findIndex((entry) => entry.status === 'fulfilled');
+      assert.equal((await api.getSmsImportHealth()).lastSuccessfulCatchupAt, completionTimes[winner]);
     } finally { fixture.sqlite.close(); }
   });
 
@@ -171,6 +173,183 @@ describe('Android SMS ingestion storage seam', () => {
       assert.equal(await fixture.ledger.db.select().from(smsImportState).get(), undefined);
       assert.equal(await fixture.ledger.db.select().from(importKeyState).get(), undefined);
       assert.equal(await api.getSmsImportCursor(), null);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('records only an explicit empty catch-up completion without creating fingerprint state', async () => {
+    const fixture = openTestLedger();
+    try {
+      const key = fingerprinter('fictional-empty-catchup-key');
+      const policies: boolean[] = [];
+      const provider: FingerprintKeyProvider = async (policy) => {
+        policies.push(policy?.allowCreate ?? false);
+        return key;
+      };
+      const api = createDataLayer(fixture.client, ledgerMigrations, provider, transactionRunner(fixture.sqlite, fixture.client));
+      await api.migrateLedger();
+      await api.setThemePreference('dark');
+
+      assert.deepEqual(await api.getSmsImportHealth(), {
+        lastSuccessfulCatchupAt: null,
+        pendingReviewCount: 0,
+        nonPostedReviewCount: 0,
+      });
+      assert.deepEqual(await api.importSmsBatch([], null), {
+        cursor: null, inserted: 0, duplicate: 0, review: 0, ignored: 0,
+      });
+      assert.equal((await api.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
+      assert.equal(policies.length, 0, 'ordinary empty batches and health reads must not access the key provider');
+
+      const completedAt = 1_800_000_000_003;
+      await api.importSmsBatch([], null, { catchupCompletedAt: completedAt });
+      assert.deepEqual(await api.getSmsImportHealth(), {
+        lastSuccessfulCatchupAt: completedAt,
+        pendingReviewCount: 0,
+        nonPostedReviewCount: 0,
+      });
+      assert.equal(await fixture.ledger.db.select().from(smsImportState).get(), undefined);
+      assert.equal(await fixture.ledger.db.select().from(importKeyState).get(), undefined);
+      assert.equal((await fixture.ledger.db.select().from(preferences).where(eq(preferences.key, 'theme')).get())?.value, 'dark');
+
+      await api.importSmsBatch([smsRow('100')], null);
+      assert.deepEqual(policies, [true], 'the health marker must not block first-use key creation');
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('reports pending reviews and their non-posted subset, excluding resolved references', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcAccount(api);
+      const normal = smsRow('101');
+      const nonPosted = smsRow('102', {
+        ...strongSms,
+        body: strongSms.body.replace('debited', 'debited but failed').replace('612345678901', '612345678902'),
+      }, strongSms.receivedAt + 1_000);
+      await api.importSmsBatch([normal, nonPosted], null);
+      assert.deepEqual(await api.getSmsImportHealth(), {
+        lastSuccessfulCatchupAt: null,
+        pendingReviewCount: 2,
+        nonPostedReviewCount: 1,
+      });
+
+      const prepared = await api.prepareSmsReview(normal.platformId, async () => normal);
+      assert.equal(prepared.kind, 'ready');
+      if (prepared.kind !== 'ready') throw new Error('Expected the fictional pending SMS to be reviewable');
+      assert.deepEqual(
+        await api.confirmSmsReview(normal.platformId, prepared, async () => normal),
+        { kind: 'saved', platformId: normal.platformId, transactionId: `sms:${normal.platformId}` },
+      );
+      assert.deepEqual(await api.getSmsImportHealth(), {
+        lastSuccessfulCatchupAt: null,
+        pendingReviewCount: 1,
+        nonPostedReviewCount: 1,
+      });
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('rejects unsafe completion times and reports corrupt stored time without echoing it', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      for (const catchupCompletedAt of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+        await assert.rejects(api.importSmsBatch([], null, { catchupCompletedAt }), /positive safe integer/);
+      }
+      await assert.rejects(
+        api.importSmsBatch([], null, { catchupCompletedAt: 1_800_000_000_004, unexpected: true } as never),
+        /invalid shape/,
+      );
+      assert.equal(await fixture.ledger.db.select().from(preferences)
+        .where(eq(preferences.key, 'sms.last_successful_catchup_at')).get(), undefined);
+
+      fixture.sqlite.prepare('INSERT INTO preferences(key, value) VALUES(?, ?)')
+        .run('sms.last_successful_catchup_at', 'FICTIONAL_CORRUPT_TIMESTAMP');
+      await assert.rejects(api.getSmsImportHealth(), (error: unknown) => {
+        assert.equal(error instanceof Error, true);
+        assert.equal((error as Error).message, 'Stored SMS catch-up completion time is invalid');
+        assert.equal((error as Error).message.includes('FICTIONAL_CORRUPT_TIMESTAMP'), false);
+        return true;
+      });
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('uses the validated completion-time snapshot if row validation mutates options', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      const completedAt = 1_800_000_000_007;
+      const options = { catchupCompletedAt: completedAt };
+      const row = smsRow('150');
+      Object.defineProperty(row, 'body', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          options.catchupCompletedAt = 0;
+          return strongSms.body;
+        },
+      });
+
+      await api.importSmsBatch([row], null, options);
+
+      assert.equal((await api.getSmsImportHealth()).lastSuccessfulCatchupAt, completedAt);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('rolls back health with a failed final batch and leaves manual entry available after key loss', async () => {
+    const fixture = openTestLedger();
+    try {
+      const key = fingerprinter('fictional-sms-key-loss');
+      let keyAvailable = true;
+      const policies: boolean[] = [];
+      const provider: FingerprintKeyProvider = async (policy) => {
+        policies.push(policy?.allowCreate ?? false);
+        if (!keyAvailable) throw new FingerprintKeyUnavailableError();
+        return key;
+      };
+      const api = createDataLayer(fixture.client, ledgerMigrations, provider, transactionRunner(fixture.sqlite, fixture.client));
+      await api.migrateLedger();
+      const previousSuccess = 1_800_000_000_005;
+      const failedCompletion = 1_800_000_000_006;
+      await api.importSmsBatch([], null, { catchupCompletedAt: previousSuccess });
+      fixture.sqlite.exec(`CREATE TRIGGER reject_sms_health_update BEFORE UPDATE ON preferences
+        WHEN NEW.key = 'sms.last_successful_catchup_at'
+        BEGIN SELECT RAISE(ABORT, 'fictional health write failure'); END`);
+      await assert.rejects(api.importSmsBatch([smsRow('200')], null, { catchupCompletedAt: failedCompletion }));
+      assert.deepEqual(await api.getSmsImportHealth(), {
+        lastSuccessfulCatchupAt: previousSuccess,
+        pendingReviewCount: 0,
+        nonPostedReviewCount: 0,
+      });
+      assert.equal(await api.getSmsImportCursor(), null);
+      assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 0);
+      assert.equal(await fixture.ledger.db.select().from(smsImportState).get(), undefined);
+      assert.equal(await fixture.ledger.db.select().from(importKeyState).get(), undefined);
+      fixture.sqlite.exec('DROP TRIGGER reject_sms_health_update');
+
+      const first = await api.importSmsBatch([smsRow('201')], null, { catchupCompletedAt: previousSuccess });
+      keyAvailable = false;
+      await assert.rejects(api.importSmsBatch(
+        [smsRow('202', strongSms, strongSms.receivedAt + 1_000)],
+        first.cursor,
+        { catchupCompletedAt: failedCompletion },
+      ), FingerprintKeyUnavailableError);
+      assert.deepEqual(await api.getSmsImportHealth(), {
+        lastSuccessfulCatchupAt: previousSuccess,
+        pendingReviewCount: 1,
+        nonPostedReviewCount: 0,
+      });
+      assert.deepEqual(await api.getSmsImportCursor(), first.cursor);
+      assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 1);
+
+      await api.saveManualEntry({
+        id: 'manual-after-sms-key-loss', amountInr: '1.25', direction: 'debit',
+        occurredAt: new Date(1_800_000_000_000),
+      });
+      assert.equal(await api.getTransaction('manual-after-sms-key-loss') !== undefined, true);
+      assert.deepEqual(policies, [true, true, false]);
     } finally { fixture.sqlite.close(); }
   });
 

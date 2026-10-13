@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, count, eq, gt, isNull, or, sql } from 'drizzle-orm';
 import { parseSms, type ParsedTxn, type RawSms } from '@finance-bro/sms-parser';
 import {
   createLedger,
@@ -9,7 +9,7 @@ import {
   InvalidTransactionReferenceError,
   assertValidReviewedSmsTransaction,
 } from '../db/ledger';
-import { accounts, importKeyState, smsImportRefs, smsImportState, transactions } from '../db/schema';
+import { accounts, importKeyState, preferences, smsImportRefs, smsImportState, transactions } from '../db/schema';
 import { DuplicateReviewRequiredError, getFingerprintKeyPolicy, requiresDuplicateReview } from './key-state';
 import { preparePastedSms, type PastePreparation, type ReviewCorrections } from './paste';
 import type { FingerprintKeyProvider, Fingerprinter } from './fingerprint';
@@ -19,6 +19,7 @@ const maxBodyLength = 16_384;
 const maxSenderLength = 256;
 const maxPlatformId = 9_223_372_036_854_775_807n;
 const verifiedRuleVersions: Readonly<Record<string, number>> = {};
+const smsCatchupCompletionPreference = 'sms.last_successful_catchup_at';
 
 export type SmsCursor = { receivedAt: number; platformId: string };
 export type SmsInboxRow = RawSms & { platformId: string };
@@ -28,6 +29,12 @@ export type SmsImportBatchResult = {
   duplicate: number;
   review: number;
   ignored: number;
+};
+export type SmsImportBatchOptions = { catchupCompletedAt?: number };
+export type SmsImportHealth = {
+  lastSuccessfulCatchupAt: number | null;
+  pendingReviewCount: number;
+  nonPostedReviewCount: number;
 };
 export type SmsReviewRow = Pick<SmsCursor, 'receivedAt' | 'platformId'> & {
   reason: string | null;
@@ -99,6 +106,40 @@ function validateReviewPageOptions(value: unknown): asserts value is SmsReviewPa
     throw new RangeError(`SMS review page limit must be an integer from 1 to ${maxBatchSize}`);
   }
   assertCursor(options.after ?? null, 'after');
+}
+
+function validateSmsImportBatchOptions(value: unknown): asserts value is SmsImportBatchOptions {
+  const options = readOwnDataRecord(value, 'SMS import batch options', ['catchupCompletedAt'], false);
+  const timestamp = options.catchupCompletedAt;
+  if (timestamp !== undefined && (!Number.isSafeInteger(timestamp) || (timestamp as number) <= 0)) {
+    throw new TypeError('catchupCompletedAt must be a positive safe integer');
+  }
+}
+
+function parseStoredCatchupCompletion(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const timestamp = Number(value);
+  if (!Number.isSafeInteger(timestamp) || timestamp <= 0 || String(timestamp) !== value) {
+    throw new Error('Stored SMS catch-up completion time is invalid');
+  }
+  return timestamp;
+}
+
+function validateSmsReviewCounts(value: {
+  pendingReviewCount: number;
+  nonPostedReviewCount: number;
+} | undefined): asserts value is { pendingReviewCount: number; nonPostedReviewCount: number } {
+  if (!value || !Number.isSafeInteger(value.pendingReviewCount) || value.pendingReviewCount < 0 ||
+      !Number.isSafeInteger(value.nonPostedReviewCount) || value.nonPostedReviewCount < 0 ||
+      value.nonPostedReviewCount > value.pendingReviewCount) {
+    throw new Error('SMS review counts are invalid');
+  }
+}
+
+async function saveCatchupCompletion(ledger: ReturnType<typeof createLedger>, completedAt: number): Promise<void> {
+  const value = String(completedAt);
+  await ledger.db.insert(preferences).values({ key: smsCatchupCompletionPreference, value })
+    .onConflictDoUpdate({ target: preferences.key, set: { value } }).run();
 }
 
 function compareCursor(left: SmsCursor, right: SmsCursor): number {
@@ -621,6 +662,22 @@ export function createSmsIngestion(
       const state = await readLedger.db.select().from(smsImportState).where(eq(smsImportState.id, 1)).get();
       return currentCursor(state);
     },
+    async getSmsImportHealth(): Promise<SmsImportHealth> {
+      const counts = await readLedger.db.select({
+        completionValue: sql<string | null>`(
+          select ${preferences.value} from ${preferences}
+          where ${preferences.key} = ${smsCatchupCompletionPreference}
+        )`,
+        pendingReviewCount: count(),
+        nonPostedReviewCount: count(sql`case when ${smsImportRefs.reason} = 'non_posted' then 1 end`),
+      }).from(smsImportRefs).where(eq(smsImportRefs.status, 'review')).get();
+      validateSmsReviewCounts(counts);
+      return {
+        lastSuccessfulCatchupAt: parseStoredCatchupCompletion(counts.completionValue ?? undefined),
+        pendingReviewCount: counts.pendingReviewCount,
+        nonPostedReviewCount: counts.nonPostedReviewCount,
+      };
+    },
     async getSmsReviewPage(options: SmsReviewPageOptions = {}): Promise<SmsReviewPage> {
       validateReviewPageOptions(options);
       const limit = options.limit ?? maxBatchSize;
@@ -771,7 +828,13 @@ export function createSmsIngestion(
       }
       return result ?? unavailable('storage_unavailable');
     },
-    async importSmsBatch(batch: SmsInboxRow[], expectedCursor: SmsCursor | null): Promise<SmsImportBatchResult> {
+    async importSmsBatch(
+      batch: SmsInboxRow[],
+      expectedCursor: SmsCursor | null,
+      options: SmsImportBatchOptions = {},
+    ): Promise<SmsImportBatchResult> {
+      validateSmsImportBatchOptions(options);
+      const catchupCompletedAt = options.catchupCompletedAt;
       validateBatch(batch, expectedCursor);
       const rows = batch.map(({ platformId, sender, body, receivedAt }) => ({ platformId, sender, body, receivedAt }));
       const checkedExpectedCursor = expectedCursor === null ? null : { ...expectedCursor };
@@ -788,7 +851,10 @@ export function createSmsIngestion(
         }
 
         result = { cursor, inserted: 0, duplicate: 0, review: 0, ignored: 0 };
-        if (rows.length === 0) return;
+        if (rows.length === 0) {
+          if (catchupCompletedAt !== undefined) await saveCatchupCompletion(ledger, catchupCompletedAt);
+          return;
+        }
         if (!fingerprints) throw new Error('A platform fingerprint provider is required for SMS imports');
         const fingerprinter = await fingerprints(await getFingerprintKeyPolicy(ledger));
         if (!/^[a-f0-9]{64}$/.test(fingerprinter.keyId)) throw new TypeError('Invalid fingerprint key identifier');
@@ -908,6 +974,7 @@ export function createSmsIngestion(
           }).run();
         }
         result.cursor = nextCursor;
+        if (catchupCompletedAt !== undefined) await saveCatchupCompletion(ledger, catchupCompletedAt);
       });
 
       if (!result) throw new Error('SMS import transaction completed without a result');
