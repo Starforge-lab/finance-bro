@@ -1,9 +1,9 @@
 import { and, asc, eq, gt, or, sql } from 'drizzle-orm';
 import { parseSms, type ParsedTxn, type RawSms } from '@finance-bro/sms-parser';
 import { createLedger, type LedgerMigrations, type LedgerSQLiteClient, type LedgerSQLiteTransactionRunner } from '../db/ledger';
-import { accounts, smsImportRefs, smsImportState, transactions } from '../db/schema';
+import { accounts, importKeyState, smsImportRefs, smsImportState, transactions } from '../db/schema';
 import { DuplicateReviewRequiredError, getFingerprintKeyPolicy, requiresDuplicateReview } from './key-state';
-import { preparePastedSms } from './paste';
+import { preparePastedSms, type PastePreparation } from './paste';
 import type { FingerprintKeyProvider, Fingerprinter } from './fingerprint';
 
 const maxBatchSize = 100;
@@ -27,6 +27,19 @@ export type SmsReviewRow = Pick<SmsCursor, 'receivedAt' | 'platformId'> & {
   ruleVersion: number | null;
 };
 export type SmsReviewPage = { rows: SmsReviewRow[]; nextCursor?: SmsCursor };
+
+export type SmsOriginalReader = (platformId: string) => Promise<SmsInboxRow | null>;
+export type SmsReviewUnavailableReason =
+  | 'not_pending'
+  | 'missing_original'
+  | 'source_changed'
+  | 'no_longer_financial'
+  | 'key_unavailable'
+  | 'storage_unavailable'
+  | 'source_unavailable';
+export type SmsReviewPreparation =
+  | { kind: 'ready'; platformId: string; preparation: Extract<PastePreparation, { kind: 'needs-review' }> }
+  | { kind: 'unavailable'; platformId: string; reason: SmsReviewUnavailableReason };
 
 export type SmsReviewPageOptions = { limit?: number | undefined; after?: SmsCursor | null | undefined };
 
@@ -111,6 +124,24 @@ function validateBatch(batch: unknown, expectedCursor: unknown): asserts batch i
     }
     previous = cursor;
   }
+}
+
+async function keyedFingerprint(fingerprinter: Fingerprinter, value: unknown[]): Promise<string> {
+  const result = await fingerprinter.fingerprint(JSON.stringify(value));
+  if (!/^[a-f0-9]{64}$/.test(result)) throw new TypeError('Invalid keyed SMS fingerprint');
+  return result;
+}
+
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError';
+}
+
+async function fingerprintHistoryMatches(ledger: ReturnType<typeof createLedger>, keyId: string): Promise<boolean> {
+  const [importState, smsState] = await Promise.all([
+    ledger.db.select({ keyId: importKeyState.keyId }).from(importKeyState).where(eq(importKeyState.id, 1)).get(),
+    ledger.db.select({ keyId: smsImportState.keyId }).from(smsImportState).where(eq(smsImportState.id, 1)).get(),
+  ]);
+  return importState?.keyId === keyId && (!smsState || smsState.keyId === keyId);
 }
 
 function currentCursor(state: { cursorReceivedAt: number | null; cursorPlatformId: string | null } | undefined): SmsCursor | null {
@@ -228,6 +259,128 @@ export function createSmsIngestion(
       if (!hasMore) return { rows };
       const last = rows[rows.length - 1]!;
       return { rows, nextCursor: { receivedAt: last.receivedAt, platformId: last.platformId } };
+    },
+    async prepareSmsReview(platformId: string, readOriginal: SmsOriginalReader): Promise<SmsReviewPreparation> {
+      assertPlatformId(platformId);
+      if (typeof readOriginal !== 'function') throw new TypeError('An Android SMS source reader is required');
+      const unavailable = (reason: SmsReviewUnavailableReason): SmsReviewPreparation => ({
+        kind: 'unavailable', platformId, reason,
+      });
+
+      let reference: typeof smsImportRefs.$inferSelect | undefined;
+      try {
+        reference = await readLedger.db.select().from(smsImportRefs)
+          .where(eq(smsImportRefs.platformId, platformId)).get();
+      } catch {
+        return unavailable('storage_unavailable');
+      }
+      if (!reference || reference.status !== 'review' || reference.transactionId !== null) {
+        return unavailable('not_pending');
+      }
+      if (!fingerprints) return unavailable('key_unavailable');
+
+      let policy: Awaited<ReturnType<typeof getFingerprintKeyPolicy>>;
+      try {
+        policy = await getFingerprintKeyPolicy(readLedger);
+      } catch {
+        return unavailable('storage_unavailable');
+      }
+      if (policy.allowCreate) return unavailable('key_unavailable');
+
+      // A persisted reference must never trigger key provisioning during re-read.
+      let fingerprinter: Fingerprinter;
+      try {
+        fingerprinter = await fingerprints({ allowCreate: false });
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        return unavailable('key_unavailable');
+      }
+      let keyId: string;
+      try {
+        keyId = fingerprinter.keyId;
+      } catch {
+        return unavailable('key_unavailable');
+      }
+      if (!/^[a-f0-9]{64}$/.test(keyId) || !/^[a-f0-9]{64}$/.test(reference.keyId) || reference.keyId !== keyId) {
+        return unavailable('key_unavailable');
+      }
+      let historyMatches: boolean;
+      try {
+        historyMatches = await fingerprintHistoryMatches(readLedger, keyId);
+      } catch {
+        return unavailable('storage_unavailable');
+      }
+      if (!historyMatches) return unavailable('key_unavailable');
+
+      let original: SmsInboxRow | null;
+      try {
+        original = await readOriginal(platformId);
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        return unavailable('source_unavailable');
+      }
+      if (original === null) return unavailable('missing_original');
+
+      let row: SmsInboxRow;
+      try {
+        validateBatch([original], null);
+        row = {
+          platformId: original.platformId,
+          receivedAt: original.receivedAt,
+          sender: original.sender,
+          body: original.body,
+        };
+      } catch {
+        return unavailable('source_changed');
+      }
+      if (row.platformId !== platformId) return unavailable('source_changed');
+      try {
+        parseSms(row);
+      } catch {
+        return unavailable('source_changed');
+      }
+
+      let preparation: Awaited<ReturnType<typeof preparePastedSms>>;
+      let bodyHash: string;
+      let senderHash: string;
+      try {
+        preparation = await preparePastedSms(row, fingerprinter);
+        bodyHash = preparation.kind === 'needs-review'
+          ? preparation.identity.bodyHash
+          : await keyedFingerprint(fingerprinter, ['body', row.body]);
+        senderHash = await keyedFingerprint(fingerprinter, ['sender', row.sender.trim().toUpperCase()]);
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        return unavailable('key_unavailable');
+      }
+
+      let currentReference: typeof smsImportRefs.$inferSelect | undefined;
+      try {
+        currentReference = await readLedger.db.select().from(smsImportRefs)
+          .where(eq(smsImportRefs.platformId, platformId)).get();
+      } catch {
+        return unavailable('storage_unavailable');
+      }
+      if (!currentReference || currentReference.status !== 'review' || currentReference.transactionId !== null) {
+        return unavailable('not_pending');
+      }
+      let currentHistoryMatches: boolean;
+      try {
+        currentHistoryMatches = await fingerprintHistoryMatches(readLedger, keyId);
+      } catch {
+        return unavailable('storage_unavailable');
+      }
+      if (currentReference.keyId !== keyId || !currentHistoryMatches) return unavailable('key_unavailable');
+      if (row.receivedAt !== reference.receivedAt ||
+          bodyHash !== reference.bodyHash || senderHash !== reference.senderHash ||
+          currentReference.receivedAt !== reference.receivedAt ||
+          currentReference.bodyHash !== reference.bodyHash ||
+          currentReference.senderHash !== reference.senderHash ||
+          currentReference.keyId !== reference.keyId) {
+        return unavailable('source_changed');
+      }
+      if (preparation.kind === 'ignored') return unavailable('no_longer_financial');
+      return { kind: 'ready', platformId, preparation };
     },
     async importSmsBatch(batch: SmsInboxRow[], expectedCursor: SmsCursor | null): Promise<SmsImportBatchResult> {
       validateBatch(batch, expectedCursor);

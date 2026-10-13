@@ -40,7 +40,17 @@ export async function getLedgerClient(): Promise<SQLite.SQLiteDatabase> {
 export { createLedger, migrateLedger, assertValidAmountPaise } from './ledger';
 export { createDataLayer } from './service';
 export type { DataLayer } from './service';
-export type { SmsCursor, SmsInboxRow, SmsImportBatchResult, SmsReviewPage, SmsReviewPageOptions, SmsReviewRow } from '../imports/sms';
+export type {
+  SmsCursor,
+  SmsInboxRow,
+  SmsImportBatchResult,
+  SmsOriginalReader,
+  SmsReviewPage,
+  SmsReviewPageOptions,
+  SmsReviewPreparation,
+  SmsReviewRow,
+  SmsReviewUnavailableReason,
+} from '../imports/sms';
 export { parseInrAmount, saveManualEntry, editManualAmount } from './manual';
 export type { ManualEntry } from './manual';
 export type { ThemePreference } from './preferences';

@@ -44,6 +44,21 @@ platform ID, retaining precision beyond JavaScript's safe integer range. A
 are excluded; refresh from the first page to discover newly pending earlier
 references. This listing does not prepare or confirm a transaction.
 
+`prepareSmsReview(platformId, readOriginal)` prepares one pending reference using
+a caller-supplied exact-ID Android read. It forbids key creation, checks matching
+key history before accessing the source, and verifies timestamp, body HMAC and
+normalized-sender HMAC. Parser-derived identities and rule versions may change;
+they are not immutable source proof. The reference is rechecked after the async
+read so a concurrently resolved item cannot return ready. Preparation is read-only
+and returns no original text or sender label.
+
+Unavailable results distinguish a resolved reference, missing original, changed
+source, no-longer-financial parse, inaccessible key, unreadable source and database
+failure. Error text is not returned; cancellation propagates from the reader and
+key operations. The caller must obtain revocable source consent. This API is not
+yet connected to the native reader or a screen, and it does not confirm a save;
+confirmation must revalidate the source and key rather than trust an old preparation.
+
 The data layer checks persisted state before requesting a protected key. Any
 import key state, SMS cursor state, review reference or imported transaction
 (including a tombstone) forbids key creation. This deliberately includes
@@ -77,7 +92,7 @@ are not a verified acceptance corpus. Generic parsing therefore stays in review.
 - Matching Android tests of the connection, migration, concurrent saves, rollback
   and restart are required before this native storage path is ready to merge.
 - #46 must establish the eligible rule corpus before any automatic saving claim.
-- #43 still needs review re-read/save and recovery actions, health state,
+- #43 still needs native review-reader wiring, confirmation/recovery actions, health state,
   protected-key unavailability/loss lifecycle proof and full native cross-source
   regression evidence. The missing-key creation guard is implemented and tested
   in source/platform mocks and an isolated real browser key-store probe; visible
@@ -88,5 +103,6 @@ are not a verified acceptance corpus. Generic parsing therefore stays in review.
 - #16 and #56 retain their provider, lifecycle, device and release gates. Node
   SQLite tests and mocked native-runner tests do not establish Android behavior.
 
-No native source is read by this API. Its caller must have revocable user consent;
-this implementation is not consent to inspect a personal inbox.
+This module requests no source permissions itself. Review preparation calls only
+the supplied exact-ID reader; that caller must have revocable user consent. This
+implementation is not consent to inspect a personal inbox.
