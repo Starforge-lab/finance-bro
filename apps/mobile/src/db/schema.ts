@@ -179,7 +179,8 @@ export const smsImportState = sqliteTable(
 export const smsImportRefs = sqliteTable(
   'sms_import_refs',
   {
-    platformId: text('platform_id').primaryKey(),
+    referenceId: text('reference_id').primaryKey(),
+    platformId: text('platform_id').notNull(),
     receivedAt: integer('received_at').notNull(),
     senderHash: text('sender_hash').notNull(),
     dedupeKey: text('dedupe_key').notNull(),
@@ -193,6 +194,7 @@ export const smsImportRefs = sqliteTable(
     createdAt: integer('created_at').notNull(),
   },
   (table) => [
+    unique('sms_import_refs_source_unique').on(table.platformId, table.receivedAt, table.bodyHash),
     index('sms_import_refs_dedupe_key_idx').on(table.dedupeKey),
     check('sms_import_refs_status_check', sql`${table.status} in ('review', 'saved', 'duplicate')`),
     check('sms_import_refs_received_at_check', sql`typeof(${table.receivedAt}) = 'integer'`),

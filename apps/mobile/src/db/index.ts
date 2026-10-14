@@ -54,6 +54,7 @@ export type {
   SmsOriginalReader,
   SmsReviewPage,
   SmsReviewPageOptions,
+  SmsReviewCursor,
   SmsReviewConfirmationOptions,
   SmsReviewConfirmationResult,
   SmsReviewConfirmationUnavailableReason,

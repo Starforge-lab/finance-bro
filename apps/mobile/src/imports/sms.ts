@@ -22,6 +22,7 @@ const verifiedRuleVersions: Readonly<Record<string, number>> = {};
 const smsCatchupCompletionPreference = 'sms.last_successful_catchup_at';
 
 export type SmsCursor = { receivedAt: number; platformId: string };
+export type SmsReviewCursor = SmsCursor & { referenceId: string };
 export class StaleSmsCursorError extends Error {
   constructor() {
     super('SMS import cursor is stale; reload the current cursor before retrying');
@@ -45,12 +46,12 @@ export type SmsImportHealth = {
   pendingReviewCount: number;
   nonPostedReviewCount: number;
 };
-export type SmsReviewRow = Pick<SmsCursor, 'receivedAt' | 'platformId'> & {
+export type SmsReviewRow = SmsReviewCursor & {
   reason: string | null;
   ruleId: string | null;
   ruleVersion: number | null;
 };
-export type SmsReviewPage = { rows: SmsReviewRow[]; nextCursor?: SmsCursor };
+export type SmsReviewPage = { rows: SmsReviewRow[]; nextCursor?: SmsReviewCursor };
 
 export type SmsOriginalReader = (platformId: string) => Promise<SmsInboxRow | null>;
 export type SmsReviewUnavailableReason =
@@ -64,15 +65,15 @@ export type SmsReviewUnavailableReason =
   | 'source_unavailable';
 export type SmsReviewConfirmationUnavailableReason = SmsReviewUnavailableReason | 'stale_preparation' | 'ambiguous_overlap' | 'invalid_correction' | 'transaction_unavailable';
 export type SmsReviewPreparation =
-  | { kind: 'ready'; platformId: string; preparation: Extract<PastePreparation, { kind: 'needs-review' }> }
-  | { kind: 'unavailable'; platformId: string; reason: SmsReviewUnavailableReason };
+  | { kind: 'ready'; referenceId: string; platformId: string; receivedAt: number; preparation: Extract<PastePreparation, { kind: 'needs-review' }> }
+  | { kind: 'unavailable'; referenceId: string; platformId: string | null; reason: SmsReviewUnavailableReason };
 export type SmsReviewConfirmationResult =
-  | { kind: 'saved'; platformId: string; transactionId: string }
-  | { kind: 'duplicate'; platformId: string; transactionId: string }
-  | { kind: 'unavailable'; platformId: string; reason: SmsReviewConfirmationUnavailableReason };
+  | { kind: 'saved'; referenceId: string; platformId: string; transactionId: string }
+  | { kind: 'duplicate'; referenceId: string; platformId: string; transactionId: string }
+  | { kind: 'unavailable'; referenceId: string; platformId: string | null; reason: SmsReviewConfirmationUnavailableReason };
 export type SmsReviewConfirmationOptions = { separatePayment?: boolean };
 
-export type SmsReviewPageOptions = { limit?: number | undefined; after?: SmsCursor | null | undefined };
+export type SmsReviewPageOptions = { limit?: number | undefined; after?: SmsReviewCursor | null | undefined };
 
 type ReviewReason =
   | 'unknown_format'
@@ -105,6 +106,26 @@ function assertPlatformId(value: unknown, name = 'platformId'): asserts value is
   }
 }
 
+function assertReferenceId(value: unknown, name = 'referenceId'): asserts value is string {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 128 || !/^[a-zA-Z0-9:_-]+$/.test(value)) {
+    throw new TypeError(`${name} is invalid`);
+  }
+}
+
+function assertReviewCursor(value: unknown, name: string): asserts value is SmsReviewCursor | null {
+  if (value === null) return;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${name} must be a cursor or null`);
+  const cursor = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(cursor.receivedAt) || (cursor.receivedAt as number) <= 0) {
+    throw new TypeError(`${name}.receivedAt must be a positive safe integer`);
+  }
+  assertPlatformId(cursor.platformId, `${name}.platformId`);
+  assertReferenceId(cursor.referenceId, `${name}.referenceId`);
+  if (Object.keys(cursor).some((key) => !['receivedAt', 'platformId', 'referenceId'].includes(key))) {
+    throw new TypeError(`${name} contains unsupported fields`);
+  }
+}
+
 function validateReviewPageOptions(value: unknown): asserts value is SmsReviewPageOptions {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError('SMS review page options must be an object');
@@ -116,7 +137,7 @@ function validateReviewPageOptions(value: unknown): asserts value is SmsReviewPa
   if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || (options.limit as number) < 1 || (options.limit as number) > maxBatchSize)) {
     throw new RangeError(`SMS review page limit must be an integer from 1 to ${maxBatchSize}`);
   }
-  assertCursor(options.after ?? null, 'after');
+  assertReviewCursor(options.after ?? null, 'after');
 }
 
 function snapshotSmsImportBatchOptions(value: unknown): SmsImportBatchOptions {
@@ -206,6 +227,22 @@ async function keyedFingerprint(fingerprinter: Fingerprinter, value: unknown[]):
   return result;
 }
 
+async function smsSourceReferenceId(fingerprinter: Fingerprinter, row: SmsInboxRow, bodyHash: string): Promise<string> {
+  return keyedFingerprint(fingerprinter, ['sms-source-reference', row.platformId, row.receivedAt, bodyHash]);
+}
+
+async function findSmsSourceReference(
+  ledger: ReturnType<typeof createLedger>,
+  row: SmsInboxRow,
+  bodyHash: string,
+): Promise<typeof smsImportRefs.$inferSelect | undefined> {
+  return ledger.db.select().from(smsImportRefs).where(and(
+    eq(smsImportRefs.platformId, row.platformId),
+    eq(smsImportRefs.receivedAt, row.receivedAt),
+    eq(smsImportRefs.bodyHash, bodyHash),
+  )).get();
+}
+
 function isAbortError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError';
 }
@@ -255,6 +292,7 @@ function getReviewReason(
 
 async function writeReference(
   ledger: ReturnType<typeof createLedger>,
+  referenceId: string,
   row: SmsInboxRow,
   fingerprinter: Fingerprinter,
   senderHash: string,
@@ -268,6 +306,7 @@ async function writeReference(
   transactionId: string | null,
 ): Promise<void> {
   await ledger.db.insert(smsImportRefs).values({
+    referenceId,
     platformId: row.platformId,
     receivedAt: row.receivedAt,
     senderHash,
@@ -313,20 +352,22 @@ type SmsReviewCheck = ReadySmsReviewCheck | {
 async function prepareSmsReviewForLedger(
   ledger: ReturnType<typeof createLedger>,
   fingerprints: FingerprintKeyProvider | undefined,
-  platformId: string,
+  referenceId: string,
   readOriginal: SmsOriginalReader,
 ): Promise<SmsReviewCheck> {
+  let platformId: string | null = null;
   const unavailable = (reason: SmsReviewUnavailableReason): SmsReviewCheck => ({
-    result: { kind: 'unavailable', platformId, reason },
+    result: { kind: 'unavailable', referenceId, platformId, reason },
   });
 
   let reference: typeof smsImportRefs.$inferSelect | undefined;
   try {
     reference = await ledger.db.select().from(smsImportRefs)
-      .where(eq(smsImportRefs.platformId, platformId)).get();
+      .where(eq(smsImportRefs.referenceId, referenceId)).get();
   } catch {
     return unavailable('storage_unavailable');
   }
+  if (reference) platformId = reference.platformId;
   if (!reference || reference.status !== 'review' || reference.transactionId !== null) {
     return unavailable('not_pending');
   }
@@ -368,7 +409,7 @@ async function prepareSmsReviewForLedger(
 
   let original: SmsInboxRow | null;
   try {
-    original = await readOriginal(platformId);
+    original = await readOriginal(reference.platformId);
   } catch (error) {
     if (isAbortError(error)) throw error;
     return unavailable('source_unavailable');
@@ -387,7 +428,7 @@ async function prepareSmsReviewForLedger(
   } catch {
     return unavailable('source_changed');
   }
-  if (row.platformId !== platformId) return unavailable('source_changed');
+  if (row.platformId !== reference.platformId) return unavailable('source_changed');
   try {
     parseSms(row);
   } catch {
@@ -411,7 +452,7 @@ async function prepareSmsReviewForLedger(
   let currentReference: typeof smsImportRefs.$inferSelect | undefined;
   try {
     currentReference = await ledger.db.select().from(smsImportRefs)
-      .where(eq(smsImportRefs.platformId, platformId)).get();
+      .where(eq(smsImportRefs.referenceId, referenceId)).get();
   } catch {
     return unavailable('storage_unavailable');
   }
@@ -427,6 +468,7 @@ async function prepareSmsReviewForLedger(
   if (currentReference.keyId !== keyId || !currentHistoryMatches) return unavailable('key_unavailable');
   if (row.receivedAt !== reference.receivedAt ||
       bodyHash !== reference.bodyHash || senderHash !== reference.senderHash ||
+      currentReference.platformId !== reference.platformId ||
       currentReference.receivedAt !== reference.receivedAt ||
       currentReference.bodyHash !== reference.bodyHash ||
       currentReference.senderHash !== reference.senderHash ||
@@ -475,7 +517,7 @@ async function prepareSmsReviewForLedger(
   if (!latestHistoryMatches) return unavailable('key_unavailable');
 
   return {
-    result: { kind: 'ready', platformId, preparation },
+    result: { kind: 'ready', referenceId, platformId: reference.platformId, receivedAt: reference.receivedAt, preparation },
     reference: currentReference,
   };
 }
@@ -501,9 +543,12 @@ const candidateFields = [
   'upiRef', 'balancePaise', 'occurredAt',
 ] as const;
 
-function smsReviewSnapshot(platformId: string, value: unknown): string {
-  const expected = readOwnDataRecord(value, 'SMS review preparation', ['kind', 'platformId', 'preparation']);
-  if (expected.kind !== 'ready' || expected.platformId !== platformId) {
+function smsReviewSnapshot(referenceId: string, value: unknown): string {
+  const expected = readOwnDataRecord(value, 'SMS review preparation', ['kind', 'referenceId', 'platformId', 'receivedAt', 'preparation']);
+  assertReferenceId(expected.referenceId);
+  assertPlatformId(expected.platformId);
+  if (!Number.isSafeInteger(expected.receivedAt) || (expected.receivedAt as number) <= 0 ||
+      expected.kind !== 'ready' || expected.referenceId !== referenceId) {
     throw new TypeError('A matching ready SMS preparation is required');
   }
   const preparation = readOwnDataRecord(expected.preparation, 'SMS parser preparation', [
@@ -554,7 +599,7 @@ function smsReviewSnapshot(platformId: string, value: unknown): string {
   }
 
   const snapshot = JSON.stringify([
-    expected.kind, expected.platformId, preparation.kind, candidateSnapshot, preparation.ruleId, preparation.ruleVersion,
+    expected.kind, expected.referenceId, expected.platformId, expected.receivedAt, preparation.kind, candidateSnapshot, preparation.ruleId, preparation.ruleVersion,
     identity.id, identity.dedupeKey, identity.bodyHash, preparation.fingerprintKeyId,
     preparation.duplicateReviewRequired, collisionSnapshot,
   ]);
@@ -562,8 +607,8 @@ function smsReviewSnapshot(platformId: string, value: unknown): string {
   return snapshot;
 }
 
-function validateExpectedPreparation(platformId: string, value: unknown): string {
-  return smsReviewSnapshot(platformId, value);
+function validateExpectedPreparation(referenceId: string, value: unknown): string {
+  return smsReviewSnapshot(referenceId, value);
 }
 
 function snapshotCorrections(value: unknown): ReviewCorrections {
@@ -602,7 +647,7 @@ function validateConfirmationOptions(value: unknown): SmsReviewConfirmationOptio
 }
 
 function correctedSmsTransaction(
-  platformId: string,
+  referenceId: string,
   preparation: Extract<PastePreparation, { kind: 'needs-review' }>,
   corrections: ReviewCorrections,
   defaultAccountId: string | null,
@@ -624,7 +669,7 @@ function correctedSmsTransaction(
     throw new TypeError('A complete reviewed transaction is required');
   }
   return {
-    id: `sms:${platformId}`,
+    id: `sms:${referenceId}`,
     amountPaise,
     direction,
     kind,
@@ -636,7 +681,7 @@ function correctedSmsTransaction(
     occurredAt,
     note: value('note', null),
     source: 'sms',
-    smsRefId: `android-sms:${platformId}`,
+    smsRefId: `android-sms:${referenceId}`,
     upiRef: value('upiRef', candidate?.upiRef ?? null),
     dedupeKey: preparation.identity.dedupeKey,
     bodyHash: preparation.identity.bodyHash,
@@ -662,6 +707,7 @@ async function resolveReviewReference(
     ruleId: preparation.ruleId,
     ruleVersion: preparation.ruleVersion,
   }).where(and(
+    eq(smsImportRefs.referenceId, reference.referenceId),
     eq(smsImportRefs.platformId, reference.platformId),
     eq(smsImportRefs.status, 'review'),
     isNull(smsImportRefs.transactionId),
@@ -669,7 +715,7 @@ async function resolveReviewReference(
     eq(smsImportRefs.senderHash, reference.senderHash),
     eq(smsImportRefs.bodyHash, reference.bodyHash),
     eq(smsImportRefs.keyId, reference.keyId),
-  )).returning({ platformId: smsImportRefs.platformId }).all();
+  )).returning({ referenceId: smsImportRefs.referenceId }).all();
   return rows.length === 1;
 }
 
@@ -713,14 +759,13 @@ export function createSmsIngestion(
           eq(smsImportRefs.receivedAt, after.receivedAt),
           or(
             gt(sql`length(${smsImportRefs.platformId})`, after.platformId.length),
-            and(
-              eq(sql`length(${smsImportRefs.platformId})`, after.platformId.length),
-              gt(smsImportRefs.platformId, after.platformId),
-            ),
+            and(eq(sql`length(${smsImportRefs.platformId})`, after.platformId.length), gt(smsImportRefs.platformId, after.platformId)),
+            and(eq(smsImportRefs.platformId, after.platformId), gt(smsImportRefs.referenceId, after.referenceId)),
           ),
         ),
       );
       const selected = await readLedger.db.select({
+        referenceId: smsImportRefs.referenceId,
         platformId: smsImportRefs.platformId,
         receivedAt: smsImportRefs.receivedAt,
         reason: smsImportRefs.reason,
@@ -728,29 +773,29 @@ export function createSmsIngestion(
         ruleVersion: smsImportRefs.ruleVersion,
       }).from(smsImportRefs)
         .where(afterFilter ? and(reviewFilter, afterFilter) : reviewFilter)
-        .orderBy(asc(smsImportRefs.receivedAt), asc(sql`length(${smsImportRefs.platformId})`), asc(smsImportRefs.platformId))
+        .orderBy(asc(smsImportRefs.receivedAt), asc(sql`length(${smsImportRefs.platformId})`), asc(smsImportRefs.platformId), asc(smsImportRefs.referenceId))
         .limit(limit + 1).all();
       const hasMore = selected.length > limit;
       const rows = selected.slice(0, limit);
       if (!hasMore) return { rows };
       const last = rows[rows.length - 1]!;
-      return { rows, nextCursor: { receivedAt: last.receivedAt, platformId: last.platformId } };
+      return { rows, nextCursor: { receivedAt: last.receivedAt, platformId: last.platformId, referenceId: last.referenceId } };
     },
-    async prepareSmsReview(platformId: string, readOriginal: SmsOriginalReader): Promise<SmsReviewPreparation> {
-      assertPlatformId(platformId);
+    async prepareSmsReview(referenceId: string, readOriginal: SmsOriginalReader): Promise<SmsReviewPreparation> {
+      assertReferenceId(referenceId);
       if (typeof readOriginal !== 'function') throw new TypeError('An Android SMS source reader is required');
-      return (await prepareSmsReviewForLedger(readLedger, fingerprints, platformId, readOriginal)).result;
+      return (await prepareSmsReviewForLedger(readLedger, fingerprints, referenceId, readOriginal)).result;
     },
     async confirmSmsReview(
-      platformId: string,
+      referenceId: string,
       expectedPreparation: SmsReviewPreparation,
       readOriginal: SmsOriginalReader,
       corrections: ReviewCorrections = {},
       options: SmsReviewConfirmationOptions = {},
     ): Promise<SmsReviewConfirmationResult> {
-      assertPlatformId(platformId);
+      assertReferenceId(referenceId);
       if (typeof readOriginal !== 'function') throw new TypeError('An Android SMS source reader is required');
-      const expectedSnapshot = validateExpectedPreparation(platformId, expectedPreparation);
+      const expectedSnapshot = validateExpectedPreparation(referenceId, expectedPreparation);
       const checkedCorrections = snapshotCorrections(corrections);
       const checkedOptions = validateConfirmationOptions(options);
       const expectedReady = expectedPreparation as Extract<SmsReviewPreparation, { kind: 'ready' }>;
@@ -758,9 +803,9 @@ export function createSmsIngestion(
       if (checkedOptions.separatePayment && (!expectedWeak || expectedReady.preparation.candidate?.upiRef || checkedCorrections.upiRef)) {
         throw new TypeError('Only a weak SMS identity without a payment reference can be confirmed as separate');
       }
-      assertValidReviewedSmsTransaction(correctedSmsTransaction(platformId, expectedReady.preparation, checkedCorrections, null));
+      assertValidReviewedSmsTransaction(correctedSmsTransaction(referenceId, expectedReady.preparation, checkedCorrections, null));
       const unavailable = (reason: SmsReviewConfirmationUnavailableReason): SmsReviewConfirmationResult => ({
-        kind: 'unavailable', platformId, reason,
+        kind: 'unavailable', referenceId, platformId: expectedReady.platformId, reason,
       });
       if (!runTransaction) return unavailable('transaction_unavailable');
 
@@ -768,12 +813,12 @@ export function createSmsIngestion(
       try {
         await runTransaction(async (transaction) => {
           const ledger = createLedger(transaction, migrations);
-          const checked = await prepareSmsReviewForLedger(ledger, fingerprints, platformId, readOriginal);
+          const checked = await prepareSmsReviewForLedger(ledger, fingerprints, referenceId, readOriginal);
           if (!('reference' in checked)) {
             result = checked.result;
             return;
           }
-          if (smsReviewSnapshot(platformId, checked.result) !== expectedSnapshot) {
+          if (smsReviewSnapshot(referenceId, checked.result) !== expectedSnapshot) {
             result = unavailable('stale_preparation');
             return;
           }
@@ -783,7 +828,7 @@ export function createSmsIngestion(
           const accountId = checkedCorrections.accountId === undefined
             ? await resolveAccount(ledger, preparation.candidate)
             : checkedCorrections.accountId;
-          const reviewed = correctedSmsTransaction(platformId, preparation, checkedCorrections, accountId ?? null);
+          const reviewed = correctedSmsTransaction(referenceId, preparation, checkedCorrections, accountId ?? null);
           const canonical = await ledger.db.select().from(transactions).where(eq(transactions.id, reviewed.id)).get();
           if (canonical) {
             const isSameSms = canonical.source === 'sms' && canonical.smsRefId === reviewed.smsRefId &&
@@ -796,7 +841,7 @@ export function createSmsIngestion(
               result = unavailable('not_pending');
               return;
             }
-            result = { kind: 'saved', platformId, transactionId: canonical.id };
+            result = { kind: 'saved', referenceId, platformId: checked.reference.platformId, transactionId: canonical.id };
             return;
           }
 
@@ -825,7 +870,7 @@ export function createSmsIngestion(
               result = unavailable('not_pending');
               return;
             }
-            result = { kind: 'duplicate', platformId, transactionId: existing.id };
+            result = { kind: 'duplicate', referenceId, platformId: checked.reference.platformId, transactionId: existing.id };
             return;
           }
 
@@ -844,7 +889,7 @@ export function createSmsIngestion(
           if (!await resolveReviewReference(ledger, checked.reference, preparation, 'saved', reviewed.id)) {
             throw new Error('SMS review reference changed during confirmation');
           }
-          result = { kind: 'saved', platformId, transactionId: reviewed.id };
+          result = { kind: 'saved', referenceId, platformId: checked.reference.platformId, transactionId: reviewed.id };
         });
       } catch (error) {
         if (isAbortError(error)) throw error;
@@ -915,16 +960,15 @@ export function createSmsIngestion(
               const bodyHash = await safeFingerprint(['body', row.body]);
               const sourceHash = await safeFingerprint(['sms', normalizedSender, row.body]);
               const senderHash = await safeFingerprint(['sender', normalizedSender]);
-              const prior = await ledger.db.select().from(smsImportRefs)
-                .where(eq(smsImportRefs.platformId, row.platformId)).get();
+              const referenceId = await safeFingerprint(['sms-source-reference', row.platformId, row.receivedAt, bodyHash]);
+              const prior = await findSmsSourceReference(ledger, row, bodyHash);
               if (prior) {
-                if (prior.receivedAt !== row.receivedAt || prior.bodyHash !== bodyHash ||
-                    prior.senderHash !== senderHash || prior.keyId !== fingerprinter.keyId) {
+                if (prior.senderHash !== senderHash || prior.keyId !== fingerprinter.keyId) {
                   throw new Error('A previously imported SMS row changed; import stopped for review');
                 }
                 result.duplicate += 1;
               } else {
-                await writeReference(ledger, row, fingerprinter, senderHash, {
+                await writeReference(ledger, referenceId, row, fingerprinter, senderHash, {
                   identity: { dedupeKey: `body:${sourceHash}`, bodyHash },
                   ruleId: null,
                   ruleVersion: null,
@@ -937,22 +981,33 @@ export function createSmsIngestion(
             const parsed = parseSms(row);
             const prepared = await preparePastedSms(row, fingerprinter);
             if (prepared.kind === 'ignored') {
-              const prior = await ledger.db.select({ platformId: smsImportRefs.platformId }).from(smsImportRefs)
-                .where(eq(smsImportRefs.platformId, row.platformId)).get();
-              if (prior) throw new Error('A previously imported SMS row changed; import stopped for review');
+              const priorAtPlatformDate = await ledger.db.select({ referenceId: smsImportRefs.referenceId })
+                .from(smsImportRefs).where(and(
+                  eq(smsImportRefs.platformId, row.platformId),
+                  eq(smsImportRefs.receivedAt, row.receivedAt),
+                )).limit(1).get();
+              if (priorAtPlatformDate) {
+                const bodyHash = await keyedFingerprint(fingerprinter, ['body', row.body]);
+                const prior = await findSmsSourceReference(ledger, row, bodyHash);
+                if (prior) {
+                  const senderHash = await keyedFingerprint(fingerprinter, ['sender', row.sender.trim().toUpperCase()]);
+                  if (prior.senderHash !== senderHash || prior.keyId !== fingerprinter.keyId) {
+                    throw new Error('A previously imported SMS row changed; import stopped for review');
+                  }
+                }
+              }
               result.ignored += 1;
               continue;
             }
 
-            const senderHash = await fingerprinter.fingerprint(JSON.stringify(['sender', row.sender.trim().toUpperCase()]));
-            if (!/^[a-f0-9]{64}$/.test(senderHash)) throw new TypeError('Invalid keyed sender fingerprint');
-            const prior = await ledger.db.select().from(smsImportRefs)
-              .where(eq(smsImportRefs.platformId, row.platformId)).get();
+            const [senderHash, referenceId] = await Promise.all([
+              keyedFingerprint(fingerprinter, ['sender', row.sender.trim().toUpperCase()]),
+              smsSourceReferenceId(fingerprinter, row, prepared.identity.bodyHash),
+            ]);
+            const prior = await findSmsSourceReference(ledger, row, prepared.identity.bodyHash);
             if (prior) {
               // Parser-derived identity can change; replay depends on the unchanged source.
-              if (prior.receivedAt !== row.receivedAt ||
-                  prior.bodyHash !== prepared.identity.bodyHash || prior.senderHash !== senderHash ||
-                  prior.keyId !== fingerprinter.keyId) {
+              if (prior.senderHash !== senderHash || prior.keyId !== fingerprinter.keyId) {
                 throw new Error('A previously imported SMS row changed; import stopped for review');
               }
               result.duplicate += 1;
@@ -971,10 +1026,10 @@ export function createSmsIngestion(
                   Number.isSafeInteger(candidate.amountPaise) && candidate.amountPaise > 0 &&
                   (matches[0]!.bodyHash === prepared.identity.bodyHash || matchingEvidence(matches[0]!, candidate, accountId));
                 if (coherent) {
-                  await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'duplicate', null, matches[0]!.id);
+                  await writeReference(ledger, referenceId, row, fingerprinter, senderHash, prepared, 'duplicate', null, matches[0]!.id);
                   result.duplicate += 1;
                 } else {
-                  await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'review',
+                  await writeReference(ledger, referenceId, row, fingerprinter, senderHash, prepared, 'review',
                     matches.length > 1 ? 'ambiguous_evidence' : 'inconsistent_evidence', null);
                   result.review += 1;
                 }
@@ -984,20 +1039,20 @@ export function createSmsIngestion(
               const weakMatch = await ledger.db.select({ id: transactions.id }).from(transactions)
                 .where(eq(transactions.dedupeKey, prepared.identity.dedupeKey)).limit(1).get();
               if (weakMatch) {
-                await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'review', 'weak_overlap', null);
+                await writeReference(ledger, referenceId, row, fingerprinter, senderHash, prepared, 'review', 'weak_overlap', null);
                 result.review += 1;
                 continue;
               }
             }
 
             if (reason) {
-              await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'review', reason, null);
+              await writeReference(ledger, referenceId, row, fingerprinter, senderHash, prepared, 'review', reason, null);
               result.review += 1;
               continue;
             }
 
             if (!candidate || parsed.kind !== 'transaction') throw new Error('Verified SMS transaction data is incomplete');
-            const transactionId = `sms:${row.platformId}`;
+            const transactionId = `sms:${referenceId}`;
             const saved = await ledger.upsertImportedTransaction({
               id: transactionId,
               amountPaise: candidate.amountPaise,
@@ -1011,7 +1066,7 @@ export function createSmsIngestion(
               occurredAt: new Date(candidate.occurredAt),
               note: null,
               source: 'sms',
-              smsRefId: `android-sms:${row.platformId}`,
+              smsRefId: `android-sms:${referenceId}`,
               upiRef: candidate.upiRef,
               dedupeKey: prepared.identity.dedupeKey,
               bodyHash: prepared.identity.bodyHash,
@@ -1021,11 +1076,11 @@ export function createSmsIngestion(
               excludeFromStats: false,
             });
             if (!saved) {
-              await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'review', 'inconsistent_evidence', null);
+              await writeReference(ledger, referenceId, row, fingerprinter, senderHash, prepared, 'review', 'inconsistent_evidence', null);
               result.review += 1;
               continue;
             }
-            await writeReference(ledger, row, fingerprinter, senderHash, prepared, 'saved', null, transactionId);
+            await writeReference(ledger, referenceId, row, fingerprinter, senderHash, prepared, 'saved', null, transactionId);
             result.inserted += 1;
           }
 

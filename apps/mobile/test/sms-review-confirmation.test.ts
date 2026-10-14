@@ -61,7 +61,9 @@ async function fixture(rows: SmsInboxRow[] = [{ ...strongSms, platformId: '72' }
 }
 
 async function ready(api: ReturnType<typeof createDataLayer>, row: SmsInboxRow): Promise<Extract<SmsReviewPreparation, { kind: 'ready' }>> {
-  const result = await api.prepareSmsReview(row.platformId, async (id) => {
+  const selected = (await api.getSmsReviewPage()).rows.find((item) => item.platformId === row.platformId && item.receivedAt === row.receivedAt);
+  if (!selected) throw new Error('Expected the SMS source to appear in review');
+  const result = await api.prepareSmsReview(selected.referenceId, async (id) => {
     assert.equal(id, row.platformId);
     return { ...row };
   });
@@ -72,7 +74,7 @@ async function ready(api: ReturnType<typeof createDataLayer>, row: SmsInboxRow):
 
 function confirm(
   api: ReturnType<typeof createDataLayer>,
-  platformId: string,
+  referenceId: string,
   expected: Extract<SmsReviewPreparation, { kind: 'ready' }>,
   readOriginal: (id: string) => Promise<SmsInboxRow | null>,
   corrections: ReviewCorrections = {},
@@ -80,7 +82,7 @@ function confirm(
 ): Promise<unknown> {
   const method = Reflect.get(api, 'confirmSmsReview') as (...args: unknown[]) => Promise<unknown>;
   assert.equal(typeof method, 'function', 'DataLayer must expose confirmSmsReview');
-  return method.call(api, platformId, expected, readOriginal, corrections, options);
+  return method.call(api, referenceId, expected, readOriginal, corrections, options);
 }
 
 function totalChanges(sqlite: DatabaseSync): number {
@@ -99,12 +101,12 @@ describe('selected Android SMS review confirmation', () => {
         WHEN OLD.platform_id = '72' AND NEW.status = 'saved'
         BEGIN SELECT RAISE(ABORT, 'FICTIONAL_PRIVATE_WRITE_FAILURE'); END`);
 
-      const failed = await confirm(test.api, row.platformId, expected, async () => ({ ...row }), {
+      const failed = await confirm(test.api, expected.referenceId, expected, async () => ({ ...row }), {
         amountPaise: 46_000,
         note: 'Fictional correction',
       });
-      assert.deepEqual(failed, { kind: 'unavailable', platformId: row.platformId, reason: 'storage_unavailable' });
-      assert.equal(await test.api.getTransaction(`sms:${row.platformId}`), undefined);
+      assert.deepEqual(failed, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'storage_unavailable' });
+      assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
       assert.equal((test.sqlite.prepare('SELECT status, transaction_id FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string; transaction_id: string | null }).status, 'review');
       assert.deepEqual(await test.api.getSmsImportCursor(), initialCursor);
       assert.equal(JSON.stringify(failed).includes('FICTIONAL_PRIVATE_WRITE_FAILURE'), false);
@@ -124,12 +126,12 @@ describe('selected Android SMS review confirmation', () => {
         test.provider,
         transactionRunner(test.sqlite, failingClient),
       );
-      const typedFailure = await confirm(failingDbApi, row.platformId, expected, async () => ({ ...row }), {
+      const typedFailure = await confirm(failingDbApi, expected.referenceId, expected, async () => ({ ...row }), {
         amountPaise: 46_000,
       });
-      assert.deepEqual(typedFailure, { kind: 'unavailable', platformId: row.platformId, reason: 'storage_unavailable' });
+      assert.deepEqual(typedFailure, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'storage_unavailable' });
       assert.equal(JSON.stringify(typedFailure).includes(privateDbError.message), false);
-      assert.equal(await test.api.getTransaction(`sms:${row.platformId}`), undefined);
+      assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
       assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
       assert.deepEqual(await test.api.getSmsImportCursor(), initialCursor);
 
@@ -140,19 +142,19 @@ describe('selected Android SMS review confirmation', () => {
         return { ...row };
       };
       const results = await Promise.all([
-        confirm(test.api, row.platformId, expected, read, { amountPaise: 46_000, note: 'Fictional correction' }),
-        confirm(test.api, row.platformId, expected, read, { amountPaise: 46_000, note: 'Fictional correction' }),
+        confirm(test.api, expected.referenceId, expected, read, { amountPaise: 46_000, note: 'Fictional correction' }),
+        confirm(test.api, expected.referenceId, expected, read, { amountPaise: 46_000, note: 'Fictional correction' }),
       ]);
       assert.equal(results.filter((result) => (result as { kind: string }).kind === 'saved').length, 1);
       assert.equal(results.filter((result) => (result as { kind: string }).kind === 'unavailable').length, 1);
       assert.equal(sourceReads, 1, 'the serialized replay should stop before rereading an already resolved source');
-      const saved = await test.api.getTransaction(`sms:${row.platformId}`);
+      const saved = await test.api.getTransaction(`sms:${expected.referenceId}`);
       assert.equal(saved?.amountPaise, 46_000);
       assert.equal(saved?.note, 'Fictional correction');
       assert.equal(saved?.source, 'sms');
       assert.equal(saved?.userEdited, true);
       const reference = test.sqlite.prepare('SELECT status, transaction_id FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string; transaction_id: string | null };
-      assert.deepEqual({ ...reference }, { status: 'saved', transaction_id: `sms:${row.platformId}` });
+      assert.deepEqual({ ...reference }, { status: 'saved', transaction_id: `sms:${expected.referenceId}` });
       assert.deepEqual(await test.api.getSmsImportCursor(), initialCursor);
       assert.equal(test.policies.every((policy) => policy.allowCreate === false), true);
       for (const result of results) {
@@ -170,50 +172,50 @@ describe('selected Android SMS review confirmation', () => {
       const before = totalChanges(test.sqlite);
       const changedPreparation = structuredClone(expected);
       changedPreparation.preparation.candidate!.amountPaise += 100;
-      const altered = await confirm(test.api, row.platformId, changedPreparation, async () => ({ ...row }));
-      assert.deepEqual(altered, { kind: 'unavailable', platformId: row.platformId, reason: 'stale_preparation' });
+      const altered = await confirm(test.api, expected.referenceId, changedPreparation, async () => ({ ...row }));
+      assert.deepEqual(altered, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'stale_preparation' });
 
-      const changedSource = await confirm(test.api, row.platformId, expected, async () => ({ ...row, body: `${row.body} changed` }));
-      assert.deepEqual(changedSource, { kind: 'unavailable', platformId: row.platformId, reason: 'source_changed' });
+      const changedSource = await confirm(test.api, expected.referenceId, expected, async () => ({ ...row, body: `${row.body} changed` }));
+      assert.deepEqual(changedSource, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'source_changed' });
 
       let readerCalls = 0;
       const unavailableApi = createDataLayer(test.client, ledgerMigrations, async () => { throw new FingerprintKeyUnavailableError(); }, test.runner);
-      const unavailable = await confirm(unavailableApi, row.platformId, expected, async () => {
+      const unavailable = await confirm(unavailableApi, expected.referenceId, expected, async () => {
         readerCalls += 1;
         return { ...row };
       });
-      assert.deepEqual(unavailable, { kind: 'unavailable', platformId: row.platformId, reason: 'key_unavailable' });
+      assert.deepEqual(unavailable, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
 
       const swappedApi = createDataLayer(test.client, ledgerMigrations, async () => fingerprinter('different-fictional-key'), test.runner);
-      const swapped = await confirm(swappedApi, row.platformId, expected, async () => {
+      const swapped = await confirm(swappedApi, expected.referenceId, expected, async () => {
         readerCalls += 1;
         return { ...row };
       });
-      assert.deepEqual(swapped, { kind: 'unavailable', platformId: row.platformId, reason: 'key_unavailable' });
+      assert.deepEqual(swapped, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
 
       const privateKeyError = new TypeError('FICTIONAL_PRIVATE_KEY_DETAIL');
       const errorKeyApi = createDataLayer(test.client, ledgerMigrations, async () => { throw privateKeyError; }, test.runner);
-      const failedKey = await confirm(errorKeyApi, row.platformId, expected, async () => {
+      const failedKey = await confirm(errorKeyApi, expected.referenceId, expected, async () => {
         readerCalls += 1;
         return { ...row };
       });
-      assert.deepEqual(failedKey, { kind: 'unavailable', platformId: row.platformId, reason: 'key_unavailable' });
+      assert.deepEqual(failedKey, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
       assert.equal(JSON.stringify(failedKey).includes(privateKeyError.message), false);
 
       for (const error of [new TypeError('FICTIONAL_PRIVATE_DB_TYPE'), new RangeError('FICTIONAL_PRIVATE_DB_RANGE')]) {
         const failedRunner: LedgerSQLiteTransactionRunner = async () => { throw error; };
         const failedDbApi = createDataLayer(test.client, ledgerMigrations, test.provider, failedRunner);
-        const failedDb = await confirm(failedDbApi, row.platformId, expected, async () => {
+        const failedDb = await confirm(failedDbApi, expected.referenceId, expected, async () => {
           readerCalls += 1;
           return { ...row };
         });
-        assert.deepEqual(failedDb, { kind: 'unavailable', platformId: row.platformId, reason: 'storage_unavailable' });
+        assert.deepEqual(failedDb, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'storage_unavailable' });
         assert.equal(JSON.stringify(failedDb).includes(error.message), false);
       }
       assert.equal(readerCalls, 0);
       assert.equal(totalChanges(test.sqlite), before);
       assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
-      assert.equal(await test.api.getTransaction(`sms:${row.platformId}`), undefined);
+      assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
     } finally { test.sqlite.close(); }
   });
 
@@ -227,7 +229,7 @@ describe('selected Android SMS review confirmation', () => {
       const readerStarted = new Promise<void>((resolve) => { markReaderStarted = resolve; });
       const readerGate = new Promise<void>((resolve) => { releaseReader = resolve; });
       const corrections: ReviewCorrections = { amountPaise: 46_000, note: 'Fictional original correction' };
-      const pending = confirm(test.api, row.platformId, expected, async () => {
+      const pending = confirm(test.api, expected.referenceId, expected, async () => {
         markReaderStarted();
         await readerGate;
         return { ...row };
@@ -237,8 +239,8 @@ describe('selected Android SMS review confirmation', () => {
       corrections.note = 'Fictional late mutation';
       releaseReader();
 
-      assert.deepEqual(await pending, { kind: 'saved', platformId: row.platformId, transactionId: `sms:${row.platformId}` });
-      const saved = await test.api.getTransaction(`sms:${row.platformId}`);
+      assert.deepEqual(await pending, { kind: 'saved', referenceId: expected.referenceId, platformId: row.platformId, transactionId: `sms:${expected.referenceId}` });
+      const saved = await test.api.getTransaction(`sms:${expected.referenceId}`);
       assert.equal(saved?.amountPaise, 46_000);
       assert.equal(saved?.note, 'Fictional original correction');
     } finally { test.sqlite.close(); }
@@ -259,23 +261,23 @@ describe('selected Android SMS review confirmation', () => {
       const before = totalChanges(test.sqlite);
 
       activeKey = test.key;
-      const lost = await confirm(api, row.platformId, expected, async () => {
+      const lost = await confirm(api, expected.referenceId, expected, async () => {
         activeKey = null;
         return { ...row };
       });
-      assert.deepEqual(lost, { kind: 'unavailable', platformId: row.platformId, reason: 'key_unavailable' });
+      assert.deepEqual(lost, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
       assert.equal(JSON.stringify(lost).includes(row.body), false);
-      assert.equal(await api.getTransaction(`sms:${row.platformId}`), undefined);
+      assert.equal(await api.getTransaction(`sms:${expected.referenceId}`), undefined);
       assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
       assert.equal(totalChanges(test.sqlite), before);
 
       activeKey = test.key;
-      const swapped = await confirm(api, row.platformId, expected, async () => {
+      const swapped = await confirm(api, expected.referenceId, expected, async () => {
         activeKey = fingerprinter('fictional-replacement-key');
         return { ...row };
       });
-      assert.deepEqual(swapped, { kind: 'unavailable', platformId: row.platformId, reason: 'key_unavailable' });
-      assert.equal(await api.getTransaction(`sms:${row.platformId}`), undefined);
+      assert.deepEqual(swapped, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
+      assert.equal(await api.getTransaction(`sms:${expected.referenceId}`), undefined);
       assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
       assert.equal(totalChanges(test.sqlite), before);
       assert.equal(policies.every((policy) => policy.allowCreate === false), true);
@@ -300,7 +302,7 @@ describe('selected Android SMS review confirmation', () => {
         sourceReads += 1;
         return { ...row };
       };
-      await assert.rejects(confirm(test.api, row.platformId, expected, read), /amountPaise is required/);
+      await assert.rejects(confirm(test.api, expected.referenceId, expected, read), /amountPaise is required/);
       assert.equal(sourceReads, 0, 'incomplete human input must fail before reading the source');
       assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
 
@@ -317,19 +319,19 @@ describe('selected Android SMS review confirmation', () => {
         { ...corrections, direction: 'sideways' },
         { ...corrections, occurredAt: new Date(Number.NaN) },
       ]) {
-        await assert.rejects(confirm(test.api, row.platformId, expected, read, invalid as ReviewCorrections));
+        await assert.rejects(confirm(test.api, expected.referenceId, expected, read, invalid as ReviewCorrections));
       }
       assert.equal(sourceReads, 0, 'invalid money, enum and date input must fail before the source read');
 
-      const invalidReference = await confirm(test.api, row.platformId, expected, read, { ...corrections, accountId: 'missing-account' });
-      assert.deepEqual(invalidReference, { kind: 'unavailable', platformId: row.platformId, reason: 'invalid_correction' });
+      const invalidReference = await confirm(test.api, expected.referenceId, expected, read, { ...corrections, accountId: 'missing-account' });
+      assert.deepEqual(invalidReference, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'invalid_correction' });
       assert.equal(JSON.stringify(invalidReference).includes('missing-account'), false);
-      assert.equal(await test.api.getTransaction(`sms:${row.platformId}`), undefined);
+      assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
       assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
 
-      const result = await confirm(test.api, row.platformId, expected, read, corrections);
-      assert.deepEqual(result, { kind: 'saved', platformId: row.platformId, transactionId: `sms:${row.platformId}` });
-      const stored = test.sqlite.prepare('SELECT source, sms_ref_id, rule_id, rule_version, amount_paise FROM transactions WHERE id = ?').get(`sms:${row.platformId}`) as {
+      const result = await confirm(test.api, expected.referenceId, expected, read, corrections);
+      assert.deepEqual(result, { kind: 'saved', referenceId: expected.referenceId, platformId: row.platformId, transactionId: `sms:${expected.referenceId}` });
+      const stored = test.sqlite.prepare('SELECT source, sms_ref_id, rule_id, rule_version, amount_paise FROM transactions WHERE id = ?').get(`sms:${expected.referenceId}`) as {
         source: string;
         sms_ref_id: string;
         rule_id: string | null;
@@ -337,7 +339,7 @@ describe('selected Android SMS review confirmation', () => {
         amount_paise: number;
       };
       assert.deepEqual({ ...stored }, {
-        source: 'sms', sms_ref_id: `android-sms:${row.platformId}`, rule_id: null, rule_version: null, amount_paise: 75_000,
+        source: 'sms', sms_ref_id: `android-sms:${expected.referenceId}`, rule_id: null, rule_version: null, amount_paise: 75_000,
       });
       assert.deepEqual(await test.api.getSmsImportCursor(), initialCursor);
       const serialized = JSON.stringify(result);
@@ -355,19 +357,19 @@ describe('selected Android SMS review confirmation', () => {
     try {
       const first = await ready(test.api, rows[0]!);
       const second = await ready(test.api, rows[1]!);
-      const firstResult = await confirm(test.api, rows[0]!.platformId, first, async () => ({ ...rows[0]! }));
+      const firstResult = await confirm(test.api, first.referenceId, first, async () => ({ ...rows[0]! }));
       assert.equal((firstResult as { kind: string }).kind, 'saved');
 
       const before = totalChanges(test.sqlite);
-      const blocked = await confirm(test.api, rows[1]!.platformId, second, async () => ({ ...rows[1]! }));
-      assert.deepEqual(blocked, { kind: 'unavailable', platformId: '74', reason: 'ambiguous_overlap' });
+      const blocked = await confirm(test.api, second.referenceId, second, async () => ({ ...rows[1]! }));
+      assert.deepEqual(blocked, { kind: 'unavailable', referenceId: second.referenceId, platformId: '74', reason: 'ambiguous_overlap' });
       assert.equal(totalChanges(test.sqlite), before);
       assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get('74') as { status: string }).status, 'review');
 
-      const separate = await confirm(test.api, rows[1]!.platformId, second, async () => ({ ...rows[1]! }), {}, { separatePayment: true });
+      const separate = await confirm(test.api, second.referenceId, second, async () => ({ ...rows[1]! }), {}, { separatePayment: true });
       assert.equal((separate as { kind: string }).kind, 'saved');
-      assert.equal(await test.api.getTransaction('sms:73') !== null, true);
-      assert.equal(await test.api.getTransaction('sms:74') !== null, true);
+      assert.equal(await test.api.getTransaction(`sms:${first.referenceId}`) !== null, true);
+      assert.equal(await test.api.getTransaction(`sms:${second.referenceId}`) !== null, true);
       assert.equal((test.sqlite.prepare("SELECT count(*) AS count FROM transactions WHERE dedupe_key = ?").get(first.preparation.identity.dedupeKey) as { count: number }).count, 2);
     } finally { test.sqlite.close(); }
 
@@ -378,10 +380,10 @@ describe('selected Android SMS review confirmation', () => {
       assert.equal(await pastedOverlap.api.saveReviewedPaste(paste), 'inserted');
       const row = { ...weakSms, platformId: '75' };
       const expected = await ready(pastedOverlap.api, row);
-      const blocked = await confirm(pastedOverlap.api, row.platformId, expected, async () => ({ ...row }));
-      assert.deepEqual(blocked, { kind: 'unavailable', platformId: row.platformId, reason: 'ambiguous_overlap' });
-      const separate = await confirm(pastedOverlap.api, row.platformId, expected, async () => ({ ...row }), {}, { separatePayment: true });
-      assert.deepEqual(separate, { kind: 'saved', platformId: row.platformId, transactionId: `sms:${row.platformId}` });
+      const blocked = await confirm(pastedOverlap.api, expected.referenceId, expected, async () => ({ ...row }));
+      assert.deepEqual(blocked, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'ambiguous_overlap' });
+      const separate = await confirm(pastedOverlap.api, expected.referenceId, expected, async () => ({ ...row }), {}, { separatePayment: true });
+      assert.deepEqual(separate, { kind: 'saved', referenceId: expected.referenceId, platformId: row.platformId, transactionId: `sms:${expected.referenceId}` });
       assert.ok(await pastedOverlap.api.getTransaction(paste.identity.id));
     } finally { pastedOverlap.sqlite.close(); }
   });
@@ -418,8 +420,8 @@ describe('selected Android SMS review confirmation', () => {
       await test.ledger.editTransaction(existing.id, { amountPaise: 47_000, note: 'Fictional saved correction' });
       await test.ledger.softDeleteTransaction(existing.id);
 
-      const duplicate = await confirm(test.api, row.platformId, expected, async () => ({ ...row }), { amountPaise: 46_000 });
-      assert.deepEqual(duplicate, { kind: 'duplicate', platformId: row.platformId, transactionId: existing.id });
+      const duplicate = await confirm(test.api, expected.referenceId, expected, async () => ({ ...row }), { amountPaise: 46_000 });
+      assert.deepEqual(duplicate, { kind: 'duplicate', referenceId: expected.referenceId, platformId: row.platformId, transactionId: existing.id });
       const untouched = test.sqlite.prepare('SELECT amount_paise, note, deleted_at FROM transactions WHERE id = ?').get(existing.id) as {
         amount_paise: number;
         note: string | null;
@@ -428,7 +430,7 @@ describe('selected Android SMS review confirmation', () => {
       assert.equal(untouched.amount_paise, 47_000);
       assert.equal(untouched.note, 'Fictional saved correction');
       assert.notEqual(untouched.deleted_at, null);
-      assert.equal(await test.api.getTransaction(`sms:${row.platformId}`), undefined);
+      assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
       const linked = test.sqlite.prepare('SELECT status, transaction_id FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string; transaction_id: string | null };
       assert.deepEqual({ ...linked }, { status: 'duplicate', transaction_id: existing.id });
     } finally { test.sqlite.close(); }
@@ -461,11 +463,11 @@ describe('selected Android SMS review confirmation', () => {
       await ambiguous.ledger.upsertImportedTransaction({ ...base, id: 'paste-one' });
       await ambiguous.ledger.upsertImportedTransaction({ ...base, id: 'paste-two', bodyHash: `${'a'.repeat(63)}b` });
       const before = totalChanges(ambiguous.sqlite);
-      const result = await confirm(ambiguous.api, row.platformId, expected, async () => ({ ...row }));
-      assert.deepEqual(result, { kind: 'unavailable', platformId: row.platformId, reason: 'ambiguous_overlap' });
+      const result = await confirm(ambiguous.api, expected.referenceId, expected, async () => ({ ...row }));
+      assert.deepEqual(result, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'ambiguous_overlap' });
       assert.equal(totalChanges(ambiguous.sqlite), before);
       assert.equal((ambiguous.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
-      assert.equal(await ambiguous.api.getTransaction(`sms:${row.platformId}`), undefined);
+      assert.equal(await ambiguous.api.getTransaction(`sms:${expected.referenceId}`), undefined);
     } finally { ambiguous.sqlite.close(); }
   });
 
@@ -475,9 +477,9 @@ describe('selected Android SMS review confirmation', () => {
     try {
       const expected = await ready(test.api, row);
       const cancelled = Object.assign(new Error('cancelled'), { name: 'AbortError' });
-      await assert.rejects(confirm(test.api, row.platformId, expected, async () => { throw cancelled; }), (error) => error === cancelled);
+      await assert.rejects(confirm(test.api, expected.referenceId, expected, async () => { throw cancelled; }), (error) => error === cancelled);
       assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
-      assert.equal(await test.api.getTransaction(`sms:${row.platformId}`), undefined);
+      assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
       assert.equal(test.sqlite.prepare('SELECT 1 AS active').get()?.active, 1);
     } finally { test.sqlite.close(); }
   });
