@@ -27,7 +27,10 @@ so cancellation is checked again when it returns.
 
 While enabled, opening or foregrounding the app runs the bounded coordinator
 from the stored range/cursor. Permission and consent are checked at write
-boundaries. Backgrounding aborts foreground work. Settings shows the last
+boundaries. Backgrounding aborts foreground catch-up and source counting. A
+user-started OS permission dialog may finish, but preview reads begin only while
+Settings is focused and the app is active; leaving Settings cancels that
+continuation. Settings shows the last
 successful catch-up, pending reviews, permission state and body-free failures.
 
 Review pages hold at most 100 source references. Selecting one re-reads its exact
