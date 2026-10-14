@@ -111,6 +111,8 @@ export function SmsImportPanel({
   const [action, setAction] = useState<'preview' | 'catchup' | 'disable' | 'review' | 'page' | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [failure, setFailure] = useState('');
+  const [statusFailure, setStatusFailure] = useState('');
+  const visibleFailure = failure || statusFailure;
   const [reviewingReferenceId, setReviewingReferenceId] = useState<string | null>(null);
   const [previewCancelling, setPreviewCancelling] = useState(false);
   const previewController = useRef<AbortController | null>(null);
@@ -148,9 +150,9 @@ export function SmsImportPanel({
       setHealth(nextHealth);
       setRows(page.rows);
       setNextPage(page.nextCursor);
-      setFailure(nativeStatusFailed ? 'Couldn’t check Android consent or permission. Pending reviews are still available; retry status or use paste.' : '');
+      setStatusFailure(nativeStatusFailed ? 'Couldn’t check Android consent or permission. Pending reviews are still available; retry status or use paste.' : '');
     } catch {
-      if (current()) setFailure('Couldn’t load SMS import status. Try again.');
+      if (current()) setStatusFailure('Couldn’t load SMS import status. Try again.');
     } finally {
       if (current()) setLoading(false);
     }
@@ -424,7 +426,7 @@ export function SmsImportPanel({
               History: {indiaDate(new Date(preview.startDateMs))} – {indiaDate(new Date(preview.endDateMs))}. This count-only preview changed no ledger data; import begins only after you confirm below.
             </ThemedText>
           </View> : null}
-          {failure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.text }]}>{failure}</ThemedText> : null}
+          {visibleFailure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.text }]}>{visibleFailure}</ThemedText> : null}
           {catchupFailure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.text }]}>{catchupFailureCopy(catchupFailure)}</ThemedText> : null}
           {active ? <View style={styles.actions}>
             {preview ? <LedgerButton label={action === 'catchup' ? 'Importing…' : 'Confirm and catch up'} primary disabled={action !== null || loading} onPress={() => void confirmAndCatchup()} /> : null}
@@ -445,7 +447,7 @@ export function SmsImportPanel({
           <ThemedText style={[Type.note, { color: colors.textSecondary }]}>
             SMS import is unavailable in this app build. You can still add entries or paste a bank message from Home.
           </ThemedText>
-          {failure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.text }]}>{failure}</ThemedText> : null}
+          {visibleFailure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.text }]}>{visibleFailure}</ThemedText> : null}
         </>}
         <LedgerButton label="Paste a bank message" onPress={onPaste} />
       </View>
