@@ -6,8 +6,9 @@ not a permission flow, inbox reader, background receiver or completed import fea
 
 SMS storage was introduced in migration `0007`, after dev's category and
 preference migrations. Migration `0008` adds stable source-reference IDs; a
-seeded dev schema at version 8 upgrades to version 9 without losing ledger or
-preference data. The migration rebuilds only `sms_import_refs`, assigns existing
+stable dev schema at version 7 applies `0007` and `0008` to reach version 9;
+an existing SMS draft schema at version 8 upgrades to version 9 without losing
+ledger or preference data. The migration rebuilds only `sms_import_refs`, assigns existing
 references IDs of the form `legacy:<platformId>`, and copies their source fields
 and transaction links. It does not rewrite transaction IDs, transaction
 `sms_ref_id` values, corrections, tombstones or other ledger links. Earlier
