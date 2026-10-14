@@ -4,13 +4,18 @@ Work for [#43](https://github.com/Starforge-lab/finance-bro/issues/43), part of
 the Android-SMS-only [2.0 scope](v2-roadmap.md). This is the storage boundary,
 not a permission flow, inbox reader, background receiver or completed import feature.
 
-SMS storage is now migration `0007`, following dev's category and preference
-migrations. The seeded dev schema version 7 upgrades to version 8 without losing
-existing ledger or preference data. Earlier unmerged SMS draft revisions used
-the same migration numbers as dev for different tables; those prototype databases
-are not an upgrade source for this revision. A conflicting prototype schema fails
-migration transactionally rather than resetting its records. Use a fresh isolated
-fictional ledger for prototype checks; no prototype conversion is implemented.
+SMS storage was introduced in migration `0007`, after dev's category and
+preference migrations. Migration `0008` adds stable source-reference IDs; a
+seeded dev schema at version 8 upgrades to version 9 without losing ledger or
+preference data. The migration rebuilds only `sms_import_refs`, assigns existing
+references IDs of the form `legacy:<platformId>`, and copies their source fields
+and transaction links. It does not rewrite transaction IDs, transaction
+`sms_ref_id` values, corrections, tombstones or other ledger links. Earlier
+unmerged SMS draft revisions used the same migration numbers as dev for
+different tables; those prototype databases are not an upgrade source for this
+revision. A conflicting prototype schema fails migration transactionally rather
+than resetting its records. Use a fresh isolated fictional ledger for prototype
+checks; no prototype conversion is implemented.
 
 `DataLayer.importSmsBatch(rows, expectedCursor, options?)` accepts at most 100
 already-read Android inbox rows, ordered by received timestamp and numeric
@@ -74,50 +79,65 @@ connection and starts the transaction before its callback, so it cannot enable
 connection-local foreign keys inside the callback. The explicit connection also
 acquires the write lock before reading the current cursor.
 
-References contain the system inbox ID, timestamp, keyed fingerprints, parser
-provenance, disposition and optional ledger transaction ID. They contain no raw
-body or sender label; sender identity is also keyed. Unknown and uncertain
-messages stay as review references rather than incomplete ledger transactions.
-Non-financial ignored messages need no
-durable reference. Missing keys, mismatched key identifiers and storage failures
-stop cursor advancement.
+References contain a stable `referenceId` (opaque for new rows), the system
+inbox ID and timestamp, keyed fingerprints, parser provenance, disposition and
+optional ledger transaction ID. Each source tuple is unique by platform ID,
+received timestamp and keyed body identity. New reference IDs are derived with
+the existing keyed fingerprint service. References contain no raw body or
+sender label; sender identity is also keyed. Unknown and uncertain messages stay
+as review references rather than incomplete ledger transactions. Non-financial
+ignored messages need no durable reference. Missing keys, mismatched key
+identifiers and storage failures stop cursor advancement.
 
 `getSmsReviewPage({ limit, after })` lists pending review references without
 loading a key or reading the inbox. Pages default to 100 rows and accept limits
-from 1 to 100. The returned rows contain only platform ID, received timestamp,
-review reason and parser rule/version. Ordering uses timestamp then numeric
-platform ID, retaining precision beyond JavaScript's safe integer range. A
-`nextCursor` is returned only when more pending rows exist. Resolved references
-are excluded; refresh from the first page to discover newly pending earlier
-references. This listing does not prepare or confirm a transaction.
+from 1 to 100. Each returned row contains `referenceId`, platform ID, received
+timestamp, review reason and parser rule/version; it contains no source
+fingerprints. Ordering is by timestamp, numeric platform ID, then `referenceId`.
+The review cursor carries all three fields so rows sharing a timestamp and
+platform ID are not skipped. A `nextCursor` is returned only when more pending
+rows exist. Resolved references are excluded; refresh from the first page to
+discover newly pending earlier references. This listing does not prepare or
+confirm a transaction.
 
-`prepareSmsReview(platformId, readOriginal)` prepares one pending reference using
-a caller-supplied exact-ID Android read. It forbids key creation, checks matching
-key history before accessing the source, and verifies timestamp, body HMAC and
-normalized-sender HMAC. Parser-derived identities and rule versions may change;
-they are not immutable source proof. The reference is rechecked after the async
-read so a concurrently resolved item cannot return ready. Preparation is read-only
-and returns no original text or sender label.
+`prepareSmsReview(referenceId, readOriginal)` prepares one pending reference
+selected by its stable ID. The caller-supplied Android reader still receives the
+stored platform ID. Preparation forbids key creation, checks matching key
+history before accessing the source, and verifies the returned platform ID,
+timestamp, body fingerprint and normalized-sender fingerprint against the
+selected reference. It then rechecks that exact reference after the async read,
+so a concurrently resolved item cannot return ready. If Android has recycled the
+platform ID for a different row, preparation returns `source_changed` and stays
+bound to the selected reference; it never redirects to the newer row. A missing
+original returns `missing_original`. Parser-derived identities and rule versions
+may change; they are not immutable source proof. Preparation is read-only and
+returns no original text or sender label. Ready and unavailable results carry the
+selected `referenceId` and its platform ID when available.
 
-`confirmSmsReview(platformId, expected, readOriginal, corrections, options)` is
-the transactional human-confirmation boundary. It copies and validates the
-reviewed values before awaiting, then rereads the exact inbox row and protected
-key state inside the Android writer transaction. It compares the fresh parser
-preparation with the selected snapshot, inserts the canonical `sms:<platformId>`
-transaction and resolves the reference together, or rolls both back. It never
-advances the batch cursor. Corrections and existing edited or deleted
-transactions are preserved; an unknown format may be saved only after the
-reviewer supplies all required transaction fields, and its rule ID/version stay
-paired as null. A weak-identity overlap stays pending unless the reviewer
-explicitly confirms a distinct payment. That choice cannot override a strong
-identity conflict. Failures return body-free reasons; cancellation propagates.
+`confirmSmsReview(referenceId, expected, readOriginal, corrections?, options?)`
+is the transactional human-confirmation boundary. It copies and validates the
+reviewed values before awaiting, then rereads the exact source and protected key
+state inside the Android writer transaction. The preparation snapshot binds the
+reference ID, platform ID and received timestamp. Confirmation rechecks the
+source fingerprints and conditionally resolves only that reference, inserting a
+new transaction in the same transaction or rolling both changes back. New SMS
+transaction and SMS-link identifiers derive from `referenceId`; existing
+transaction identifiers and links are unchanged. Confirmation results carry the
+selected reference ID and platform ID. It never advances the batch cursor.
+Corrections and existing edited or deleted transactions are preserved; an
+unknown format may be saved only after the reviewer supplies all required
+transaction fields, and its rule ID/version stay paired as null. A weak-identity
+overlap stays pending unless the reviewer explicitly confirms a distinct
+payment. That choice cannot override a strong identity conflict. Failures return
+body-free reasons; cancellation propagates.
 
-Unavailable results distinguish a resolved reference, missing original, changed
-source, no-longer-financial parse, inaccessible key, unreadable source, stale
-selection, ambiguous overlap, invalid corrected references and database failure. Error text is not returned;
+Unavailable results distinguish a non-pending selection, missing original,
+changed or unavailable source, no-longer-financial parse, inaccessible key,
+unreadable source, stale preparation, ambiguous overlap, invalid correction,
+unavailable transaction and storage errors. Error text is not returned;
 cancellation propagates from the reader and key operations. The caller must
-obtain revocable source consent. The confirmation API is not yet connected to
-the native reader or a screen.
+obtain revocable source consent; this API does not request permission or read the
+inbox by itself.
 
 The data layer checks persisted state before requesting a protected key. Any
 import key state, SMS cursor state, review reference or imported transaction
@@ -136,11 +156,25 @@ request cannot borrow a load that permits creation. Store failures remain errors
 with no temporary key fallback. Actual device store/lifecycle behavior still
 requires Android checks.
 
-SMS platform identity protects replay. Keyed identities are shared with paste
-imports in both directions; strong coherent overlap preserves existing edits
-and deletion markers, while conflicting or weak evidence requires review. Body fingerprints are not
-globally unique: two genuine identical purchases must remain distinguishable.
-Amount/time similarity alone never merges transactions.
+SMS source identity protects replay. An exact platform-ID, timestamp and body
+tuple reuses its prior reference only when sender identity and key identity also
+match. An importable or reviewable row with a reused platform ID but a later
+timestamp or changed body is treated as a separate source and gets its own
+reference. Non-financial ignored rows still need no durable reference. Any newly
+accepted transaction derives its identity from its source reference. Existing
+transaction IDs, corrections, tombstones and links are not rewritten. Keyed
+identities are shared with paste imports in both
+directions; strong coherent overlap preserves existing edits and deletion
+markers, while conflicting or weak evidence requires review. Body fingerprints
+are not globally unique: two genuine identical purchases must remain
+distinguishable. Amount/time similarity alone never merges transactions.
+
+The native catch-up cursor remains `(receivedAt, platformId)`. A changed body at
+the same timestamp and platform ID as the saved cursor may not be revisited by a
+strict after-cursor scan, and out-of-order dated reuse still needs overlap or
+date-order recovery. Neither recovery is implemented here. Per-row fingerprint
+work also remains inside the SQLite writer transaction; shortening that lock
+while retaining key and cursor revalidation is separate work.
 
 Automatic saving requires an explicitly verified rule/version, high confidence,
 posted status, safe integer paise and one active mapped account. The verified
@@ -160,22 +194,28 @@ tombstones, selected review confirmation, connection reopen, foreground
 catch-up/health, cancellation rollback, key loss and manual fallback. Inbox
 pages were fictional; no inbox access or permission request occurred.
 
-This proves those isolated storage cases, not a process-restart test or the
-connected review UI. The subsequent change-listener fix still needs an Android
-screen-refresh check. Rohan's review also identified unresolved row-ID reuse,
-unreadable-row progress, concurrent-connection contention and date-order
-recovery concerns; keep this PR draft until those are resolved and verified.
+This proves those isolated storage cases, not a process-restart or end-to-end
+review-flow test. The recorded device run covers only its stated source
+revision; migration `0008` and the new reference-ID review API still need their
+own Android migration and review-path validation. The subsequent change-listener
+fix still needs an Android screen-refresh check. Migration `0008` addresses
+later-timestamp or changed-body platform-ID reuse at the storage/API layer, but
+same-timestamp cursor overlap and out-of-order date recovery remain unresolved.
+The writer-lock duration and concurrent-connection contention also remain open;
+keep this PR draft until those checks and remaining integration gates are
+resolved and verified.
 
 - Full Android concurrent manual/import saves and process-restart behavior
   remain required before this native storage path is ready to merge.
 - #46 must establish the eligible rule corpus before any automatic saving claim.
-- #43 still needs native review-reader wiring, confirmation/recovery actions,
-  failed/unavailable operation-count semantics and presentation, protected-key
-  unavailability/loss lifecycle proof and full native cross-source regression
-  evidence. The storage health API reports persisted pending reviews and the
-  non-posted-alert subset; it does not retain failed/unavailable operation
-  history. The missing-key creation guard is implemented and tested in
-  source/platform mocks and an isolated real browser key-store probe; visible
+- #43 still needs end-to-end Android validation of review selection,
+  confirmation and recovery; failed/unavailable operation-count semantics and
+  presentation; protected-key unavailability/loss lifecycle proof; and full
+  native cross-source regression evidence. The storage health API reports
+  persisted pending reviews and the non-posted-alert subset; it does not retain
+  failed/unavailable operation history. The missing-key creation guard is
+  implemented and tested in source/platform mocks and an isolated real browser
+  key-store probe; visible
   recovery actions and actual Android store/lifecycle proof remain incomplete.
 - #44 still needs opt-in/preview UI, permission-request wiring, native-reader
   integration, and receiver integration. The foreground coordinator handles
