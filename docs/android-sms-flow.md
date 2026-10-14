@@ -26,8 +26,12 @@ so cancellation is checked again when it returns.
 
 ## Catch-up and review
 
-While enabled, opening or foregrounding the app runs the bounded coordinator
-from the stored range/cursor. Permission and consent are checked at write
+While enabled, opening or foregrounding the app scans the original consented
+range in bounded pages, including previously checked messages. Preview counts
+the same range and explains that existing entries and corrections are preserved.
+A separate page cursor leaves the committed main cursor monotonic, recovering
+older-arriving messages and changed bodies without recreating saved entries.
+Permission and consent are checked at write
 boundaries. Backgrounding aborts foreground catch-up and source counting. A
 user-started OS permission dialog may finish, but preview reads begin only while
 Settings is focused and the app is active; leaving Settings cancels that
@@ -45,9 +49,11 @@ this flow or saved in its status state.
 The verified rule list is still empty: uncertain formats remain in review.
 Receiver-triggered processing and best-effort background scheduling are not yet
 connected. Later-timestamp/changed-body row-ID reuse and unreadable-row progress
-have source fixes; the private device run exercised fictional ID reuse. Same-
-cursor changes and out-of-order date recovery remain open, as does fingerprint
-work inside the SQLite writer lock. Live/multipart delivery, the real
+have source fixes; the private device run exercised fictional ID reuse. Full
+range replay addresses same-cursor changes and out-of-order dates in source;
+matching Android recovery validation remains open, as does fingerprint work
+inside the SQLite writer lock. Repeated scans cost more as history grows, and
+source changes behind an in-flight page require a later scan. Live/multipart delivery, the real
 permission/consent lifecycle, restart/reboot, installer/source-build eligibility
 and release acceptance remain open. See #16, #43, #44, #46 and #56.
 
