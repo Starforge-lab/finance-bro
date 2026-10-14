@@ -203,14 +203,10 @@ export function SmsImportPanel({
       if (!isCurrent() || controller.signal.aborted || !routeFocused.current || AppState.currentState !== 'active') return;
       const endDateMs = Date.now();
       const startDateMs = consent.startDateMs ?? Math.max(1, endDateMs - ninetyDaysMs);
-      const cursor = await ledger.getSmsImportCursor();
-      if (!isCurrent() || controller.signal.aborted || !routeFocused.current || AppState.currentState !== 'active') return;
-      const after = cursor && cursor.receivedAt >= startDateMs ? { dateMs: cursor.receivedAt, id: cursor.platformId } : undefined;
       const counted = await previewAndroidSms({
         reader,
         startDateMs,
         endDateMs,
-        ...(after ? { after } : {}),
         signal: controller.signal,
       });
       if (!isCurrent() || controller.signal.aborted) return;
@@ -231,7 +227,7 @@ export function SmsImportPanel({
         setAction(null);
       }
     }
-  }, [ledger, reader]);
+  }, [reader]);
 
   const cancelPreview = useCallback(() => {
     const controller = previewController.current;
@@ -423,7 +419,7 @@ export function SmsImportPanel({
           {preview ? <View style={[styles.preview, { backgroundColor: colors.background, borderColor: colors.rule }]}>
             <ThemedText style={Type.rowTitle}>{preview.count} {preview.count === 1 ? 'message' : 'messages'} found</ThemedText>
             <ThemedText style={[Type.note, { color: colors.textSecondary }]}>
-              History: {indiaDate(new Date(preview.startDateMs))} – {indiaDate(new Date(preview.endDateMs))}. This count-only preview changed no ledger data; import begins only after you confirm below.
+              History: {indiaDate(new Date(preview.startDateMs))} – {indiaDate(new Date(preview.endDateMs))}. This count includes previously checked messages. Existing entries and corrections are preserved. The preview changed no ledger data; import begins only after you confirm below.
             </ThemedText>
           </View> : null}
           {visibleFailure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.text }]}>{visibleFailure}</ThemedText> : null}
