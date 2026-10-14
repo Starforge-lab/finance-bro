@@ -27,6 +27,7 @@ export function setAndroidSmsImportSettings(
 }
 
 export type AndroidSmsReviewSelection = {
+  referenceId: string;
   platformId: string;
   receivedAt: number;
   expectedPreparation: Extract<SmsReviewPreparation, { kind: 'ready' }>;

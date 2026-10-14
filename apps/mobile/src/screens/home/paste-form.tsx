@@ -394,7 +394,7 @@ export function PasteForm({
           return;
         }
         const confirmed = await ledger.confirmSmsReview(
-          smsReview.platformId,
+          smsReview.referenceId,
           smsReview.expectedPreparation,
           createAndroidSmsOriginalReader(smsReader),
           corrections,

@@ -111,7 +111,7 @@ export function SmsImportPanel({
   const [action, setAction] = useState<'preview' | 'catchup' | 'disable' | 'review' | 'page' | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [failure, setFailure] = useState('');
-  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [reviewingReferenceId, setReviewingReferenceId] = useState<string | null>(null);
   const [previewCancelling, setPreviewCancelling] = useState(false);
   const previewController = useRef<AbortController | null>(null);
   const previewPhase = useRef<AndroidSmsPreviewPhase>(null);
@@ -342,12 +342,17 @@ export function SmsImportPanel({
     actionRef.current = true;
     setAction('review');
     setFailure('');
-    setReviewingId(row.platformId);
+    setReviewingReferenceId(row.referenceId);
     try {
-      const result = await ledger.prepareSmsReview(row.platformId, createAndroidSmsOriginalReader(reader));
+      const result = await ledger.prepareSmsReview(row.referenceId, createAndroidSmsOriginalReader(reader));
       if (!isCurrent()) return;
       if (result.kind === 'ready') {
-        onReview({ platformId: row.platformId, receivedAt: row.receivedAt, expectedPreparation: result });
+        onReview({
+          referenceId: result.referenceId,
+          platformId: result.platformId,
+          receivedAt: result.receivedAt,
+          expectedPreparation: result,
+        });
       } else {
         setFailure(reviewUnavailableCopy(result.reason));
         await refresh(isCurrent);
@@ -358,7 +363,7 @@ export function SmsImportPanel({
       if (isCurrent()) {
         actionRef.current = false;
         setAction(null);
-        setReviewingId(null);
+        setReviewingReferenceId(null);
       }
     }
   }, [ledger, onReview, reader, refresh]);
@@ -454,7 +459,7 @@ export function SmsImportPanel({
         {!loading && rows.length === 0 ? <ThemedText style={[Type.note, { color: colors.textSecondary }]}>No messages waiting for review.</ThemedText> : null}
         {rows.map((row) => (
           <Pressable
-            key={row.platformId}
+            key={row.referenceId}
             accessibilityRole="button"
             accessibilityLabel={`Review message received ${indiaDate(new Date(row.receivedAt))}`}
             accessibilityState={{ disabled: action !== null }}
@@ -466,7 +471,7 @@ export function SmsImportPanel({
               <ThemedText style={Type.body}>{indiaDate(new Date(row.receivedAt))}</ThemedText>
               <ThemedText style={[Type.note, { color: colors.textSecondary }]}>{row.reason?.replaceAll('_', ' ') ?? 'Transaction details need review'}</ThemedText>
             </View>
-            {reviewingId === row.platformId ? <ActivityIndicator accessibilityLabel="Opening review" color={colors.textSecondary} /> : null}
+            {reviewingReferenceId === row.referenceId ? <ActivityIndicator accessibilityLabel="Opening review" color={colors.textSecondary} /> : null}
           </Pressable>
         ))}
         {nextPage ? <LedgerButton label={action === 'page' ? 'Loading…' : 'Load more'} disabled={action !== null} onPress={() => void loadMore()} /> : null}
