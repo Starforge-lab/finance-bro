@@ -274,6 +274,59 @@ describe('Android SMS ingestion storage seam', () => {
     } finally { fixture.sqlite.close(); }
   });
 
+  it('validates replay pages separately while atomically preserving the main high-water cursor', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      const time = strongSms.receivedAt;
+      const mainTime = time + 10_000;
+      const main = await api.importSmsBatch([smsRow('90', strongSms, mainTime)], null);
+      const page1 = await api.importSmsBatch([smsRow('10', strongSms, time)], main.cursor, { replayAfter: null });
+      assert.deepEqual(page1.cursor, main.cursor);
+
+      const replayAfter = { receivedAt: time, platformId: '10' };
+      const page2 = await api.importSmsBatch([smsRow('20', strongSms, time)], page1.cursor, { replayAfter });
+      assert.deepEqual(page2.cursor, main.cursor);
+      const nextReplayAfter = { receivedAt: time, platformId: '20' };
+      await assert.rejects(
+        api.importSmsBatch([smsRow('20', strongSms, time)], page2.cursor, { replayAfter: nextReplayAfter }),
+        /ordered/,
+      );
+      await assert.rejects(
+        api.importSmsBatch([], page2.cursor, { replayAfter: { receivedAt: time, platformId: '01' } }),
+        /canonical positive Android row ID/,
+      );
+      const accessor = Object.defineProperty({}, 'replayAfter', { get: () => null });
+      await assert.rejects(api.importSmsBatch([], page2.cursor, accessor as never), /plain values/);
+
+      const advanced = await api.importSmsBatch([smsRow('100', strongSms, mainTime + 1_000)], page2.cursor);
+      await assert.rejects(
+        api.importSmsBatch([smsRow('30', strongSms, time)], page2.cursor, { replayAfter: nextReplayAfter }),
+        /cursor is stale/,
+      );
+      assert.deepEqual(await api.getSmsImportCursor(), advanced.cursor);
+      assert.equal(await fixture.ledger.db.select().from(smsImportRefs).where(eq(smsImportRefs.platformId, '30')).get(), undefined);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('fails an empty completion when protected SMS history has no key provider', async () => {
+    const fixture = openTestLedger();
+    try {
+      const keyedApi = createApi(fixture);
+      await keyedApi.migrateLedger();
+      const imported = await keyedApi.importSmsBatch([smsRow('20')], null);
+      const keyState = await fixture.ledger.db.select().from(importKeyState).get();
+      const noProviderApi = createDataLayer(fixture.client, ledgerMigrations, undefined, transactionRunner(fixture.sqlite, fixture.client));
+
+      await assert.rejects(noProviderApi.importSmsBatch([], imported.cursor, { catchupCompletedAt: strongSms.receivedAt + 1_000 }), /fingerprint provider/);
+
+      assert.deepEqual(await keyedApi.getSmsImportCursor(), imported.cursor);
+      assert.equal((await fixture.ledger.db.select().from(importKeyState).get())?.keyId, keyState?.keyId);
+      assert.equal((await keyedApi.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
+    } finally { fixture.sqlite.close(); }
+  });
+
   it('rolls back refs, key state and cursor together after a write failure', async () => {
     const fixture = openTestLedger();
     try {
