@@ -377,7 +377,7 @@ describe('Android SMS ingestion storage seam', () => {
       assert.equal((await fixture.ledger.db.select().from(preferences).where(eq(preferences.key, 'theme')).get())?.value, 'dark');
 
       await api.importSmsBatch([smsRow('100')], null);
-      assert.deepEqual(policies, [true], 'the health marker must not block first-use key creation');
+      assert.deepEqual(policies, [true, false], 'the health marker must not block first-use key creation or final key verification');
     } finally { fixture.sqlite.close(); }
   });
 
@@ -469,7 +469,7 @@ describe('Android SMS ingestion storage seam', () => {
 
       assert.equal((await api.getSmsImportHealth()).lastSuccessfulCatchupAt, completedAt);
       assert.equal(capturedClockCalls, 1);
-      assert.equal(capturedChecks, 2);
+      assert.equal(capturedChecks, 6);
       assert.equal(replacedChecks, 0);
     } finally { fixture.sqlite.close(); }
   });
@@ -553,7 +553,7 @@ describe('Android SMS ingestion storage seam', () => {
         occurredAt: new Date(1_800_000_000_000),
       });
       assert.equal(await api.getTransaction('manual-after-sms-key-loss') !== undefined, true);
-      assert.deepEqual(policies, [true, true, false]);
+      assert.deepEqual(policies, [true, false, true, false, false]);
     } finally { fixture.sqlite.close(); }
   });
 
@@ -864,7 +864,7 @@ describe('Android SMS ingestion storage seam', () => {
     } finally { fixture.sqlite.close(); }
   });
 
-  it('checks the cursor before loading a key and keeps Android paste key work inside the writer transaction', async () => {
+  it('checks the cursor before key access and serializes only first-key provisioning', async () => {
     const fixture = openTestLedger();
     try {
       const baseRunner = transactionRunner(fixture.sqlite, fixture.client);
@@ -885,17 +885,16 @@ describe('Android SMS ingestion storage seam', () => {
       await api.migrateLedger();
 
       const imported = await api.importSmsBatch([smsRow('61')], null);
-      assert.equal(policies.length, 1);
-      assert.equal(policies[0], true);
+      assert.deepEqual(policies, [true, false]);
       await assert.rejects(api.importSmsBatch([smsRow('62')], null), /cursor is stale/);
-      assert.equal(policies.length, 1, 'stale cursor must fail before key-store access');
+      assert.deepEqual(policies, [true, false], 'stale cursor must fail before key-store access');
 
       await api.createAccount({ id: 'hdfc-1234', name: 'Fictional HDFC', type: 'bank', institution: 'hdfc', last4: '1234' });
       const prepared = await api.preparePaste(strongSms);
       assert.equal(prepared.kind, 'needs-review');
-      assert.deepEqual(policies, [true, false]);
-      assert.equal(await api.saveReviewedPaste(prepared, { accountId: 'hdfc-1234' }), 'inserted');
       assert.deepEqual(policies, [true, false, false]);
+      assert.equal(await api.saveReviewedPaste(prepared, { accountId: 'hdfc-1234' }), 'inserted');
+      assert.deepEqual(policies, [true, false, false, false]);
       assert.deepEqual(await api.getSmsImportCursor(), imported.cursor);
     } finally { fixture.sqlite.close(); }
   });
@@ -961,6 +960,184 @@ describe('Android SMS ingestion storage seam', () => {
       assert.equal(ref?.senderHash, await key.fingerprint(JSON.stringify(['sender', strongSms.sender.toUpperCase()])));
       assert.equal(await fixture.ledger.db.select().from(smsImportRefs).where(eq(smsImportRefs.platformId, '999')).get(), undefined);
     } finally { fixture.sqlite.close(); }
+  });
+
+  it('keeps the SQLite writer available while a batch fingerprint is pending', async () => {
+    const temp = temporaryFile();
+    const importFixture = openTestLedger(temp.filename);
+    const manualFixture = openTestLedger(temp.filename);
+    let releaseFingerprint!: () => void;
+    const fingerprintGate = new Promise<void>((resolve) => { releaseFingerprint = resolve; });
+    let notifyFingerprintStarted!: () => void;
+    const fingerprintStarted = new Promise<void>((resolve) => { notifyFingerprintStarted = resolve; });
+    try {
+      const key = fingerprinter('fictional-sms-preflight-key');
+      const initialApi = createDataLayer(
+        importFixture.client, ledgerMigrations, async () => key, transactionRunner(importFixture.sqlite, importFixture.client),
+      );
+      const manualApi = createDataLayer(manualFixture.client, ledgerMigrations);
+      await initialApi.migrateLedger();
+      await manualApi.migrateLedger();
+      const first = await initialApi.importSmsBatch([smsRow('230')], null);
+      if (!first.cursor) throw new Error('Expected a saved cursor');
+
+      const blockedKey: Fingerprinter = {
+        keyId: key.keyId,
+        async fingerprint(value) {
+          notifyFingerprintStarted();
+          await fingerprintGate;
+          return key.fingerprint(value);
+        },
+      };
+      const importingApi = createDataLayer(
+        importFixture.client, ledgerMigrations, async () => blockedKey, transactionRunner(importFixture.sqlite, importFixture.client),
+      );
+      const pendingImport = importingApi.importSmsBatch(
+        [smsRow('231', strongSms, strongSms.receivedAt + 1_000)], first.cursor,
+      );
+      await fingerprintStarted;
+
+      await manualApi.saveManualEntry({
+        id: 'manual-during-sms-preflight', amountInr: '1.25', direction: 'debit',
+        occurredAt: new Date(strongSms.receivedAt + 2_000),
+      });
+      assert.ok(await manualApi.getTransaction('manual-during-sms-preflight'));
+
+      releaseFingerprint();
+      const result = await pendingImport;
+      assert.equal(result.review, 1);
+      assert.deepEqual(await importingApi.getSmsImportCursor(), { receivedAt: strongSms.receivedAt + 1_000, platformId: '231' });
+    } finally {
+      releaseFingerprint();
+      importFixture.sqlite.close();
+      manualFixture.sqlite.close();
+      rmSync(temp.filename, { force: true });
+      rmdirSync(temp.directory);
+    }
+  });
+
+  it('revalidates the key after preflight and fails closed without leaking provider errors', async () => {
+    for (const failure of ['lost', 'rotated', 'provider-error'] as const) {
+      const fixture = openTestLedger();
+      try {
+        const key = fingerprinter('fictional-sms-key-before-preflight');
+        const initialApi = createApi(fixture, key);
+        await initialApi.migrateLedger();
+        const first = await initialApi.importSmsBatch([smsRow('240')], null);
+        if (!first.cursor) throw new Error('Expected a saved cursor');
+
+        let providerCalls = 0;
+        const provider: FingerprintKeyProvider = async () => {
+          providerCalls += 1;
+          if (providerCalls === 1) return key;
+          if (failure === 'lost') throw new FingerprintKeyUnavailableError();
+          if (failure === 'rotated') return fingerprinter('fictional-sms-key-after-preflight');
+          throw new Error(strongSms.body);
+        };
+        const api = createDataLayer(fixture.client, ledgerMigrations, provider, transactionRunner(fixture.sqlite, fixture.client));
+
+        await assert.rejects(api.importSmsBatch(
+          [smsRow('241', strongSms, strongSms.receivedAt + 1_000)],
+          first.cursor,
+          { catchupCompletedAt: strongSms.receivedAt + 10_000 },
+        ), (error: unknown) => {
+          assert.equal(error instanceof Error, true);
+          if (failure === 'lost') assert.equal(error instanceof FingerprintKeyUnavailableError, true);
+          if (failure === 'rotated') assert.match((error as Error).message, /key changed|review/i);
+          if (failure === 'provider-error') assert.equal((error as Error).message.includes(strongSms.body), false);
+          return true;
+        });
+
+        assert.equal(providerCalls, 2);
+        assert.deepEqual(await api.getSmsImportCursor(), first.cursor);
+        assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 1);
+        assert.equal((await fixture.ledger.db.select().from(importKeyState).get())?.keyId, key.keyId);
+        assert.equal((await api.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
+      } finally { fixture.sqlite.close(); }
+    }
+  });
+
+  it('rejects a stale cursor or revoked source after preflight without committing the pending batch', async () => {
+    for (const scenario of ['cursor-changed', 'cancelled'] as const) {
+      const temp = temporaryFile();
+      const firstFixture = openTestLedger(temp.filename);
+      const secondFixture = scenario === 'cursor-changed' ? openTestLedger(temp.filename) : undefined;
+      let releaseFingerprint!: () => void;
+      const fingerprintGate = new Promise<void>((resolve) => { releaseFingerprint = resolve; });
+      let notifyFingerprintStarted!: () => void;
+      const fingerprintStarted = new Promise<void>((resolve) => { notifyFingerprintStarted = resolve; });
+      try {
+        const key = fingerprinter(`fictional-sms-${scenario}-key`);
+        const firstApi = createDataLayer(
+          firstFixture.client, ledgerMigrations, async () => key, transactionRunner(firstFixture.sqlite, firstFixture.client),
+        );
+        await firstApi.migrateLedger();
+        const first = await firstApi.importSmsBatch([smsRow('250')], null);
+        if (!first.cursor) throw new Error('Expected a saved cursor');
+
+        let fingerprintCalls = 0;
+        const blockedKey: Fingerprinter = {
+          keyId: key.keyId,
+          async fingerprint(value) {
+            fingerprintCalls += 1;
+            notifyFingerprintStarted();
+            await fingerprintGate;
+            return key.fingerprint(value);
+          },
+        };
+        const importingApi = createDataLayer(
+          firstFixture.client, ledgerMigrations, async () => blockedKey, transactionRunner(firstFixture.sqlite, firstFixture.client),
+        );
+        let cancelled = false;
+        const pending = importingApi.importSmsBatch(
+          [
+            smsRow('251', strongSms, strongSms.receivedAt + 1_000),
+            smsRow('253', strongSms, strongSms.receivedAt + 1_500),
+          ],
+          first.cursor,
+          {
+            catchupCompletedAt: strongSms.receivedAt + 10_000,
+            ...(scenario === 'cancelled' ? {
+              assertSourceAccess: () => {
+                if (cancelled) {
+                  const aborted = new Error('The operation was aborted.');
+                  aborted.name = 'AbortError';
+                  throw aborted;
+                }
+              },
+            } : {}),
+          },
+        );
+        await fingerprintStarted;
+
+        if (scenario === 'cursor-changed') {
+          const secondApi = createDataLayer(
+            secondFixture!.client, ledgerMigrations, async () => key,
+            transactionRunner(secondFixture!.sqlite, secondFixture!.client),
+          );
+          await secondApi.importSmsBatch(
+            [smsRow('252', strongSms, strongSms.receivedAt + 2_000)], first.cursor,
+          );
+        } else {
+          cancelled = true;
+        }
+        releaseFingerprint();
+
+        await assert.rejects(pending, scenario === 'cursor-changed' ? /cursor is stale/ : /aborted/i);
+        assert.deepEqual(await firstApi.getSmsImportCursor(), scenario === 'cursor-changed'
+          ? { receivedAt: strongSms.receivedAt + 2_000, platformId: '252' }
+          : first.cursor);
+        assert.equal((await firstFixture.ledger.db.select().from(smsImportRefs).all()).length, scenario === 'cursor-changed' ? 2 : 1);
+        if (scenario === 'cancelled') assert.equal(fingerprintCalls, 4, 'the canceled preflight must not fingerprint the next row');
+        assert.equal((await firstApi.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
+      } finally {
+        releaseFingerprint();
+        firstFixture.sqlite.close();
+        secondFixture?.sqlite.close();
+        rmSync(temp.filename, { force: true });
+        rmdirSync(temp.directory);
+      }
+    }
   });
 
   it('replays unchanged source content when a parser upgrade changes derived identity', async () => {
