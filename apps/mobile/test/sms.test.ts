@@ -11,6 +11,7 @@ import type { LedgerSQLiteClient, LedgerSQLiteTransactionRunner, LedgerMigration
 import { importKeyState, preferences, smsImportRefs, smsImportState, transactions } from '../src/db/schema';
 import { FingerprintKeyUnavailableError, type FingerprintKeyProvider, type Fingerprinter } from '../src/imports/fingerprint';
 import { ledgerMigrations, openTestLedger, temporaryFile } from './helpers/ledger';
+import { smsReferenceId } from './helpers/sms';
 
 const strongSms = {
   sender: 'VM-HDFCBK-S',
@@ -84,7 +85,7 @@ describe('Android SMS ingestion storage seam', () => {
       assert.equal((fixture.sqlite.prepare('SELECT value FROM preferences WHERE key = ?').get('theme') as { value: string }).value, 'dark');
       assert.equal((fixture.sqlite.prepare('SELECT is_fixed FROM categories WHERE id = ?').get('old-category') as { is_fixed: number }).is_fixed, 1);
       assert.equal(await api.getSmsImportCursor(), null);
-      assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 8);
+      assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 9);
       for (const [table, name] of [
         ['transactions', 'transactions_dedupe_key_idx'],
         ['sms_import_refs', 'sms_import_refs_dedupe_key_idx'],
@@ -92,6 +93,8 @@ describe('Android SMS ingestion storage seam', () => {
         const indexes = fixture.sqlite.prepare(`PRAGMA index_list('${table}')`).all() as Array<{ name: string; unique: number }>;
         assert.equal(indexes.find((index) => index.name === name)?.unique, 0);
       }
+      const sourceUnique = fixture.sqlite.prepare("PRAGMA index_list('sms_import_refs')").all() as Array<{ name: string; unique: number }>;
+      assert.equal(sourceUnique.find((index) => index.name === 'sms_import_refs_source_unique')?.unique, 1);
     } finally { fixture.sqlite.close(); }
   });
 
@@ -110,6 +113,51 @@ describe('Android SMS ingestion storage seam', () => {
       assert.equal((await api.getTransaction('prototype-row'))?.amountPaise, 100);
       assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 7);
       assert.equal(fixture.sqlite.prepare("SELECT name FROM sqlite_master WHERE name = 'preferences'").get(), undefined);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('adds stable reference IDs without changing legacy SMS links or transaction history', async () => {
+    const fixture = openTestLedger();
+    try {
+      const oldMigrations: LedgerMigrations = {
+        journal: { entries: ledgerMigrations.journal.entries.slice(0, 8) },
+        migrations: Object.fromEntries(Object.entries(ledgerMigrations.migrations).filter(([key]) => Number(key.slice(1)) < 8)),
+      };
+      await createDataLayer(fixture.client, oldMigrations).migrateLedger();
+      const key = fingerprinter('fictional-sms-key');
+      const source = smsRow('71');
+      const [senderHash, bodyHash] = await Promise.all([
+        key.fingerprint(JSON.stringify(['sender', source.sender.toUpperCase()])),
+        key.fingerprint(JSON.stringify(['body', source.body])),
+      ]);
+      fixture.sqlite.prepare('INSERT INTO import_key_state(id,key_id) VALUES(1, ?)').run(key.keyId);
+      fixture.sqlite.exec(`
+        INSERT INTO transactions(id,amount_paise,direction,kind,status,occurred_at,note,source,sms_ref_id,upi_ref,dedupe_key,body_hash,rule_id,rule_version,linked_txn_id,exclude_from_stats,user_edited,created_at,updated_at,deleted_at)
+        VALUES
+          ('migration-edited',45000,'debit','expense','posted',1791367200000,'Fictional edit','sms','android-sms:71','612345678901','upi:${'a'.repeat(64)}','${'b'.repeat(64)}','fictional.rule',7,'migration-deleted',0,1,1,2,NULL),
+          ('migration-deleted',100,'debit','expense','posted',1791367200000,'Fictional tombstone','manual',NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,1,1,2,3)
+      `);
+      fixture.sqlite.prepare(`INSERT INTO sms_import_refs
+        (platform_id,received_at,sender_hash,dedupe_key,body_hash,key_id,status,reason,rule_id,rule_version,transaction_id,created_at)
+        VALUES ('71',?,?,?,?,?,'saved',NULL,'fictional.rule',7,'migration-edited',1)`)
+        .run(source.receivedAt, senderHash, `body:${'a'.repeat(64)}`, bodyHash, key.keyId);
+      const oldReference = fixture.sqlite.prepare('SELECT * FROM sms_import_refs WHERE platform_id = ?').get('71') as Record<string, unknown>;
+      const oldTransactions = fixture.sqlite.prepare(`SELECT * FROM transactions WHERE id IN ('migration-edited','migration-deleted') ORDER BY id`).all();
+
+      const api = createApi(fixture, key);
+      await api.migrateLedger();
+
+      const reference = fixture.sqlite.prepare('SELECT * FROM sms_import_refs WHERE platform_id = ?').get('71') as Record<string, unknown>;
+      const { reference_id: _, ...preservedReference } = reference;
+      assert.equal(reference.reference_id, 'legacy:71');
+      assert.deepEqual({ ...preservedReference }, { ...oldReference });
+      assert.deepEqual(fixture.sqlite.prepare(`SELECT * FROM transactions WHERE id IN ('migration-edited','migration-deleted') ORDER BY id`).all().map((row) => ({ ...row })),
+        oldTransactions.map((row) => ({ ...row })));
+      assert.deepEqual(fixture.sqlite.prepare('PRAGMA foreign_key_check').all(), []);
+      assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 9);
+      const replay = await api.importSmsBatch([source], null);
+      assert.equal(replay.duplicate, 1);
+      assert.equal(smsReferenceId(fixture.sqlite, source.platformId, source.receivedAt), 'legacy:71');
     } finally { fixture.sqlite.close(); }
   });
 
@@ -166,10 +214,11 @@ describe('Android SMS ingestion storage seam', () => {
       assert.equal(JSON.stringify(refs).includes('FICTIONAL_UNREADABLE_BODY_'), false);
       assert.deepEqual(await api.getSmsImportCursor(), result.cursor);
       let sourceReads = 0;
-      assert.deepEqual(await api.prepareSmsReview('212', async () => {
+      const referenceId = smsReferenceId(fixture.sqlite, '212');
+      assert.deepEqual(await api.prepareSmsReview(referenceId, async () => {
         sourceReads += 1;
         throw new Error('Unreadable source must not be parsed');
-      }), { kind: 'unavailable', platformId: '212', reason: 'unreadable_source' });
+      }), { kind: 'unavailable', referenceId, platformId: '212', reason: 'unreadable_source' });
       assert.equal(sourceReads, 0);
 
       await assert.rejects(api.importSmsBatch([{
@@ -297,12 +346,13 @@ describe('Android SMS ingestion storage seam', () => {
         nonPostedReviewCount: 1,
       });
 
-      const prepared = await api.prepareSmsReview(normal.platformId, async () => normal);
+      const referenceId = smsReferenceId(fixture.sqlite, normal.platformId, normal.receivedAt);
+      const prepared = await api.prepareSmsReview(referenceId, async () => normal);
       assert.equal(prepared.kind, 'ready');
       if (prepared.kind !== 'ready') throw new Error('Expected the fictional pending SMS to be reviewable');
       assert.deepEqual(
-        await api.confirmSmsReview(normal.platformId, prepared, async () => normal),
-        { kind: 'saved', platformId: normal.platformId, transactionId: `sms:${normal.platformId}` },
+        await api.confirmSmsReview(referenceId, prepared, async () => normal),
+        { kind: 'saved', referenceId, platformId: normal.platformId, transactionId: `sms:${referenceId}` },
       );
       assert.deepEqual(await api.getSmsImportHealth(), {
         lastSuccessfulCatchupAt: null,
@@ -886,13 +936,14 @@ describe('Android SMS ingestion storage seam', () => {
     } finally { fixture.sqlite.close(); }
   });
 
-  it('rejects changed sender, body or date for an already referenced platform ID', async () => {
+  it('rejects sender conflicts for an exact source tuple and accepts changed content as a new source', async () => {
     for (const change of ['sender', 'body', 'date'] as const) {
       const fixture = openTestLedger();
       try {
         const api = createApi(fixture);
         await api.migrateLedger();
         const imported = await api.importSmsBatch([smsRow('80')], null);
+        assert.deepEqual(imported.cursor, { receivedAt: strongSms.receivedAt, platformId: '80' });
         const expected = { receivedAt: strongSms.receivedAt - 1_000, platformId: '79' };
         await fixture.ledger.db.update(smsImportState).set({
           cursorReceivedAt: expected.receivedAt,
@@ -903,10 +954,17 @@ describe('Android SMS ingestion storage seam', () => {
           : change === 'body'
             ? smsRow('80', { ...strongSms, body: strongSms.body.replace('450.00', '451.00') })
             : smsRow('80', strongSms, strongSms.receivedAt + 1_000);
-        await assert.rejects(api.importSmsBatch([changed], expected), /previously imported SMS row changed/);
-        assert.deepEqual(await api.getSmsImportCursor(), expected);
-        assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 1);
-        assert.deepEqual(imported.cursor, { receivedAt: strongSms.receivedAt, platformId: '80' });
+        if (change === 'sender') {
+          await assert.rejects(api.importSmsBatch([changed], expected), /previously imported SMS row changed/);
+          assert.deepEqual(await api.getSmsImportCursor(), expected);
+          assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 1);
+        } else {
+          const next = await api.importSmsBatch([changed], expected);
+          assert.deepEqual(next.cursor, { receivedAt: changed.receivedAt, platformId: changed.platformId });
+          const refs = await fixture.ledger.db.select().from(smsImportRefs).all();
+          assert.equal(refs.length, 2);
+          assert.notEqual(refs[0]?.referenceId, refs[1]?.referenceId);
+        }
       } finally { fixture.sqlite.close(); }
     }
   });
@@ -922,6 +980,7 @@ describe('Android SMS ingestion storage seam', () => {
             VALUES('sms:legacy',100,'debit','expense',1,'sms','android-sms:legacy','body:${'a'.repeat(64)}','${'b'.repeat(64)}',1,1)`);
         } else {
           await fixture.ledger.db.insert(smsImportRefs).values({
+            referenceId: 'legacy:legacy',
             platformId: 'legacy',
             receivedAt: 1,
             senderHash: 'a'.repeat(64),

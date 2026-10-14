@@ -9,6 +9,7 @@ import type { LedgerSQLiteClient, LedgerSQLiteTransactionRunner } from '../src/d
 import type { FingerprintKeyPolicy, FingerprintKeyProvider, Fingerprinter } from '../src/imports/fingerprint';
 import { FingerprintKeyUnavailableError } from '../src/imports/fingerprint';
 import { ledgerMigrations, openTestLedger } from './helpers/ledger';
+import { smsReferenceId } from './helpers/sms';
 
 const source = {
   platformId: '72',
@@ -44,7 +45,7 @@ async function fixture() {
   const api = createDataLayer(test.client, ledgerMigrations, provider, transactionRunner(test.sqlite, test.client));
   await api.migrateLedger();
   await api.importSmsBatch([source], null);
-  return { ...test, key, policies, api, provider };
+  return { ...test, key, policies, api, provider, referenceId: smsReferenceId(test.sqlite, source.platformId, source.receivedAt) };
 }
 
 function totalChanges(sqlite: DatabaseSync): number {
@@ -57,14 +58,16 @@ describe('selected Android SMS review preparation', () => {
     try {
       const before = totalChanges(test.sqlite);
       let calls = 0;
-      const result = await test.api.prepareSmsReview(source.platformId, async (id) => {
+      const result = await test.api.prepareSmsReview(test.referenceId, async (id) => {
         calls += 1;
         assert.equal(id, source.platformId);
         return { ...source };
       });
       assert.equal(result.kind, 'ready');
       if (result.kind !== 'ready') throw new Error('Expected selected SMS to be ready for review');
+      assert.equal(result.referenceId, test.referenceId);
       assert.equal(result.platformId, source.platformId);
+      assert.equal(result.receivedAt, source.receivedAt);
       assert.equal(result.preparation.kind, 'needs-review');
       assert.equal(result.preparation.candidate?.amountPaise, 45_000);
       assert.deepEqual(test.policies.at(-1), { allowCreate: false });
@@ -80,22 +83,22 @@ describe('selected Android SMS review preparation', () => {
     try {
       let calls = 0;
       const reader = async () => { calls += 1; return { ...source }; };
-      assert.deepEqual(await test.api.prepareSmsReview('73', reader), {
-        kind: 'unavailable', platformId: '73', reason: 'not_pending',
+      assert.deepEqual(await test.api.prepareSmsReview('f'.repeat(64), reader), {
+        kind: 'unavailable', referenceId: 'f'.repeat(64), platformId: null, reason: 'not_pending',
       });
       assert.equal(calls, 0);
 
       const lostKey = createDataLayer(test.client, ledgerMigrations, async () => {
         throw new FingerprintKeyUnavailableError();
       });
-      assert.deepEqual(await lostKey.prepareSmsReview(source.platformId, reader), {
-        kind: 'unavailable', platformId: source.platformId, reason: 'key_unavailable',
+      assert.deepEqual(await lostKey.prepareSmsReview(test.referenceId, reader), {
+        kind: 'unavailable', referenceId: test.referenceId, platformId: source.platformId, reason: 'key_unavailable',
       });
       assert.equal(calls, 0);
 
       const changedKey = createDataLayer(test.client, ledgerMigrations, async () => fingerprinter('fictional-replacement-key'));
-      assert.deepEqual(await changedKey.prepareSmsReview(source.platformId, reader), {
-        kind: 'unavailable', platformId: source.platformId, reason: 'key_unavailable',
+      assert.deepEqual(await changedKey.prepareSmsReview(test.referenceId, reader), {
+        kind: 'unavailable', referenceId: test.referenceId, platformId: source.platformId, reason: 'key_unavailable',
       });
       assert.equal(calls, 0);
 
@@ -103,17 +106,17 @@ describe('selected Android SMS review preparation', () => {
         throw new Error('FICTIONAL_PRIVATE_KEYSTORE_FAILURE');
       });
       const changesBeforeFailedStore = totalChanges(test.sqlite);
-      const failedStoreResult = await failedStore.prepareSmsReview(source.platformId, reader);
+      const failedStoreResult = await failedStore.prepareSmsReview(test.referenceId, reader);
       assert.deepEqual(failedStoreResult, {
-        kind: 'unavailable', platformId: source.platformId, reason: 'key_unavailable',
+        kind: 'unavailable', referenceId: test.referenceId, platformId: source.platformId, reason: 'key_unavailable',
       });
       assert.equal(JSON.stringify(failedStoreResult).includes('FICTIONAL_PRIVATE_KEYSTORE_FAILURE'), false);
       assert.equal(calls, 0);
       assert.equal(totalChanges(test.sqlite), changesBeforeFailedStore);
 
       test.sqlite.prepare("UPDATE import_key_state SET key_id = 'legacy' WHERE id = 1").run();
-      assert.deepEqual(await test.api.prepareSmsReview(source.platformId, reader), {
-        kind: 'unavailable', platformId: source.platformId, reason: 'key_unavailable',
+      assert.deepEqual(await test.api.prepareSmsReview(test.referenceId, reader), {
+        kind: 'unavailable', referenceId: test.referenceId, platformId: source.platformId, reason: 'key_unavailable',
       });
       assert.equal(calls, 0);
     } finally { test.sqlite.close(); }
@@ -136,12 +139,12 @@ describe('selected Android SMS review preparation', () => {
         const api = createDataLayer(failingClient, ledgerMigrations, async () => test.key);
         let sourceCalls = 0;
         const before = totalChanges(test.sqlite);
-        const result = await api.prepareSmsReview(source.platformId, async () => {
+        const result = await api.prepareSmsReview(test.referenceId, async () => {
           sourceCalls += 1;
           return { ...source };
         });
         assert.deepEqual(result, {
-          kind: 'unavailable', platformId: source.platformId, reason: 'storage_unavailable',
+          kind: 'unavailable', referenceId: test.referenceId, platformId: failAt === 1 ? null : source.platformId, reason: 'storage_unavailable',
         });
         assert.equal(JSON.stringify(result).includes('FICTIONAL_PRIVATE_DATABASE_FAILURE'), false);
         assert.equal(sourceCalls, 0);
@@ -160,11 +163,11 @@ describe('selected Android SMS review preparation', () => {
       const api = createDataLayer(test.client, ledgerMigrations, async () => brokenFingerprinter);
       let calls = 0;
       const before = totalChanges(test.sqlite);
-      const result = await api.prepareSmsReview(source.platformId, async () => {
+      const result = await api.prepareSmsReview(test.referenceId, async () => {
         calls += 1;
         return { ...source };
       });
-      assert.deepEqual(result, { kind: 'unavailable', platformId: source.platformId, reason: 'key_unavailable' });
+      assert.deepEqual(result, { kind: 'unavailable', referenceId: test.referenceId, platformId: source.platformId, reason: 'key_unavailable' });
       assert.equal(JSON.stringify(result).includes('FICTIONAL_PRIVATE_SIGNING_FAILURE'), false);
       assert.equal(calls, 1);
       assert.equal(totalChanges(test.sqlite), before);
@@ -183,8 +186,8 @@ describe('selected Android SMS review preparation', () => {
     ] as const) {
       const test = await fixture();
       try {
-        const result = await test.api.prepareSmsReview(source.platformId, read);
-        assert.deepEqual(result, { kind: 'unavailable', platformId: source.platformId, reason });
+        const result = await test.api.prepareSmsReview(test.referenceId, read);
+        assert.deepEqual(result, { kind: 'unavailable', referenceId: test.referenceId, platformId: source.platformId, reason });
         assert.equal(JSON.stringify(result).includes(source.body), false);
       } finally { test.sqlite.close(); }
     }
@@ -196,19 +199,19 @@ describe('selected Android SMS review preparation', () => {
       const ignored = { ...source, body: 'Your account is eligible for a fictional offer.' };
       const bodyHash = await test.key.fingerprint(JSON.stringify(['body', ignored.body]));
       const senderHash = await test.key.fingerprint(JSON.stringify(['sender', ignored.sender.trim().toUpperCase()]));
-      test.sqlite.prepare('UPDATE sms_import_refs SET body_hash = ?, sender_hash = ? WHERE platform_id = ?')
-        .run(bodyHash, senderHash, source.platformId);
-      const result = await test.api.prepareSmsReview(source.platformId, async () => ignored);
-      assert.deepEqual(result, { kind: 'unavailable', platformId: source.platformId, reason: 'no_longer_financial' });
+      test.sqlite.prepare('UPDATE sms_import_refs SET body_hash = ?, sender_hash = ? WHERE reference_id = ?')
+        .run(bodyHash, senderHash, test.referenceId);
+      const result = await test.api.prepareSmsReview(test.referenceId, async () => ignored);
+      assert.deepEqual(result, { kind: 'unavailable', referenceId: test.referenceId, platformId: source.platformId, reason: 'no_longer_financial' });
     } finally { test.sqlite.close(); }
   });
 
   it('permits parser-derived identity changes when the keyed source proof still matches', async () => {
     const test = await fixture();
     try {
-      test.sqlite.prepare('UPDATE sms_import_refs SET dedupe_key = ?, rule_version = 4 WHERE platform_id = ?')
-        .run(`body:${'a'.repeat(64)}`, source.platformId);
-      const result = await test.api.prepareSmsReview(source.platformId, async () => ({ ...source }));
+      test.sqlite.prepare('UPDATE sms_import_refs SET dedupe_key = ?, rule_version = 4 WHERE reference_id = ?')
+        .run(`body:${'a'.repeat(64)}`, test.referenceId);
+      const result = await test.api.prepareSmsReview(test.referenceId, async () => ({ ...source }));
       assert.equal(result.kind, 'ready');
       if (result.kind !== 'ready') throw new Error('Expected unchanged source to remain reviewable after parser identity change');
       assert.notEqual(result.preparation.identity.dedupeKey, `body:${'a'.repeat(64)}`);
@@ -218,25 +221,25 @@ describe('selected Android SMS review preparation', () => {
   it('does not return a row that becomes resolved while its original is being read', async () => {
     const test = await fixture();
     try {
-      const result = await test.api.prepareSmsReview(source.platformId, async () => {
-        test.sqlite.prepare("UPDATE sms_import_refs SET status = 'duplicate' WHERE platform_id = ?").run(source.platformId);
+      const result = await test.api.prepareSmsReview(test.referenceId, async () => {
+        test.sqlite.prepare("UPDATE sms_import_refs SET status = 'duplicate' WHERE reference_id = ?").run(test.referenceId);
         return { ...source };
       });
-      assert.deepEqual(result, { kind: 'unavailable', platformId: source.platformId, reason: 'not_pending' });
+      assert.deepEqual(result, { kind: 'unavailable', referenceId: test.referenceId, platformId: source.platformId, reason: 'not_pending' });
     } finally { test.sqlite.close(); }
   });
 
   it('keeps transient source failures private and preserves cancellation', async () => {
     const test = await fixture();
     try {
-      const result = await test.api.prepareSmsReview(source.platformId, async () => {
+      const result = await test.api.prepareSmsReview(test.referenceId, async () => {
         throw new Error('FICTIONAL_PRIVATE_SOURCE_FAILURE');
       });
-      assert.deepEqual(result, { kind: 'unavailable', platformId: source.platformId, reason: 'source_unavailable' });
+      assert.deepEqual(result, { kind: 'unavailable', referenceId: test.referenceId, platformId: source.platformId, reason: 'source_unavailable' });
       assert.equal(JSON.stringify(result).includes('FICTIONAL_PRIVATE_SOURCE_FAILURE'), false);
 
       const cancelled = Object.assign(new Error('cancelled'), { name: 'AbortError' });
-      await assert.rejects(test.api.prepareSmsReview(source.platformId, async () => { throw cancelled; }), (error) => error === cancelled);
+      await assert.rejects(test.api.prepareSmsReview(test.referenceId, async () => { throw cancelled; }), (error) => error === cancelled);
     } finally { test.sqlite.close(); }
   });
 
@@ -248,9 +251,9 @@ describe('selected Android SMS review preparation', () => {
         calls += 1;
         return test.key;
       });
-      const prepare = api.prepareSmsReview as (platformId: unknown, reader: unknown) => Promise<unknown>;
-      await assert.rejects(prepare('072', async () => { calls += 1; return { ...source }; }));
-      await assert.rejects(prepare(source.platformId, null));
+      const prepare = api.prepareSmsReview as (referenceId: unknown, reader: unknown) => Promise<unknown>;
+      await assert.rejects(prepare('bad ref', async () => { calls += 1; return { ...source }; }));
+      await assert.rejects(prepare(test.referenceId, null));
       assert.equal(calls, 0);
     } finally { test.sqlite.close(); }
   });

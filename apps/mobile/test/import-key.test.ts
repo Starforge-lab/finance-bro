@@ -65,6 +65,7 @@ it('permits first-use key creation only before any fingerprinted history exists'
         await fixture.ledger.db.insert(smsImportState).values({ id: 1, cursorReceivedAt: null, cursorPlatformId: null, keyId: 'legacy' }).run();
       } else if (kind === 'sms-reference') {
         await fixture.ledger.db.insert(smsImportRefs).values({
+          referenceId: 'legacy:legacy',
           platformId: 'legacy', receivedAt: 1, senderHash: 'a'.repeat(64), dedupeKey: `body:${'b'.repeat(64)}`,
           bodyHash: 'c'.repeat(64), keyId: 'legacy', status: 'review', reason: 'unknown_format',
           ruleId: null, ruleVersion: null, transactionId: null, createdAt: 1,
