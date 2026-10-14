@@ -156,4 +156,46 @@ describe('Android SMS source identity', () => {
       assert.deepEqual(await api.getSmsImportCursor(), { receivedAt: ignored.receivedAt - 1, platformId: ignored.platformId });
     } finally { fixture.sqlite.close(); }
   });
+
+  it('does not expose source text when a fingerprint provider fails on a legacy ignored reference', async () => {
+    const fixture = openTestLedger();
+    const ignored = { ...first, body: 'FICTIONAL_PRIVATE_OFFER_MESSAGE: Your account is eligible for a fictional offer.' };
+    const key = fingerprinter();
+    let failForSource = false;
+    const api = createDataLayer(fixture.client, ledgerMigrations, async () => ({
+      ...key,
+      async fingerprint(value) {
+        if (failForSource && value.includes(ignored.body)) throw new Error(value);
+        return key.fingerprint(value);
+      },
+    }), transactionRunner(fixture.sqlite, fixture.client));
+    try {
+      await api.migrateLedger();
+      const initial = await api.importSmsBatch([ignored], null);
+      assert.equal(initial.ignored, 1);
+      const [senderHash, bodyHash] = await Promise.all([
+        key.fingerprint(JSON.stringify(['sender', ignored.sender.toUpperCase()])),
+        key.fingerprint(JSON.stringify(['body', ignored.body])),
+      ]);
+      fixture.sqlite.prepare(`INSERT INTO sms_import_refs
+        (reference_id,platform_id,received_at,sender_hash,dedupe_key,body_hash,key_id,status,reason,rule_id,rule_version,transaction_id,created_at)
+        VALUES ('legacy:55',?,?,?,?,?,?,'review','unknown_format',NULL,NULL,NULL,1)`)
+        .run(ignored.platformId, ignored.receivedAt, senderHash, `body:${bodyHash}`, bodyHash, key.keyId);
+      const replayCursor = { receivedAt: firstReceivedAt - 1, platformId: '54' };
+      await fixture.ledger.db.update(smsImportState).set({
+        cursorReceivedAt: replayCursor.receivedAt,
+        cursorPlatformId: replayCursor.platformId,
+      }).where(eq(smsImportState.id, 1)).run();
+      failForSource = true;
+
+      await assert.rejects(api.importSmsBatch([ignored], replayCursor), (error: unknown) => {
+        assert.equal(error instanceof Error, true);
+        assert.equal((error as Error).message, 'Unable to create keyed SMS fingerprint');
+        assert.equal((error as Error).message.includes(ignored.body), false);
+        return true;
+      });
+      assert.deepEqual(await api.getSmsImportCursor(), replayCursor);
+      assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 1);
+    } finally { fixture.sqlite.close(); }
+  });
 });

@@ -222,7 +222,17 @@ function validateBatch(batch: unknown, expectedCursor: unknown): asserts batch i
 }
 
 async function keyedFingerprint(fingerprinter: Fingerprinter, value: unknown[]): Promise<string> {
-  const result = await fingerprinter.fingerprint(JSON.stringify(value));
+  let result: string;
+  try { result = await fingerprinter.fingerprint(JSON.stringify(value)); }
+  catch (error) {
+    if (isAbortError(error)) {
+      const aborted = new Error('The operation was aborted.');
+      aborted.name = 'AbortError';
+      throw aborted;
+    }
+    if (error instanceof FingerprintKeyUnavailableError) throw error;
+    throw new Error('Unable to create keyed SMS fingerprint');
+  }
   if (!/^[a-f0-9]{64}$/.test(result)) throw new TypeError('Invalid keyed SMS fingerprint');
   return result;
 }
@@ -944,23 +954,11 @@ export function createSmsIngestion(
           for (const row of rows) {
             if (row.sender.trim().length === 0 || row.sender.length > maxSenderLength ||
                 row.body.trim().length === 0 || row.body.length > maxBodyLength) {
-              const safeFingerprint = async (parts: unknown[]) => {
-                try { return await keyedFingerprint(fingerprinter, parts); }
-                catch (error) {
-                  if (isAbortError(error)) {
-                    const aborted = new Error('The operation was aborted.');
-                    aborted.name = 'AbortError';
-                    throw aborted;
-                  }
-                  if (error instanceof FingerprintKeyUnavailableError) throw error;
-                  throw new Error('Unable to create keyed reference for unreadable SMS source');
-                }
-              };
               const normalizedSender = row.sender.trim().toUpperCase();
-              const bodyHash = await safeFingerprint(['body', row.body]);
-              const sourceHash = await safeFingerprint(['sms', normalizedSender, row.body]);
-              const senderHash = await safeFingerprint(['sender', normalizedSender]);
-              const referenceId = await safeFingerprint(['sms-source-reference', row.platformId, row.receivedAt, bodyHash]);
+              const bodyHash = await keyedFingerprint(fingerprinter, ['body', row.body]);
+              const sourceHash = await keyedFingerprint(fingerprinter, ['sms', normalizedSender, row.body]);
+              const senderHash = await keyedFingerprint(fingerprinter, ['sender', normalizedSender]);
+              const referenceId = await keyedFingerprint(fingerprinter, ['sms-source-reference', row.platformId, row.receivedAt, bodyHash]);
               const prior = await findSmsSourceReference(ledger, row, bodyHash);
               if (prior) {
                 if (prior.senderHash !== senderHash || prior.keyId !== fingerprinter.keyId) {
