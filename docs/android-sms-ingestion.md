@@ -25,6 +25,17 @@ signed-64-bit range. The caller obtains `getSmsImportCursor()` before reading it
 next bounded page. A stale cursor stops the batch; callers must reload it before
 retrying.
 
+Catch-up replays the original consented date range on each run because inbox
+dates and row IDs do not identify newly inserted or changed messages. It uses
+`{ replayAfter: null }` for the first page and a separate replay cursor for
+later pages. This option validates page order independently of `expectedCursor`;
+the latter still guards the current main cursor inside the writer transaction.
+Each page commits atomically and retains the greater of the main cursor and its
+last row. Existing source tuples remain idempotent; corrections and tombstones
+are preserved. Omitting `replayAfter` retains the forward-only batch contract.
+The caller supplies the original consent floor; this storage API establishes
+no consent itself.
+
 Only the caller that has exhausted the source pages may pass
 `{ catchupCompletedAt }`, either a positive safe-integer timestamp or a
 zero-argument function that returns one. The function is snapshotted with the
@@ -170,12 +181,16 @@ markers, while conflicting or weak evidence requires review. Body fingerprints
 are not globally unique: two genuine identical purchases must remain
 distinguishable. Amount/time similarity alone never merges transactions.
 
-The native catch-up cursor remains `(receivedAt, platformId)`. A changed body at
-the same timestamp and platform ID as the saved cursor may not be revisited by a
-strict after-cursor scan, and out-of-order dated reuse still needs overlap or
-date-order recovery. Neither recovery is implemented here. Per-row fingerprint
-work also remains inside the SQLite writer transaction; shortening that lock
-while retaining key and cursor revalidation is separate work.
+The main cursor remains `(receivedAt, platformId)`, while each catch-up uses its
+own page continuation from the consent floor. This recovers older-arriving rows
+and same-cursor body changes visible during the scan without rewinding the main
+cursor. Full scans cost more as consented history grows. The provider exposes no
+snapshot token: changes inserted behind an in-flight page require a later scan.
+Pages remain bounded and cancellation preserves earlier committed pages. A
+successful empty final page rechecks an existing protected key and key history;
+an initial empty ledger does not provision a key. Per-row fingerprint work still
+holds the writer transaction; shortening it while retaining key and cursor
+revalidation is separate work.
 
 Automatic saving requires an explicitly verified rule/version, high confidence,
 posted status, safe integer paise and one active mapped account. The verified
@@ -195,34 +210,63 @@ tombstones, selected review confirmation, connection reopen, foreground
 catch-up/health, cancellation rollback, key loss and manual fallback. Inbox
 pages were fictional; no inbox access or permission request occurred.
 
-This proves those isolated storage cases, not a process-restart or end-to-end
-review-flow test. The recorded device run covers only its stated source
-revision; migration `0008` and the new reference-ID review API still need their
-own Android migration and review-path validation. The subsequent change-listener
-fix still needs an Android screen-refresh check. Migration `0008` addresses
-later-timestamp or changed-body platform-ID reuse at the storage/API layer, but
-same-timestamp cursor overlap and out-of-order date recovery remain unresolved.
-The writer-lock duration and concurrent-connection contention also remain open;
-keep this PR draft until those checks and remaining integration gates are
-resolved and verified.
+The 12-check run above remains evidence for its stated revisions and storage
+cases. A later Android flow run below covers the schema 8-to-9 migration,
+reference-ID selection, correction flow and Home listener refresh. Neither run
+establishes process-restart behavior or live inbox/permission behavior.
+Later-timestamp/changed-body platform-ID reuse and unreadable-row progress have
+source fixes; the new run exercised the later-timestamp reuse case with
+fictional rows. Full-range replay now addresses same-cursor changes and
+out-of-order dates in source; matching Android recovery validation remains open.
+Fingerprint work inside the writer lock and concurrent manual/import contention
+also remain release gates.
+
+On 2026-10-14, a Motorola Edge 60 Pro (Android 17) QA run used the APK from
+successful workflow 38587798479 for isolated package
+`com.rohangupta.financebro.smsqa.dev`. The APK used native revision
+`54d3cd7dbdf008d947c582e93670dc11ccafd8e0`; the QA session used JS/storage
+revision `c907994` and UI fix `3635f66`. Private QA patches supplied a
+fictional reader and simulated grants/consent, using a private database and key.
+The actual native consent gate stayed off; the run read no real inbox rows and
+made no OS permission requests.
+
+The real Android SQLite migration from schema 8 to 9 preserved both legacy
+references, the saved transaction ID and SMS reference, and the existing
+correction. `PRAGMA foreign_key_check` was clean on the WAL-backed database. A
+fictional row reusing platform ID 7002 with a later receipt time and changed
+body created a third reference while preserving the old one. Selecting the old
+reference returned visible manual/paste fallback without redirecting or saving;
+selecting the new reference confirmed 81,000 paise. Separately, previewing two
+rows and cancelling made no ledger or key writes, while the QA-only fake enable
+created two pending reviews. Correcting and confirming one review saved 45,000
+paise for October 11 while retaining its receipt clock; Home showed ₹450 via
+the native change listener. The UI revision fixed status refresh clearing the
+recovery alert. After UI fix `3635f66`, the previously failing recovery-alert
+check passed. The final report recorded two transactions, three references,
+one pending review, the corrected date, no raw body, preserved key, consent gate
+off, schema 9 and
+`PASS`.
 
 - Full Android concurrent manual/import saves and process-restart behavior
   remain required before this native storage path is ready to merge.
 - #46 must establish the eligible rule corpus before any automatic saving claim.
-- #43 still needs end-to-end Android validation of review selection,
-  confirmation and recovery; failed/unavailable operation-count semantics and
-  presentation; protected-key unavailability/loss lifecycle proof; and full
-  native cross-source regression evidence. The storage health API reports
+- #43's selection/recovery path now has isolated Android UI evidence with a
+  fictional reader: an old selection showed fallback without redirecting or
+  saving, a new selection confirmed, and a corrected transaction was saved.
+  Failed/unavailable operation-count semantics and presentation,
+  protected-key unavailability/loss lifecycle proof, and full native
+  cross-source regression evidence remain open. The storage health API reports
   persisted pending reviews and the non-posted-alert subset; it does not retain
   failed/unavailable operation history. The missing-key creation guard is
   implemented and tested in source/platform mocks and an isolated real browser
-  key-store probe; visible
-  recovery actions and actual Android store/lifecycle proof remain incomplete.
-- #44 still needs opt-in/preview UI, permission-request wiring, native-reader
-  integration, and receiver integration. The foreground coordinator handles
-  bounded catch-up only after its caller has established consent and preview;
-  source consent is not durable or established by this storage API. An in-flight
-  native query cannot be interrupted by the current reader method.
+  key-store probe; actual Android store/lifecycle proof remains incomplete.
+- #44's preview/cancel UI path was exercised with fictional rows, but positive
+  consent was simulated and the native gate stayed off. Real opt-in and
+  permission-request lifecycle, native-reader wiring, and receiver integration
+  remain open. The foreground coordinator handles bounded catch-up only after
+  its caller has established consent and preview; source consent is not durable
+  or established by this storage API. An in-flight native query cannot be
+  interrupted by the current reader method.
 - #16 and #56 retain their provider, lifecycle, device and release gates. Node
   SQLite tests and mocked native-runner tests do not establish Android behavior.
 
