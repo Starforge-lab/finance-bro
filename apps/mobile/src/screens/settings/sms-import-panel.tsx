@@ -43,6 +43,8 @@ function isAbortError(error: unknown): boolean {
 
 function reviewUnavailableCopy(reason: string): string {
   switch (reason) {
+    case 'unreadable_source':
+      return 'This message could not be read safely. Add the payment manually or paste it from Home.';
     case 'missing_original':
     case 'source_changed':
       return 'This message is no longer available to review. Add the payment manually or paste it from Home.';
