@@ -12,7 +12,7 @@ import {
 import { accounts, importKeyState, preferences, smsImportRefs, smsImportState, transactions } from '../db/schema';
 import { DuplicateReviewRequiredError, getFingerprintKeyPolicy, requiresDuplicateReview } from './key-state';
 import { preparePastedSms, type PastePreparation, type ReviewCorrections } from './paste';
-import type { FingerprintKeyProvider, Fingerprinter } from './fingerprint';
+import { FingerprintKeyUnavailableError, type FingerprintKeyProvider, type Fingerprinter } from './fingerprint';
 
 const maxBatchSize = 100;
 const maxBodyLength = 16_384;
@@ -57,6 +57,7 @@ export type SmsReviewUnavailableReason =
   | 'not_pending'
   | 'missing_original'
   | 'source_changed'
+  | 'unreadable_source'
   | 'no_longer_financial'
   | 'key_unavailable'
   | 'storage_unavailable'
@@ -76,6 +77,7 @@ export type SmsReviewPageOptions = { limit?: number | undefined; after?: SmsCurs
 type ReviewReason =
   | 'unknown_format'
   | 'non_posted'
+  | 'unreadable_source'
   | 'unsafe_amount'
   | 'unknown_account'
   | 'weak_identity'
@@ -176,10 +178,10 @@ function validateBatch(batch: unknown, expectedCursor: unknown): asserts batch i
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`SMS row ${index} must be an object`);
     const row = value as Record<string, unknown>;
     assertPlatformId(row.platformId, `SMS row ${index} platformId`);
-    if (typeof row.sender !== 'string' || row.sender.trim().length === 0 || row.sender.length > maxSenderLength) {
+    if (typeof row.sender !== 'string') {
       throw new TypeError(`SMS row ${index} sender is invalid`);
     }
-    if (typeof row.body !== 'string' || row.body.length === 0 || row.body.length > maxBodyLength) {
+    if (typeof row.body !== 'string') {
       throw new TypeError(`SMS row ${index} body is invalid`);
     }
     if (!Number.isSafeInteger(row.receivedAt) || (row.receivedAt as number) <= 0) {
@@ -256,7 +258,11 @@ async function writeReference(
   row: SmsInboxRow,
   fingerprinter: Fingerprinter,
   senderHash: string,
-  preparation: Extract<Awaited<ReturnType<typeof preparePastedSms>>, { kind: 'needs-review' }>,
+  preparation: {
+    identity: { dedupeKey: string; bodyHash: string };
+    ruleId: string | null;
+    ruleVersion: number | null;
+  },
   status: 'review' | 'saved' | 'duplicate',
   reason: ReviewReason | null,
   transactionId: string | null,
@@ -324,6 +330,7 @@ async function prepareSmsReviewForLedger(
   if (!reference || reference.status !== 'review' || reference.transactionId !== null) {
     return unavailable('not_pending');
   }
+  if (reference.reason === 'unreadable_source') return unavailable('unreadable_source');
   if (!fingerprints) return unavailable('key_unavailable');
 
   let policy: Awaited<ReturnType<typeof getFingerprintKeyPolicy>>;
@@ -890,6 +897,43 @@ export function createSmsIngestion(
           if (await requiresDuplicateReview(ledger, fingerprinter.keyId)) throw new DuplicateReviewRequiredError();
 
           for (const row of rows) {
+            if (row.sender.trim().length === 0 || row.sender.length > maxSenderLength ||
+                row.body.trim().length === 0 || row.body.length > maxBodyLength) {
+              const safeFingerprint = async (parts: unknown[]) => {
+                try { return await keyedFingerprint(fingerprinter, parts); }
+                catch (error) {
+                  if (isAbortError(error)) {
+                    const aborted = new Error('The operation was aborted.');
+                    aborted.name = 'AbortError';
+                    throw aborted;
+                  }
+                  if (error instanceof FingerprintKeyUnavailableError) throw error;
+                  throw new Error('Unable to create keyed reference for unreadable SMS source');
+                }
+              };
+              const normalizedSender = row.sender.trim().toUpperCase();
+              const bodyHash = await safeFingerprint(['body', row.body]);
+              const sourceHash = await safeFingerprint(['sms', normalizedSender, row.body]);
+              const senderHash = await safeFingerprint(['sender', normalizedSender]);
+              const prior = await ledger.db.select().from(smsImportRefs)
+                .where(eq(smsImportRefs.platformId, row.platformId)).get();
+              if (prior) {
+                if (prior.receivedAt !== row.receivedAt || prior.bodyHash !== bodyHash ||
+                    prior.senderHash !== senderHash || prior.keyId !== fingerprinter.keyId) {
+                  throw new Error('A previously imported SMS row changed; import stopped for review');
+                }
+                result.duplicate += 1;
+              } else {
+                await writeReference(ledger, row, fingerprinter, senderHash, {
+                  identity: { dedupeKey: `body:${sourceHash}`, bodyHash },
+                  ruleId: null,
+                  ruleVersion: null,
+                }, 'review', 'unreadable_source', null);
+                result.review += 1;
+              }
+              continue;
+            }
+
             const parsed = parseSms(row);
             const prepared = await preparePastedSms(row, fingerprinter);
             if (prepared.kind === 'ignored') {

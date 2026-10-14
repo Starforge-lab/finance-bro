@@ -179,8 +179,7 @@ function validateSourcePage(value: unknown, startDateMs: number, endDateMs: numb
     const row = value as Record<string, unknown>;
     const cursor = readReaderCursor(row);
     if (cursor.dateMs < startDateMs || cursor.dateMs > endDateMs ||
-        typeof row.sender !== 'string' || row.sender.trim().length === 0 ||
-        typeof row.body !== 'string' || row.body.length === 0 ||
+        typeof row.sender !== 'string' || typeof row.body !== 'string' ||
         (previous && compareReaderCursor(cursor, previous) <= 0) || pageIds.has(cursor.id)) {
       throw new AndroidSmsCatchupError('invalid_source_page');
     }
