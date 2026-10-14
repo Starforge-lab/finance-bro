@@ -25,6 +25,17 @@ signed-64-bit range. The caller obtains `getSmsImportCursor()` before reading it
 next bounded page. A stale cursor stops the batch; callers must reload it before
 retrying.
 
+Catch-up replays the original consented date range on each run because inbox
+dates and row IDs do not identify newly inserted or changed messages. It uses
+`{ replayAfter: null }` for the first page and a separate replay cursor for
+later pages. This option validates page order independently of `expectedCursor`;
+the latter still guards the current main cursor inside the writer transaction.
+Each page commits atomically and retains the greater of the main cursor and its
+last row. Existing source tuples remain idempotent; corrections and tombstones
+are preserved. Omitting `replayAfter` retains the forward-only batch contract.
+The caller supplies the original consent floor; this storage API establishes
+no consent itself.
+
 Only the caller that has exhausted the source pages may pass
 `{ catchupCompletedAt }`, either a positive safe-integer timestamp or a
 zero-argument function that returns one. The function is snapshotted with the
@@ -170,12 +181,16 @@ markers, while conflicting or weak evidence requires review. Body fingerprints
 are not globally unique: two genuine identical purchases must remain
 distinguishable. Amount/time similarity alone never merges transactions.
 
-The native catch-up cursor remains `(receivedAt, platformId)`. A changed body at
-the same timestamp and platform ID as the saved cursor may not be revisited by a
-strict after-cursor scan, and out-of-order dated reuse still needs overlap or
-date-order recovery. Neither recovery is implemented here. Per-row fingerprint
-work also remains inside the SQLite writer transaction; shortening that lock
-while retaining key and cursor revalidation is separate work.
+The main cursor remains `(receivedAt, platformId)`, while each catch-up uses its
+own page continuation from the consent floor. This recovers older-arriving rows
+and same-cursor body changes visible during the scan without rewinding the main
+cursor. Full scans cost more as consented history grows. The provider exposes no
+snapshot token: changes inserted behind an in-flight page require a later scan.
+Pages remain bounded and cancellation preserves earlier committed pages. A
+successful empty final page rechecks an existing protected key and key history;
+an initial empty ledger does not provision a key. Per-row fingerprint work still
+holds the writer transaction; shortening it while retaining key and cursor
+revalidation is separate work.
 
 Automatic saving requires an explicitly verified rule/version, high confidence,
 posted status, safe integer paise and one active mapped account. The verified
@@ -201,9 +216,10 @@ reference-ID selection, correction flow and Home listener refresh. Neither run
 establishes process-restart behavior or live inbox/permission behavior.
 Later-timestamp/changed-body platform-ID reuse and unreadable-row progress have
 source fixes; the new run exercised the later-timestamp reuse case with
-fictional rows. Same-cursor changes and out-of-order date recovery remain open,
-as do fingerprint work inside the writer lock and concurrent manual/import
-contention. These are still release gates.
+fictional rows. Full-range replay now addresses same-cursor changes and
+out-of-order dates in source; matching Android recovery validation remains open.
+Fingerprint work inside the writer lock and concurrent manual/import contention
+also remain release gates.
 
 On 2026-10-14, a Motorola Edge 60 Pro (Android 17) QA run used the APK from
 successful workflow 38587798479 for isolated package

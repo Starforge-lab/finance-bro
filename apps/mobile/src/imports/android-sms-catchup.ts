@@ -328,18 +328,13 @@ export async function catchUpAndroidSms(value: AndroidSmsCatchupOptions): Promis
 
   await checkAccess();
   let committedCursor = await readCommittedCursor();
-  if (committedCursor && (startDateMs > committedCursor.receivedAt || endDateMs < committedCursor.receivedAt)) {
-    throw new RangeError('Android SMS catch-up range skips or precedes the committed cursor');
-  }
-  let windowStart = committedCursor?.receivedAt ?? startDateMs;
+  let windowStart = startDateMs;
   const counts = { inserted: 0, duplicate: 0, review: 0, ignored: 0 };
 
   while (true) {
     throwIfAborted(signal);
     const windowEnd = endDateMs - windowStart >= maxWindowMs ? windowStart + maxWindowMs - 1 : endDateMs;
-    let after = windowStart === (committedCursor?.receivedAt ?? startDateMs) && committedCursor
-      ? readerCursor(committedCursor)
-      : undefined;
+    let after: ReaderCursor | undefined;
 
     while (true) {
       throwIfAborted(signal);
@@ -361,7 +356,7 @@ export async function catchUpAndroidSms(value: AndroidSmsCatchupOptions): Promis
         throw new AndroidSmsCatchupError('source_unavailable');
       }
       throwIfAborted(signal);
-      const lowerBound = after ?? (committedCursor ? readerCursor(committedCursor) : null);
+      const lowerBound = after ?? null;
       const page = sourcePage(rawPage, windowStart, windowEnd, lowerBound);
       rawPage = undefined;
       await checkAccess();
@@ -383,6 +378,7 @@ export async function catchUpAndroidSms(value: AndroidSmsCatchupOptions): Promis
           result = await importSmsBatch.call(storage, page.messages, committedCursor, {
             ...(finalPage ? { catchupCompletedAt: getCompletionTime } : {}),
             assertSourceAccess: checkAccess,
+            replayAfter: lowerBound === null ? null : { receivedAt: lowerBound.dateMs, platformId: lowerBound.id },
           });
         } catch (error) {
           if (error instanceof AndroidSmsCatchupError) throw error;
@@ -393,10 +389,18 @@ export async function catchUpAndroidSms(value: AndroidSmsCatchupOptions): Promis
           throwIfAborted(signal);
           throw new AndroidSmsCatchupError('storage_unavailable');
         }
+        let expectedNextCursor = committedCursor;
         if (page.messages.length > 0) {
           const last = page.messages[page.messages.length - 1]!;
-          committedCursor = { receivedAt: last.receivedAt, platformId: last.platformId };
+          const lastCursor = { receivedAt: last.receivedAt, platformId: last.platformId };
+          if (!expectedNextCursor || compareReaderCursor(readerCursor(expectedNextCursor), {
+            dateMs: lastCursor.receivedAt,
+            id: lastCursor.platformId,
+          }) < 0) expectedNextCursor = lastCursor;
         }
+        const returnedCursor = storageCursor(result.cursor);
+        if (!sameStorageCursor(returnedCursor, expectedNextCursor)) throw new AndroidSmsCatchupError('stale_cursor');
+        committedCursor = returnedCursor;
         counts.inserted += result.inserted;
         counts.duplicate += result.duplicate;
         counts.review += result.review;

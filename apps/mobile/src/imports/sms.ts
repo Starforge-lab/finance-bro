@@ -40,6 +40,7 @@ export type SmsImportBatchResult = {
 export type SmsImportBatchOptions = {
   catchupCompletedAt?: number | (() => number);
   assertSourceAccess?: () => void | Promise<void>;
+  replayAfter?: SmsCursor | null;
 };
 export type SmsImportHealth = {
   lastSuccessfulCatchupAt: number | null;
@@ -141,7 +142,7 @@ function validateReviewPageOptions(value: unknown): asserts value is SmsReviewPa
 }
 
 function snapshotSmsImportBatchOptions(value: unknown): SmsImportBatchOptions {
-  const options = readOwnDataRecord(value, 'SMS import batch options', ['catchupCompletedAt', 'assertSourceAccess'], false);
+  const options = readOwnDataRecord(value, 'SMS import batch options', ['catchupCompletedAt', 'assertSourceAccess', 'replayAfter'], false);
   const completion = options.catchupCompletedAt;
   if (completion !== undefined && typeof completion !== 'function' &&
       (!Number.isSafeInteger(completion) || (completion as number) <= 0)) {
@@ -150,9 +151,12 @@ function snapshotSmsImportBatchOptions(value: unknown): SmsImportBatchOptions {
   if (options.assertSourceAccess !== undefined && typeof options.assertSourceAccess !== 'function') {
     throw new TypeError('assertSourceAccess must be a function');
   }
+  const hasReplayAfter = Reflect.ownKeys(options).includes('replayAfter');
+  if (hasReplayAfter) assertCursor(options.replayAfter, 'replayAfter');
   return {
     ...(completion === undefined ? {} : { catchupCompletedAt: completion as number | (() => number) }),
     ...(options.assertSourceAccess === undefined ? {} : { assertSourceAccess: options.assertSourceAccess as () => void | Promise<void> }),
+    ...(hasReplayAfter ? { replayAfter: options.replayAfter as SmsCursor | null } : {}),
   };
 }
 
@@ -915,7 +919,8 @@ export function createSmsIngestion(
       const checkedOptions = snapshotSmsImportBatchOptions(options);
       const catchupCompletedAt = checkedOptions.catchupCompletedAt;
       const assertSourceAccess = checkedOptions.assertSourceAccess;
-      validateBatch(batch, expectedCursor);
+      assertCursor(expectedCursor, 'expectedCursor');
+      validateBatch(batch, checkedOptions.replayAfter === undefined ? expectedCursor : checkedOptions.replayAfter);
       const rows = batch.map(({ platformId, sender, body, receivedAt }) => ({ platformId, sender, body, receivedAt }));
       const checkedExpectedCursor = expectedCursor === null ? null : { ...expectedCursor };
       if (!runTransaction) throw new Error('Android SMS import transactions are unavailable on this platform');
@@ -942,6 +947,13 @@ export function createSmsIngestion(
 
           result = { cursor, inserted: 0, duplicate: 0, review: 0, ignored: 0 };
           if (rows.length === 0) {
+            if (catchupCompletedAt !== undefined && !(await getFingerprintKeyPolicy(ledger)).allowCreate) {
+              if (!fingerprints) throw new Error('A platform fingerprint provider is required for SMS imports');
+              const fingerprinter = await fingerprints({ allowCreate: false });
+              if (!/^[a-f0-9]{64}$/.test(fingerprinter.keyId)) throw new TypeError('Invalid fingerprint key identifier');
+              if (state && state.keyId !== fingerprinter.keyId) throw new DuplicateReviewRequiredError();
+              if (await requiresDuplicateReview(ledger, fingerprinter.keyId)) throw new DuplicateReviewRequiredError();
+            }
             await saveCompletion();
             return;
           }
@@ -1083,7 +1095,10 @@ export function createSmsIngestion(
           }
 
           const last = rows[rows.length - 1]!;
-          const nextCursor = { receivedAt: last.receivedAt, platformId: last.platformId };
+          const lastCursor = { receivedAt: last.receivedAt, platformId: last.platformId };
+          const nextCursor = checkedOptions.replayAfter !== undefined && cursor && compareCursor(cursor, lastCursor) > 0
+            ? cursor
+            : lastCursor;
           if (state) {
             await ledger.db.update(smsImportState).set({
               cursorReceivedAt: nextCursor.receivedAt,
