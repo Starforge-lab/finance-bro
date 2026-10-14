@@ -141,6 +141,69 @@ describe('Android SMS ingestion storage seam', () => {
     } finally { fixture.sqlite.close(); }
   });
 
+  it('keeps unreadable string content in body-free review and advances the cursor', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      const oversizedBody = `FICTIONAL_UNREADABLE_BODY_${'x'.repeat(16_384)}`;
+      const oversizedSender = 'S'.repeat(257);
+      const rows = [
+        smsRow('210', { ...strongSms, sender: ' \t ' }),
+        smsRow('211', { ...strongSms, body: '  ' }),
+        smsRow('212', { ...strongSms, body: oversizedBody }),
+        smsRow('213', { ...strongSms, sender: oversizedSender }),
+      ];
+
+      const result = await api.importSmsBatch(rows, null);
+
+      assert.equal(result.review, 4);
+      assert.equal(result.ignored, 0);
+      assert.deepEqual(result.cursor, { receivedAt: strongSms.receivedAt, platformId: '213' });
+      const refs = await fixture.ledger.db.select().from(smsImportRefs).all();
+      assert.deepEqual(refs.map((ref) => [ref.platformId, ref.reason]), rows.map((row) => [row.platformId, 'unreadable_source']));
+      assert.equal(JSON.stringify(refs).includes(oversizedBody), false);
+      assert.equal(JSON.stringify(refs).includes('FICTIONAL_UNREADABLE_BODY_'), false);
+      assert.deepEqual(await api.getSmsImportCursor(), result.cursor);
+      let sourceReads = 0;
+      assert.deepEqual(await api.prepareSmsReview('212', async () => {
+        sourceReads += 1;
+        throw new Error('Unreadable source must not be parsed');
+      }), { kind: 'unavailable', platformId: '212', reason: 'unreadable_source' });
+      assert.equal(sourceReads, 0);
+
+      await assert.rejects(api.importSmsBatch([{
+        ...smsRow('214'),
+        body: null as unknown as string,
+      }], result.cursor), /body is invalid/);
+      assert.deepEqual(await api.getSmsImportCursor(), result.cursor);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('does not echo unreadable source content when keyed fingerprinting fails', async () => {
+    const fixture = openTestLedger();
+    const secret = 'FICTIONAL_PRIVATE_SMS_CONTENT';
+    const provider: FingerprintKeyProvider = async () => ({
+      keyId: 'a'.repeat(64),
+      async fingerprint(value) {
+        if (value.includes(secret)) throw new Error(value);
+        return createHmac('sha256', 'fictional-sms-key').update(value).digest('hex');
+      },
+    });
+    try {
+      const api = createDataLayer(fixture.client, ledgerMigrations, provider, transactionRunner(fixture.sqlite, fixture.client));
+      await api.migrateLedger();
+      const unreadable = smsRow('220', { ...strongSms, body: `${secret}${'x'.repeat(16_385)}` });
+      await assert.rejects(api.importSmsBatch([unreadable], null), (error: unknown) => {
+        assert.equal(error instanceof Error, true);
+        assert.equal((error as Error).message.includes(secret), false);
+        return true;
+      });
+      assert.deepEqual(await api.getSmsImportCursor(), null);
+      assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 0);
+    } finally { fixture.sqlite.close(); }
+  });
+
   it('uses numeric platform ID ordering at equal timestamps and rejects a stale concurrent batch', async () => {
     const fixture = openTestLedger();
     try {

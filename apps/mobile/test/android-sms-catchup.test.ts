@@ -255,6 +255,8 @@ describe('Android SMS foreground catch-up coordinator', () => {
         { messages: [valid], next: { dateMs: start, id: '11' } },
         { messages: [valid, sms('9')], next: null },
         { messages: [], next: { dateMs: start, id: '10' } },
+        { messages: [{ ...valid, sender: null } as unknown as AndroidSmsReaderMessage], next: null },
+        { messages: [{ ...valid, body: null } as unknown as AndroidSmsReaderMessage], next: null },
       ];
       for (const result of malformed) {
         const reader = fakeReader(() => result);
@@ -274,6 +276,31 @@ describe('Android SMS foreground catch-up coordinator', () => {
         error instanceof AndroidSmsCatchupError && error.code === 'invalid_source_page');
       assert.deepEqual(await fixture.api.getSmsImportCursor(), { receivedAt: start, platformId: '10' });
       assert.equal((await fixture.api.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
+    } finally { fixture.fixture.sqlite.close(); }
+  });
+
+  it('continues a page across an oversized unreadable row and commits the last cursor', async () => {
+    const fixture = openApi();
+    try {
+      await fixture.api.migrateLedger();
+      const oversizedBody = `FICTIONAL_UNREADABLE_BODY_${'x'.repeat(16_384)}`;
+      const first = sms('10');
+      const unreadable = { ...sms('11', start + 1), body: oversizedBody };
+      const last = sms('12', start + 2);
+      const reader = fakeReader(() => ({ messages: [first, unreadable, last], next: null }));
+
+      const result = await catchup(reader.reader, fixture.api, start, start + 2);
+
+      assert.deepEqual(result, { inserted: 0, duplicate: 0, review: 3, ignored: 0, completedAt: start + 10_000 });
+      assert.deepEqual(await fixture.api.getSmsImportCursor(), { receivedAt: start + 2, platformId: '12' });
+      const refs = await fixture.fixture.ledger.db.select().from(smsImportRefs).all();
+      assert.deepEqual(refs.map(({ platformId, reason }) => [platformId, reason]), [
+        ['10', 'unknown_account'],
+        ['11', 'unreadable_source'],
+        ['12', 'unknown_account'],
+      ]);
+      assert.equal(JSON.stringify(refs).includes(oversizedBody), false);
+      assert.equal(JSON.stringify(refs).includes('FICTIONAL_UNREADABLE_BODY_'), false);
     } finally { fixture.fixture.sqlite.close(); }
   });
 
