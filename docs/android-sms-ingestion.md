@@ -195,34 +195,62 @@ tombstones, selected review confirmation, connection reopen, foreground
 catch-up/health, cancellation rollback, key loss and manual fallback. Inbox
 pages were fictional; no inbox access or permission request occurred.
 
-This proves those isolated storage cases, not a process-restart or end-to-end
-review-flow test. The recorded device run covers only its stated source
-revision; migration `0008` and the new reference-ID review API still need their
-own Android migration and review-path validation. The subsequent change-listener
-fix still needs an Android screen-refresh check. Migration `0008` addresses
-later-timestamp or changed-body platform-ID reuse at the storage/API layer, but
-same-timestamp cursor overlap and out-of-order date recovery remain unresolved.
-The writer-lock duration and concurrent-connection contention also remain open;
-keep this PR draft until those checks and remaining integration gates are
-resolved and verified.
+The 12-check run above remains evidence for its stated revisions and storage
+cases. A later Android flow run below covers the schema 8-to-9 migration,
+reference-ID selection, correction flow and Home listener refresh. Neither run
+establishes process-restart behavior or live inbox/permission behavior.
+Later-timestamp/changed-body platform-ID reuse and unreadable-row progress have
+source fixes; the new run exercised the later-timestamp reuse case with
+fictional rows. Same-cursor changes and out-of-order date recovery remain open,
+as do fingerprint work inside the writer lock and concurrent manual/import
+contention. These are still release gates.
+
+On 2026-10-14, a Motorola Edge 60 Pro (Android 17) QA run used the APK from
+successful workflow 38587798479 for isolated package
+`com.rohangupta.financebro.smsqa.dev`. The APK used native revision
+`54d3cd7dbdf008d947c582e93670dc11ccafd8e0`; the QA session used JS/storage
+revision `c907994` and UI fix `3635f66`. Private QA patches supplied a
+fictional reader and simulated grants/consent, using a private database and key.
+The actual native consent gate stayed off; the run read no real inbox rows and
+made no OS permission requests.
+
+The real Android SQLite migration from schema 8 to 9 preserved both legacy
+references, the saved transaction ID and SMS reference, and the existing
+correction. `PRAGMA foreign_key_check` was clean on the WAL-backed database. A
+fictional row reusing platform ID 7002 with a later receipt time and changed
+body created a third reference while preserving the old one. Selecting the old
+reference returned visible manual/paste fallback without redirecting or saving;
+selecting the new reference confirmed 81,000 paise. Separately, previewing two
+rows and cancelling made no ledger or key writes, while the QA-only fake enable
+created two pending reviews. Correcting and confirming one review saved 45,000
+paise for October 11 while retaining its receipt clock; Home showed ₹450 via
+the native change listener. The UI revision fixed status refresh clearing the
+recovery alert. After UI fix `3635f66`, the previously failing recovery-alert
+check passed. The final report recorded two transactions, three references,
+one pending review, the corrected date, no raw body, preserved key, consent gate
+off, schema 9 and
+`PASS`.
 
 - Full Android concurrent manual/import saves and process-restart behavior
   remain required before this native storage path is ready to merge.
 - #46 must establish the eligible rule corpus before any automatic saving claim.
-- #43 still needs end-to-end Android validation of review selection,
-  confirmation and recovery; failed/unavailable operation-count semantics and
-  presentation; protected-key unavailability/loss lifecycle proof; and full
-  native cross-source regression evidence. The storage health API reports
+- #43's selection/recovery path now has isolated Android UI evidence with a
+  fictional reader: an old selection showed fallback without redirecting or
+  saving, a new selection confirmed, and a corrected transaction was saved.
+  Failed/unavailable operation-count semantics and presentation,
+  protected-key unavailability/loss lifecycle proof, and full native
+  cross-source regression evidence remain open. The storage health API reports
   persisted pending reviews and the non-posted-alert subset; it does not retain
   failed/unavailable operation history. The missing-key creation guard is
   implemented and tested in source/platform mocks and an isolated real browser
-  key-store probe; visible
-  recovery actions and actual Android store/lifecycle proof remain incomplete.
-- #44 still needs opt-in/preview UI, permission-request wiring, native-reader
-  integration, and receiver integration. The foreground coordinator handles
-  bounded catch-up only after its caller has established consent and preview;
-  source consent is not durable or established by this storage API. An in-flight
-  native query cannot be interrupted by the current reader method.
+  key-store probe; actual Android store/lifecycle proof remains incomplete.
+- #44's preview/cancel UI path was exercised with fictional rows, but positive
+  consent was simulated and the native gate stayed off. Real opt-in and
+  permission-request lifecycle, native-reader wiring, and receiver integration
+  remain open. The foreground coordinator handles bounded catch-up only after
+  its caller has established consent and preview; source consent is not durable
+  or established by this storage API. An in-flight native query cannot be
+  interrupted by the current reader method.
 - #16 and #56 retain their provider, lifecycle, device and release gates. Node
   SQLite tests and mocked native-runner tests do not establish Android behavior.
 

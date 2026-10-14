@@ -1,8 +1,9 @@
 # Android SMS foreground flow
 
-The Settings import section extends the existing Ink and Stamps screens. This
-is source implementation pending matching native-build and device validation,
-not Android SMS 2.0 release acceptance.
+The Settings import section extends the existing Ink and Stamps screens. A
+private Android QA run has exercised the flow with fictional source rows and
+isolated storage; that bounded evidence is not Android SMS 2.0 release
+acceptance.
 
 ## Consent and preview
 
@@ -43,11 +44,32 @@ this flow or saved in its status state.
 
 The verified rule list is still empty: uncertain formats remain in review.
 Receiver-triggered processing and best-effort background scheduling are not yet
-connected. Live/multipart delivery, permission lifecycle, restart/reboot,
-installer/source-build eligibility and release gates remain open. The row-ID
-reuse, unreadable-row progress and date-order recovery concerns in #83 must also
-be resolved before this flow is ready to merge. See #16, #43, #44, #46 and #56.
+connected. Later-timestamp/changed-body row-ID reuse and unreadable-row progress
+have source fixes; the private device run exercised fictional ID reuse. Same-
+cursor changes and out-of-order date recovery remain open, as does fingerprint
+work inside the SQLite writer lock. Live/multipart delivery, the real
+permission/consent lifecycle, restart/reboot, installer/source-build eligibility
+and release acceptance remain open. See #16, #43, #44, #46 and #56.
 
-Automated preview/controller checks use fictional readers. The earlier 12-check
-Android storage result in `android-sms-ingestion.md` does not verify this new UI,
-consent API or normal-build permission configuration.
+On 2026-10-14, a Motorola Edge 60 Pro (Android 17) QA run used the APK from
+successful workflow 38587798479 for isolated package
+`com.rohangupta.financebro.smsqa.dev`. The APK used native revision
+`54d3cd7dbdf008d947c582e93670dc11ccafd8e0`; the QA session used JS/storage
+revision `c907994` and UI fix `3635f66`. The private QA patches supplied a
+fictional reader and simulated grants/consent with a private database and key.
+The actual native consent gate stayed off; no real inbox rows were read and no
+OS permission request was made.
+
+The device flow confirmed that previewing two rows and cancelling made no ledger
+or key writes; the QA-only fake enable produced two reviews. Correcting and
+confirming a review saved 45,000 paise with the corrected October 11 transaction
+date while retaining its receipt clock. Home then showed ₹450 through the native
+change listener. The same run exercised a changed later row under reused
+platform ID 7002: the old selected reference offered manual/paste recovery
+without redirecting or saving, while selecting the new reference confirmed
+81,000 paise. The UI fix prevents status refresh from clearing the recovery
+alert. After UI fix `3635f66`, the previously failing recovery-alert check
+passed. This validates the fictional-source UI and storage paths, not real
+consent, permission requests, inbox access, restart behavior or release
+eligibility. See
+`android-sms-ingestion.md` for migration and final-state evidence.
