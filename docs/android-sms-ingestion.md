@@ -188,9 +188,16 @@ cursor. Full scans cost more as consented history grows. The provider exposes no
 snapshot token: changes inserted behind an in-flight page require a later scan.
 Pages remain bounded and cancellation preserves earlier committed pages. A
 successful empty final page rechecks an existing protected key and key history;
-an initial empty ledger does not provision a key. Per-row fingerprint work still
-holds the writer transaction; shortening it while retaining key and cursor
-revalidation is separate work.
+an initial empty ledger does not provision a key. Batch parsing and per-row
+fingerprints run outside the writer. A short initial transaction checks source
+access and the main cursor and serializes any permitted first-key provisioning;
+it creates no ledger key-history marker. The final writer rechecks access,
+cursor, the existing protected key with creation forbidden, and matching key
+history before committing database-dependent decisions. Cancellation checks
+surround each prepared row. SecureStore key creation cannot be rolled back by
+SQLite, as before; a later failed batch may leave its initial protected key.
+Selected-review confirmation still performs source/key awaits inside its writer
+transaction and needs separate lock-duration validation.
 
 Automatic saving requires an explicitly verified rule/version, high confidence,
 posted status, safe integer paise and one active mapped account. The verified
@@ -218,8 +225,10 @@ Later-timestamp/changed-body platform-ID reuse and unreadable-row progress have
 source fixes; the new run exercised the later-timestamp reuse case with
 fictional rows. Full-range replay now addresses same-cursor changes and
 out-of-order dates in source; matching Android recovery validation remains open.
-Fingerprint work inside the writer lock and concurrent manual/import contention
-also remain release gates.
+The batch preflight has a second-connection regression proving a manual save can
+finish while fingerprinting is blocked; old-source failure and fixed-source
+success were observed. Matching Android contention validation and selected-
+review writer-lock duration remain release gates.
 
 On 2026-10-14, a Motorola Edge 60 Pro (Android 17) QA run used the APK from
 successful workflow 38587798479 for isolated package
