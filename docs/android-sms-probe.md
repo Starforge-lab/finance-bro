@@ -43,7 +43,7 @@ A subsequent forced WorkManager request and scoped background-process terminatio
 
 | Check | Evidence required |
 | --- | --- |
-| Default manifests | No probe SMS permissions or receiver in ordinary development/production manifests |
+| Standard manifests | SMS permissions/receiver declared with durable import off by default; ordinary packages must exclude the isolated probe identity and temporary QA entry |
 | Probe manifest and autolinking | Correct package, two read-only permissions, receiver and compiled Expo module |
 | Permission denial/revocation | Initial and post-revocation rejection passed; manual/paste fallback still needs its own flow check |
 | Bounded inbox query | Consented foreground range/order/pagination passed; boundary timestamps, equal-date ids and empty/missing-row cases remain unverified |

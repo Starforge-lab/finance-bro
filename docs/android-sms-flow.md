@@ -51,8 +51,9 @@ Receiver-triggered processing and best-effort background scheduling are not yet
 connected. Later-timestamp/changed-body row-ID reuse and unreadable-row progress
 have source fixes; the private device run exercised fictional ID reuse. Full
 range replay addresses same-cursor changes and out-of-order dates in source;
-matching Android recovery validation remains open, as does fingerprint work
-inside the SQLite writer lock. Repeated scans cost more as history grows, and
+matching Android recovery validation remains open. Batch fingerprints now run
+outside the writer; native contention checks and selected-review source/key
+awaits inside the writer still need validation. Repeated scans cost more as history grows, and
 source changes behind an in-flight page require a later scan. Live/multipart delivery, the real
 permission/consent lifecycle, restart/reboot, installer/source-build eligibility
 and release acceptance remain open. See #16, #43, #44, #46 and #56.
