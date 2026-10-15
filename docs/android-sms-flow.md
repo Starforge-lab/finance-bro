@@ -1,4 +1,4 @@
-# Android SMS foreground flow
+# Android SMS import flow
 
 The Settings import section extends the existing Ink and Stamps screens. A
 private Android QA run has exercised the flow with fictional source rows and
@@ -46,14 +46,27 @@ with receipt time used only when no parsed date exists. A missing original or
 unavailable key offers manual/paste recovery. Raw text is never displayed by
 this flow or saved in its status state.
 
+The app entry defines the Android task before loading the router. Confirming an
+opt-in registers a best-effort Expo background task with a minimum interval of
+15 minutes; Android controls actual timing and may require network availability
+and sufficient battery. Registration failure attempts to turn import off and
+remove the task, and reports a body-free error. Disable persists off before
+unregistering. Launch reconciles persisted consent and task registration.
+
+The background runner checks consent, its start date and both SMS permissions
+before opening the ledger. It uses the same bounded catch-up path as app-open
+recovery. Background execution on the matching native build remains unverified;
+the current failure status is held in runtime memory and does not establish
+durable capture-health reporting after the headless runtime ends.
+
 The verified rule list is still empty: uncertain formats remain in review.
-Receiver-triggered processing and best-effort background scheduling are not yet
-connected. Later-timestamp/changed-body row-ID reuse and unreadable-row progress
+Receiver-triggered processing is not yet connected.
+Later-timestamp/changed-body row-ID reuse and unreadable-row progress
 have source fixes; the private device run exercised fictional ID reuse. Full
 range replay addresses same-cursor changes and out-of-order dates in source;
-matching Android recovery validation remains open. Batch fingerprints now run
-outside the writer; native contention checks and selected-review source/key
-awaits inside the writer still need validation. Repeated scans cost more as history grows, and
+fictional Android recovery and batch contention checks have passed. Batch
+fingerprints run outside the writer; selected-review source/key awaits inside
+the writer still need validation. Repeated scans cost more as history grows, and
 source changes behind an in-flight page require a later scan. Live/multipart delivery, the real
 permission/consent lifecycle, restart/reboot, installer/source-build eligibility
 and release acceptance remain open. See #16, #43, #44, #46 and #56.
@@ -80,3 +93,11 @@ passed. This validates the fictional-source UI and storage paths, not real
 consent, permission requests, inbox access, restart behavior or release
 eligibility. See
 `android-sms-ingestion.md` for migration and final-state evidence.
+
+The 2026-10-15 private diagnostic at source `a638448` additionally passed 14
+native assertions: a manual save completed during blocked fingerprinting,
+older/changed sources replayed without rewinding progress, repeat replay was
+idempotent, and keys, foreign keys, raw-body exclusion and cleanup passed.
+It used the same verified native APK with a temporary fictional database;
+native SMS consent stayed off and source access was simulated. This does not
+establish real opt-in, receiver delivery, background execution or process restart.
