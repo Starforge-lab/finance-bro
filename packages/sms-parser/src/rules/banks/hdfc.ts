@@ -10,7 +10,12 @@ const CREDIT_ALERT =
   /^Credit Alert! INR ([\d,.]+) credited to HDFC Bank A\/c XX(\d{4}) on (\d{2})-(\d{2})-(\d{2}) from VPA ([A-Za-z0-9][A-Za-z0-9._-]{1,255}@[A-Za-z][A-Za-z0-9]{1,63}) \(UPI (\d{12})\)$/;
 
 function occurredAtFromBodyDate(dayText: string, monthText: string, yearText: string, receivedAt: number): number | null {
-  const receivedIndia = new Date(receivedAt + INDIA_OFFSET_MS);
+  if (!Number.isSafeInteger(receivedAt)) return null;
+
+  const receivedIndiaAt = receivedAt + INDIA_OFFSET_MS;
+  if (!Number.isSafeInteger(receivedIndiaAt)) return null;
+
+  const receivedIndia = new Date(receivedIndiaAt);
   if (!Number.isFinite(receivedIndia.getTime())) return null;
 
   const day = Number(dayText);
