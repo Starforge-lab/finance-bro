@@ -169,7 +169,7 @@ Main F-Droid is the current distribution goal ([issue #27](https://github.com/St
 - `accounts`: id, name, institution, type (`bank|credit_card|wallet|upi_lite|cash`), last4, isOwn, archived
 - `transactions`: id, amountPaise, direction (`debit|credit`), kind (`expense|income|transfer|refund|reversal|cash_withdrawal`), status (`posted|failed|pending`), accountId, counterparty, merchantId, categoryId, occurredAt, note, source (`sms|manual|ios_intent|paste`), smsRefId, upiRef, dedupeKey, linkedTxnId, excludeFromStats, userEdited, createdAt, updatedAt, deletedAt
   - `userEdited = true` → never overwritten by re-parsing. `deletedAt` = soft delete (undo, and blocks re-import).
-- Planned sms_refs: id, platformId, sender, keyed body fingerprint, receivedAt, parseStatus (parsed|ignored|unknown|failed), ruleId, ruleVersion. Store no raw body; prove the runtime in #16 and coordinate the Android import schema in #43.
+- `sms_import_refs` and `sms_import_state`: body-free system inbox references, keyed fingerprints, disposition/parser provenance and an atomic compound cursor. The storage seam uses a dedicated Android connection with foreign keys enabled before `BEGIN IMMEDIATE`; no rule is currently eligible for automatic save. Capture, review/recovery UI and matching device proof remain unfinished under #43/#44; see [the ingestion boundary](docs/android-sms-ingestion.md).
 - `categories`: id, name, icon, color, parentId, kind (`expense|income`), isSystem, sortOrder
 - `merchants`: id, displayName, aliases, vpaPatterns, defaultCategoryId
 - `category_overrides`: matchType (`merchant|vpa|counterparty`), value, categoryId — learned from user re-categorisation
