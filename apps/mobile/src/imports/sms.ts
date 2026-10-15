@@ -228,17 +228,19 @@ function validateBatch(batch: unknown, expectedCursor: unknown): asserts batch i
 async function keyedFingerprint(fingerprinter: Fingerprinter, value: unknown[]): Promise<string> {
   let result: string;
   try { result = await fingerprinter.fingerprint(JSON.stringify(value)); }
-  catch (error) {
-    if (isAbortError(error)) {
-      const aborted = new Error('The operation was aborted.');
-      aborted.name = 'AbortError';
-      throw aborted;
-    }
-    if (error instanceof FingerprintKeyUnavailableError) throw error;
-    throw new Error('Unable to create keyed SMS fingerprint');
-  }
+  catch (error) { throw safeFingerprintFailure(error); }
   if (!/^[a-f0-9]{64}$/.test(result)) throw new TypeError('Invalid keyed SMS fingerprint');
   return result;
+}
+
+function safeFingerprintFailure(error: unknown): Error {
+  if (isAbortError(error)) {
+    const aborted = new Error('The operation was aborted.');
+    aborted.name = 'AbortError';
+    return aborted;
+  }
+  if (error instanceof FingerprintKeyUnavailableError) return error;
+  return new Error('Unable to create keyed SMS fingerprint');
 }
 
 async function smsSourceReferenceId(fingerprinter: Fingerprinter, row: SmsInboxRow, bodyHash: string): Promise<string> {
@@ -925,6 +927,119 @@ export function createSmsIngestion(
       const checkedExpectedCursor = expectedCursor === null ? null : { ...expectedCursor };
       if (!runTransaction) throw new Error('Android SMS import transactions are unavailable on this platform');
 
+      type PreparedSmsImportRow =
+        | { kind: 'unreadable'; row: SmsInboxRow; bodyHash: string; sourceHash: string; senderHash: string; referenceId: string }
+        | { kind: 'ignored'; row: SmsInboxRow; bodyHash: string; senderHash: string }
+        | {
+            kind: 'prepared';
+            row: SmsInboxRow;
+            parsed: ReturnType<typeof parseSms>;
+            preparation: Extract<PastePreparation, { kind: 'needs-review' }>;
+            senderHash: string;
+            referenceId: string;
+          };
+      const preparedRows: PreparedSmsImportRow[] = [];
+      let preparedKeyId: string | undefined;
+
+      if (rows.length > 0) {
+        let initialFingerprinter: Fingerprinter | undefined;
+        await runTransaction(async (transaction) => {
+          const ledger = createLedger(transaction, migrations);
+          try {
+            await assertSourceAccess?.();
+            const state = await ledger.db.select().from(smsImportState).where(eq(smsImportState.id, 1)).get();
+            const cursor = currentCursor(state);
+            if ((cursor?.receivedAt ?? null) !== (checkedExpectedCursor?.receivedAt ?? null) ||
+                (cursor?.platformId ?? null) !== (checkedExpectedCursor?.platformId ?? null)) {
+              throw new StaleSmsCursorError();
+            }
+
+            if (fingerprints && (await getFingerprintKeyPolicy(ledger)).allowCreate) {
+              try { initialFingerprinter = await fingerprints({ allowCreate: true }); }
+              catch (error) { throw safeFingerprintFailure(error); }
+              if (!/^[a-f0-9]{64}$/.test(initialFingerprinter.keyId)) {
+                throw new TypeError('Invalid fingerprint key identifier');
+              }
+            }
+          } finally {
+            await assertSourceAccess?.();
+          }
+        });
+
+        if (!fingerprints) throw new Error('A platform fingerprint provider is required for SMS imports');
+        let preparationFingerprinter = initialFingerprinter;
+        if (!preparationFingerprinter) {
+          try { preparationFingerprinter = await fingerprints({ allowCreate: false }); }
+          catch (error) { throw safeFingerprintFailure(error); }
+        }
+        if (!/^[a-f0-9]{64}$/.test(preparationFingerprinter.keyId)) {
+          throw new TypeError('Invalid fingerprint key identifier');
+        }
+        preparedKeyId = preparationFingerprinter.keyId;
+
+        for (const row of rows) {
+          await assertSourceAccess?.();
+          const normalizedSender = row.sender.trim().toUpperCase();
+          if (row.sender.trim().length === 0 || row.sender.length > maxSenderLength ||
+              row.body.trim().length === 0 || row.body.length > maxBodyLength) {
+            let bodyHash: string;
+            let sourceHash: string;
+            let senderHash: string;
+            let referenceId: string;
+            try {
+              bodyHash = await keyedFingerprint(preparationFingerprinter, ['body', row.body]);
+              [sourceHash, senderHash] = await Promise.all([
+                keyedFingerprint(preparationFingerprinter, ['sms', normalizedSender, row.body]),
+                keyedFingerprint(preparationFingerprinter, ['sender', normalizedSender]),
+              ]);
+              referenceId = await smsSourceReferenceId(preparationFingerprinter, row, bodyHash);
+            } catch (error) {
+              throw safeFingerprintFailure(error);
+            }
+            await assertSourceAccess?.();
+            preparedRows.push({ kind: 'unreadable', row, bodyHash, sourceHash, senderHash, referenceId });
+            continue;
+          }
+
+          let parsed: ReturnType<typeof parseSms>;
+          let preparation: PastePreparation;
+          try {
+            parsed = parseSms(row);
+            preparation = await preparePastedSms(row, preparationFingerprinter);
+          } catch (error) {
+            throw safeFingerprintFailure(error);
+          }
+          if (preparation.kind === 'ignored') {
+            let bodyHash: string;
+            let senderHash: string;
+            try {
+              [bodyHash, senderHash] = await Promise.all([
+                keyedFingerprint(preparationFingerprinter, ['body', row.body]),
+                keyedFingerprint(preparationFingerprinter, ['sender', normalizedSender]),
+              ]);
+            } catch (error) {
+              throw safeFingerprintFailure(error);
+            }
+            await assertSourceAccess?.();
+            preparedRows.push({ kind: 'ignored', row, bodyHash, senderHash });
+            continue;
+          }
+
+          let senderHash: string;
+          let referenceId: string;
+          try {
+            [senderHash, referenceId] = await Promise.all([
+              keyedFingerprint(preparationFingerprinter, ['sender', normalizedSender]),
+              smsSourceReferenceId(preparationFingerprinter, row, preparation.identity.bodyHash),
+            ]);
+          } catch (error) {
+            throw safeFingerprintFailure(error);
+          }
+          await assertSourceAccess?.();
+          preparedRows.push({ kind: 'prepared', row, parsed, preparation, senderHash, referenceId });
+        }
+      }
+
       let result: SmsImportBatchResult | undefined;
       await runTransaction(async (transaction) => {
         const ledger = createLedger(transaction, migrations);
@@ -949,7 +1064,9 @@ export function createSmsIngestion(
           if (rows.length === 0) {
             if (catchupCompletedAt !== undefined && !(await getFingerprintKeyPolicy(ledger)).allowCreate) {
               if (!fingerprints) throw new Error('A platform fingerprint provider is required for SMS imports');
-              const fingerprinter = await fingerprints({ allowCreate: false });
+              let fingerprinter: Fingerprinter;
+              try { fingerprinter = await fingerprints({ allowCreate: false }); }
+              catch (error) { throw safeFingerprintFailure(error); }
               if (!/^[a-f0-9]{64}$/.test(fingerprinter.keyId)) throw new TypeError('Invalid fingerprint key identifier');
               if (state && state.keyId !== fingerprinter.keyId) throw new DuplicateReviewRequiredError();
               if (await requiresDuplicateReview(ledger, fingerprinter.keyId)) throw new DuplicateReviewRequiredError();
@@ -957,20 +1074,24 @@ export function createSmsIngestion(
             await saveCompletion();
             return;
           }
-          if (!fingerprints) throw new Error('A platform fingerprint provider is required for SMS imports');
-          const fingerprinter = await fingerprints(await getFingerprintKeyPolicy(ledger));
+          if (!fingerprints || preparedKeyId === undefined || preparedRows.length !== rows.length) {
+            throw new Error('SMS import preparation is unavailable');
+          }
+          let fingerprinter: Fingerprinter;
+          try { fingerprinter = await fingerprints({ allowCreate: false }); }
+          catch (error) { throw safeFingerprintFailure(error); }
           if (!/^[a-f0-9]{64}$/.test(fingerprinter.keyId)) throw new TypeError('Invalid fingerprint key identifier');
+          if (fingerprinter.keyId !== preparedKeyId) throw new DuplicateReviewRequiredError();
           if (state && state.keyId !== fingerprinter.keyId) throw new DuplicateReviewRequiredError();
-          if (await requiresDuplicateReview(ledger, fingerprinter.keyId)) throw new DuplicateReviewRequiredError();
+          if (await requiresDuplicateReview(ledger, fingerprinter.keyId) ||
+              !await fingerprintHistoryMatches(ledger, fingerprinter.keyId)) {
+            throw new DuplicateReviewRequiredError();
+          }
 
-          for (const row of rows) {
-            if (row.sender.trim().length === 0 || row.sender.length > maxSenderLength ||
-                row.body.trim().length === 0 || row.body.length > maxBodyLength) {
-              const normalizedSender = row.sender.trim().toUpperCase();
-              const bodyHash = await keyedFingerprint(fingerprinter, ['body', row.body]);
-              const sourceHash = await keyedFingerprint(fingerprinter, ['sms', normalizedSender, row.body]);
-              const senderHash = await keyedFingerprint(fingerprinter, ['sender', normalizedSender]);
-              const referenceId = await keyedFingerprint(fingerprinter, ['sms-source-reference', row.platformId, row.receivedAt, bodyHash]);
+          for (const preparedRow of preparedRows) {
+            const { row } = preparedRow;
+            if (preparedRow.kind === 'unreadable') {
+              const { bodyHash, sourceHash, senderHash, referenceId } = preparedRow;
               const prior = await findSmsSourceReference(ledger, row, bodyHash);
               if (prior) {
                 if (prior.senderHash !== senderHash || prior.keyId !== fingerprinter.keyId) {
@@ -988,20 +1109,16 @@ export function createSmsIngestion(
               continue;
             }
 
-            const parsed = parseSms(row);
-            const prepared = await preparePastedSms(row, fingerprinter);
-            if (prepared.kind === 'ignored') {
+            if (preparedRow.kind === 'ignored') {
               const priorAtPlatformDate = await ledger.db.select({ referenceId: smsImportRefs.referenceId })
                 .from(smsImportRefs).where(and(
                   eq(smsImportRefs.platformId, row.platformId),
                   eq(smsImportRefs.receivedAt, row.receivedAt),
                 )).limit(1).get();
               if (priorAtPlatformDate) {
-                const bodyHash = await keyedFingerprint(fingerprinter, ['body', row.body]);
-                const prior = await findSmsSourceReference(ledger, row, bodyHash);
+                const prior = await findSmsSourceReference(ledger, row, preparedRow.bodyHash);
                 if (prior) {
-                  const senderHash = await keyedFingerprint(fingerprinter, ['sender', row.sender.trim().toUpperCase()]);
-                  if (prior.senderHash !== senderHash || prior.keyId !== fingerprinter.keyId) {
+                  if (prior.senderHash !== preparedRow.senderHash || prior.keyId !== fingerprinter.keyId) {
                     throw new Error('A previously imported SMS row changed; import stopped for review');
                   }
                 }
@@ -1010,11 +1127,8 @@ export function createSmsIngestion(
               continue;
             }
 
-            const [senderHash, referenceId] = await Promise.all([
-              keyedFingerprint(fingerprinter, ['sender', row.sender.trim().toUpperCase()]),
-              smsSourceReferenceId(fingerprinter, row, prepared.identity.bodyHash),
-            ]);
-            const prior = await findSmsSourceReference(ledger, row, prepared.identity.bodyHash);
+            const { parsed, preparation, senderHash, referenceId } = preparedRow;
+            const prior = await findSmsSourceReference(ledger, row, preparation.identity.bodyHash);
             if (prior) {
               // Parser-derived identity can change; replay depends on the unchanged source.
               if (prior.senderHash !== senderHash || prior.keyId !== fingerprinter.keyId) {
@@ -1024,22 +1138,22 @@ export function createSmsIngestion(
               continue;
             }
 
-            const candidate = prepared.candidate;
+            const candidate = preparation.candidate;
             const accountId = await resolveAccount(ledger, candidate);
-            const reason = getReviewReason(parsed, candidate, accountId, prepared.identity.dedupeKey);
-            const strongIdentity = prepared.identity.dedupeKey.startsWith('upi:');
+            const reason = getReviewReason(parsed, candidate, accountId, preparation.identity.dedupeKey);
+            const strongIdentity = preparation.identity.dedupeKey.startsWith('upi:');
             if (strongIdentity) {
               const matches = await ledger.db.select().from(transactions)
-                .where(eq(transactions.dedupeKey, prepared.identity.dedupeKey)).all();
+                .where(eq(transactions.dedupeKey, preparation.identity.dedupeKey)).all();
               if (matches.length > 0) {
                 const coherent = matches.length === 1 && candidate !== null && candidate.status === 'posted' &&
                   Number.isSafeInteger(candidate.amountPaise) && candidate.amountPaise > 0 &&
-                  (matches[0]!.bodyHash === prepared.identity.bodyHash || matchingEvidence(matches[0]!, candidate, accountId));
+                  (matches[0]!.bodyHash === preparation.identity.bodyHash || matchingEvidence(matches[0]!, candidate, accountId));
                 if (coherent) {
-                  await writeReference(ledger, referenceId, row, fingerprinter, senderHash, prepared, 'duplicate', null, matches[0]!.id);
+                  await writeReference(ledger, referenceId, row, fingerprinter, senderHash, preparation, 'duplicate', null, matches[0]!.id);
                   result.duplicate += 1;
                 } else {
-                  await writeReference(ledger, referenceId, row, fingerprinter, senderHash, prepared, 'review',
+                  await writeReference(ledger, referenceId, row, fingerprinter, senderHash, preparation, 'review',
                     matches.length > 1 ? 'ambiguous_evidence' : 'inconsistent_evidence', null);
                   result.review += 1;
                 }
@@ -1047,16 +1161,16 @@ export function createSmsIngestion(
               }
             } else {
               const weakMatch = await ledger.db.select({ id: transactions.id }).from(transactions)
-                .where(eq(transactions.dedupeKey, prepared.identity.dedupeKey)).limit(1).get();
+                .where(eq(transactions.dedupeKey, preparation.identity.dedupeKey)).limit(1).get();
               if (weakMatch) {
-                await writeReference(ledger, referenceId, row, fingerprinter, senderHash, prepared, 'review', 'weak_overlap', null);
+                await writeReference(ledger, referenceId, row, fingerprinter, senderHash, preparation, 'review', 'weak_overlap', null);
                 result.review += 1;
                 continue;
               }
             }
 
             if (reason) {
-              await writeReference(ledger, referenceId, row, fingerprinter, senderHash, prepared, 'review', reason, null);
+              await writeReference(ledger, referenceId, row, fingerprinter, senderHash, preparation, 'review', reason, null);
               result.review += 1;
               continue;
             }
@@ -1078,19 +1192,19 @@ export function createSmsIngestion(
               source: 'sms',
               smsRefId: `android-sms:${referenceId}`,
               upiRef: candidate.upiRef,
-              dedupeKey: prepared.identity.dedupeKey,
-              bodyHash: prepared.identity.bodyHash,
+              dedupeKey: preparation.identity.dedupeKey,
+              bodyHash: preparation.identity.bodyHash,
               ruleId: parsed.ruleId,
               ruleVersion: parsed.ruleVersion,
               linkedTxnId: null,
               excludeFromStats: false,
             });
             if (!saved) {
-              await writeReference(ledger, referenceId, row, fingerprinter, senderHash, prepared, 'review', 'inconsistent_evidence', null);
+              await writeReference(ledger, referenceId, row, fingerprinter, senderHash, preparation, 'review', 'inconsistent_evidence', null);
               result.review += 1;
               continue;
             }
-            await writeReference(ledger, referenceId, row, fingerprinter, senderHash, prepared, 'saved', null, transactionId);
+            await writeReference(ledger, referenceId, row, fingerprinter, senderHash, preparation, 'saved', null, transactionId);
             result.inserted += 1;
           }
 
