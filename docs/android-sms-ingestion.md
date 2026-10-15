@@ -210,6 +210,16 @@ The final exact-source reread, protected-key checks and database-dependent
 matching still await or run inside the writer and need separate lock-duration
 validation on Android.
 
+On 2026-10-15, source `7d79467` passed 14 additional assertions on the same
+Motorola Edge 60 Pro / Android 17 isolated native client. A second SQLite
+connection saved manual entries while the confirmation's first source read and
+fingerprinting were each paused. Confirmation then saved the corrected amount,
+reread the source under the writer, and rejected repeat confirmation; transaction
+count, foreign keys, source-table body-column exclusion and fixture cleanup
+passed. The diagnostic used fictional rows and a temporary private database;
+native consent stayed off. This proves the preflight contention improvement,
+not the latency of the final real-provider read or locked-key access.
+
 Automatic saving requires an explicitly verified rule/version, high confidence,
 posted status, safe integer paise and one active mapped account. The verified
 rule list is currently empty because #46's supplied shapes and synthetic tests
