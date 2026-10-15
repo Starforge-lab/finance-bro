@@ -223,12 +223,12 @@ reference-ID selection, correction flow and Home listener refresh. Neither run
 establishes process-restart behavior or live inbox/permission behavior.
 Later-timestamp/changed-body platform-ID reuse and unreadable-row progress have
 source fixes; the new run exercised the later-timestamp reuse case with
-fictional rows. Full-range replay now addresses same-cursor changes and
-out-of-order dates in source; matching Android recovery validation remains open.
+fictional rows. Full-range replay addresses same-cursor changes and out-of-order
+dates; the later fictional Android run below covers those recovery cases.
 The batch preflight has a second-connection regression proving a manual save can
 finish while fingerprinting is blocked; old-source failure and fixed-source
-success were observed. Matching Android contention validation and selected-
-review writer-lock duration remain release gates.
+success were observed. The later Android run confirms that batch contention
+case; selected-review writer-lock duration remains an open gate.
 
 On 2026-10-14, a Motorola Edge 60 Pro (Android 17) QA run used the APK from
 successful workflow 38587798479 for isolated package
@@ -255,6 +255,20 @@ check passed. The final report recorded two transactions, three references,
 one pending review, the corrected date, no raw body, preserved key, consent gate
 off, schema 9 and
 `PASS`.
+
+On 2026-10-15, source `a638448` passed 14 assertions on the same Motorola and
+isolated native client. The installed APK SHA-256 was independently checked as
+`b9372b13d36841d66ca76402c8eaa45b9e2f7ab01d5360b8041e4ae814352cca`.
+A separate temporary fictional database used the real Expo SQLite writer and
+private SecureStore/Crypto provider. A manual save on a second connection
+completed while a row fingerprint was deliberately blocked. Replay recovered
+an older-dated row and a changed body at an existing ID/date, retained the main
+cursor, preserved the manual transaction, and created no extra references on
+repeat. Foreign keys, absence of raw bodies, unchanged private/app-scoped key
+slots, native consent off, and fixture cleanup all passed. Source pages and
+permission assertions were simulated; no system inbox was read. This does not
+prove process restart, selected-review lock duration, live delivery, real opt-in
+or background execution.
 
 - Full Android concurrent manual/import saves and process-restart behavior
   remain required before this native storage path is ready to merge.
