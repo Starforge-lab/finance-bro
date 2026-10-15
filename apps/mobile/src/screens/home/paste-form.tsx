@@ -120,10 +120,12 @@ function Choice({
 
 export function PasteForm({
   ledger,
+  initialBody = '',
   onSaved,
   onCancel,
 }: {
   ledger: DataLayer;
+  initialBody?: string;
   onSaved: () => void;
   onCancel: () => void;
 }) {
@@ -131,7 +133,7 @@ export function PasteForm({
   const dark = useColorScheme() === 'dark';
   const [sender, setSender] = useState('');
   const [senderOpen, setSenderOpen] = useState(false);
-  const [body, setBody] = useState('');
+  const [body, setBody] = useState(initialBody);
   const [prepared, setPrepared] = useState<PastePreparation | null>(null);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [accounts, setAccounts] = useState<AccountOption[]>([]);

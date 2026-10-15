@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Crypto from 'expo-crypto';
+import * as Clipboard from 'expo-clipboard';
+import { createURL } from 'expo-linking';
+import { useRouter } from 'expo-router';
 
 import { Icon, accountIcon, categoryIcon } from '@/components/icon';
 import { LedgerButton, Segmented } from '@/components/ledger-controls';
@@ -53,6 +56,7 @@ export default function SettingsScreen() {
   const [confirmArchive, setConfirmArchive] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
+  const [shortcutGuideOpen, setShortcutGuideOpen] = useState(false);
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const [categoryEditor, setCategoryEditor] = useState<string | 'new' | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -422,6 +426,21 @@ export default function SettingsScreen() {
             </SettingsGroup>
           </View>
 
+          {Platform.OS === 'ios' ? <View style={styles.section}>
+            <SectionHeading title="Bank messages" theme={theme} />
+            <SettingsGroup theme={theme}>
+              <DisclosureRow
+                title="Import with Shortcuts"
+                detail="3 steps"
+                expanded={shortcutGuideOpen}
+                theme={theme}
+                onPress={() => setShortcutGuideOpen((value) => !value)}
+                last={!shortcutGuideOpen}
+              />
+              {shortcutGuideOpen ? <ShortcutGuide theme={theme} /> : null}
+            </SettingsGroup>
+          </View> : null}
+
           <View style={styles.section}>
             <SectionHeading title="Your data" theme={theme} />
             <SettingsGroup theme={theme}>
@@ -478,6 +497,52 @@ function Stat({ label, value, theme, highlight = false }: { label: string; value
       color: theme.heroText,
       ...(highlight ? { color: theme.accent } : {}),
     }]}>{value}</ThemedText>
+  </View>;
+}
+
+// createURL gives the exp:// form in Expo Go and financebro:// in a build, so the guide always shows a link that works here.
+const importLink = `${createURL('/')}?sms=`;
+const sampleMessage = 'INR 450.00 debited from A/c XX1234 on 06-10-26 to VPA swiggy@axisbank (UPI Ref No 612345678901).';
+// Pasted into the "Describe a Shortcut" box that iOS 27 shows on phones with Apple Intelligence.
+const shortcutPrompt = `When I receive a message containing "debited", run immediately without asking. Get the text of the message, URL-encode it, and open this URL with the encoded text added at the end: ${importLink}`;
+const shortcutSteps = [
+  'Open Shortcuts, go to the Automation tab and tap + to add a new automation.',
+  'Choose Message. In Message Contains, type a word your bank uses, such as “debited”.',
+  'Choose Run Immediately, then tap Next and pick New Blank Automation.',
+  'Add the URL Encode action. Its input should be Shortcut Input, which is the message.',
+  'Add the Open URLs action. Tap Copy link below, paste it into the action, then insert the URL Encoded Text variable right after the = sign.',
+  'Tap Done. Repeat for other words your bank uses, such as “credited” or “spent”.',
+];
+
+function ShortcutGuide({ theme }: { theme: Theme }) {
+  const router = useRouter();
+  const [copied, setCopied] = useState<'prompt' | 'link'>();
+  const [manualOpen, setManualOpen] = useState(false);
+  const [lastAt, setLastAt] = useState<Date | null>(null);
+  useEffect(() => {
+    void getLedger().then((data) => data.getLastLinkedMessageAt()).then(setLastAt).catch(() => {});
+  }, []);
+  const copy = (kind: 'prompt' | 'link') => void Clipboard.setStringAsync(kind === 'prompt' ? shortcutPrompt : importLink).then(() => setCopied(kind));
+  return <View style={styles.inlinePanel}>
+    <ThemedText style={[Type.note, { color: theme.textSecondary }]}>
+      iPhone doesn’t let apps read messages. A Shortcuts automation can hand each new bank message to Finance Bro, which opens with it ready to review. Nothing is saved until you confirm, and Finance Bro keeps the reviewed entry, not the message text. Older messages can’t be imported this way; paste those from Home.
+    </ThemedText>
+    <ThemedText style={Type.body}>1. Copy the prompt.</ThemedText>
+    <ThemedText style={Type.body}>2. Open Shortcuts, tap + and paste it into Describe a Shortcut.</ThemedText>
+    <ThemedText style={Type.body}>3. Come back and try a sample message.</ThemedText>
+    <View style={styles.demoActions}>
+      <LedgerButton label={copied === 'prompt' ? 'Prompt copied' : 'Copy prompt'} primary onPress={() => copy('prompt')} />
+      <LedgerButton label="Open Shortcuts" onPress={() => void Linking.openURL('shortcuts://')} />
+      <LedgerButton label="Try a sample message" onPress={() => router.navigate({ pathname: '/', params: { sms: sampleMessage } })} />
+    </View>
+    <ThemedText accessibilityLiveRegion="polite" style={[Type.note, { color: theme.textSecondary }]}>
+      {lastAt ? `Last message received ${indiaDate(lastAt)}` : 'No message received yet. The phone must be unlocked for the automation to open the app.'}
+    </ThemedText>
+    <LedgerButton label={manualOpen ? 'Hide manual steps' : 'No Describe a Shortcut box? Set up by hand'} onPress={() => setManualOpen((value) => !value)} />
+    {manualOpen ? <>
+      {shortcutSteps.map((step, index) => <ThemedText key={step} style={Type.body}>{index + 1}. {step}</ThemedText>)}
+      <LedgerButton label={copied === 'link' ? 'Link copied' : 'Copy link'} onPress={() => copy('link')} />
+    </> : null}
   </View>;
 }
 

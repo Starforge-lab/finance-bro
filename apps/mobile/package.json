@@ -9,6 +9,7 @@
     "@finance-bro/sms-parser": "workspace:*",
     "drizzle-orm": "0.45.3",
     "expo": "58.0.8",
+    "expo-clipboard": "58.0.3",
     "expo-constants": "58.0.11",
     "expo-crypto": "58.0.6",
     "expo-dev-client": "58.0.13",
