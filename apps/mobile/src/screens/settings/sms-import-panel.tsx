@@ -12,10 +12,10 @@ import { indiaDate } from '@/utils/display';
 import {
   AndroidSmsCatchupError,
   previewAndroidSms,
-  type AndroidSmsCatchupErrorCode,
 } from '@/imports/android-sms-catchup';
 import {
   abortAndroidSmsCatchup,
+  AndroidSmsBackgroundUnavailableError,
   clearAndroidSmsCatchupFailure,
   createAndroidSmsOriginalReader,
   createAndroidSmsOperationGeneration,
@@ -24,9 +24,11 @@ import {
   setAndroidSmsImportSettings,
   shouldAbortAndroidSmsPreviewOnHide,
   subscribeAndroidSmsCatchupFailure,
+  type AndroidSmsCatchupFailure,
   type AndroidSmsPreviewPhase,
   type AndroidSmsReviewSelection,
 } from '@/imports/android-sms-flow';
+import { androidSmsBackgroundScheduler } from '@/imports/android-sms-background-task';
 import { getSmsReader, type SmsImportSettings, type SmsPermissionState, type SmsReaderModule } from '../../../modules/sms-reader';
 
 const ninetyDaysMs = 90 * 24 * 60 * 60 * 1_000;
@@ -39,6 +41,17 @@ function hasSmsAccess(value: SmsPermissionState | null): boolean {
 
 function isAbortError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError';
+}
+
+function backgroundUnavailableCopy(error: AndroidSmsBackgroundUnavailableError): string {
+  switch (error.reason) {
+    case 'registration':
+      return 'Android could not schedule automatic SMS checks, so SMS import was turned off. You can still paste messages or add entries manually.';
+    case 'registration_rollback':
+      return 'Android could not schedule automatic SMS checks or confirm that SMS import was turned off. Check the import setting before leaving; paste and manual entry still work.';
+    case 'unregistration':
+      return 'SMS import is off, but Android could not remove its scheduled check. It will skip inbox reads; retry turning it off to remove the schedule.';
+  }
 }
 
 function reviewUnavailableCopy(reason: string): string {
@@ -59,12 +72,14 @@ function reviewUnavailableCopy(reason: string): string {
   }
 }
 
-function catchupFailureCopy(code: AndroidSmsCatchupErrorCode | 'unexpected'): string {
+function catchupFailureCopy(code: AndroidSmsCatchupFailure): string {
   switch (code) {
     case 'permission_denied':
       return 'SMS permission is unavailable. Grant it, then preview again. Manual entry and paste still work.';
     case 'permission_unavailable':
       return 'Android permission state could not be checked. Retry the preview or use paste.';
+    case 'invalid_consent':
+      return 'Saved SMS consent could not be verified. Check the import setting before trying again.';
     case 'source_unavailable':
       return 'Android could not read the inbox. Retry the preview or add entries manually.';
     case 'invalid_source_page':
@@ -79,6 +94,8 @@ function catchupFailureCopy(code: AndroidSmsCatchupErrorCode | 'unexpected'): st
       return 'Catch-up paused because earlier imported messages need review below. Review them, then preview again.';
     case 'invalid_clock':
       return 'The device time could not be verified. Check the date and time, then preview again.';
+    case 'background_unavailable':
+      return 'Android could not schedule automatic SMS checks. Review the import setting and try again; paste still works.';
     default:
       return 'SMS catch-up stopped safely. Retry the preview or use manual entry and paste.';
   }
@@ -279,7 +296,7 @@ export function SmsImportPanel({
           startDateMs: preview.startDateMs,
           ...(currentSettings.startDateMs === null ? { previewEndDateMs: preview.endDateMs } : {}),
         };
-        await setAndroidSmsImportSettings(reader, initialConsent);
+        await setAndroidSmsImportSettings(reader, initialConsent, androidSmsBackgroundScheduler);
         if (!isCurrent()) return;
       } else if (currentSettings.startDateMs !== preview.startDateMs) {
         throw new Error('consent_range_changed');
@@ -294,6 +311,7 @@ export function SmsImportPanel({
       if (error instanceof AndroidSmsCatchupError) setFailure(`${error.message} Retry the preview, or use paste.`);
       else if (error instanceof Error && error.message === 'consent_range_changed') setFailure('SMS consent changed. Preview again before importing.');
       else if (error instanceof Error && error.message === 'permission_revoked') setFailure('SMS permission is no longer available. Import is unchanged; grant permission and preview again.');
+      else if (error instanceof AndroidSmsBackgroundUnavailableError) setFailure(backgroundUnavailableCopy(error));
       else setFailure('Couldn’t start the SMS catch-up. Your entries remain available; try again or use paste.');
     } finally {
       if (isCurrent()) {
@@ -316,14 +334,16 @@ export function SmsImportPanel({
     setAction('disable');
     setFailure('');
     try {
-      await setAndroidSmsImportSettings(reader, { enabled: false });
+      await setAndroidSmsImportSettings(reader, { enabled: false }, androidSmsBackgroundScheduler);
       if (!isCurrent()) return;
       clearAndroidSmsCatchupFailure();
       await refresh(isCurrent);
-    } catch {
+    } catch (error) {
       if (!isCurrent()) return;
       await refresh(isCurrent);
-      if (isCurrent()) setFailure('Couldn’t turn off SMS import. It may still be on; retry here.');
+      if (isCurrent()) setFailure(error instanceof AndroidSmsBackgroundUnavailableError
+        ? backgroundUnavailableCopy(error)
+        : 'Couldn’t turn off SMS import. It may still be on; retry here.');
     } finally {
       if (isCurrent()) {
         actionRef.current = false;
@@ -436,7 +456,7 @@ export function SmsImportPanel({
             {action === 'catchup' ? <LedgerButton label="Cancel import" onPress={() => void disable()} /> : null}
           </View>}
           {active ? <ThemedText style={[Type.note, { color: colors.textMuted }]}>
-            Catch-up resumes from its saved place when you open the app. Turning import off stops future catch-ups.
+            Android controls background timing; checks may take 15 minutes or longer. Opening the app also catches up. Turning import off stops future checks.
           </ThemedText> : null}
           {!settings || !health ? <LedgerButton label={loading ? 'Loading status…' : 'Retry status'} disabled={loading || action !== null} onPress={() => { setLoading(true); void refresh(); }} /> : null}
         </> : <>

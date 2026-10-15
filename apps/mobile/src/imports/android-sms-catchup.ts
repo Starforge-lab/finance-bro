@@ -43,6 +43,7 @@ export type AndroidSmsCatchupResult = Pick<SmsImportBatchResult, 'inserted' | 'd
 export type AndroidSmsCatchupErrorCode =
   | 'permission_denied'
   | 'permission_unavailable'
+  | 'invalid_consent'
   | 'source_unavailable'
   | 'invalid_source_page'
   | 'stale_cursor'
@@ -54,6 +55,7 @@ export type AndroidSmsCatchupErrorCode =
 const catchupErrorMessages: Record<AndroidSmsCatchupErrorCode, string> = {
   permission_denied: 'Android SMS permissions are unavailable.',
   permission_unavailable: 'Android SMS permission state could not be checked.',
+  invalid_consent: 'Saved Android SMS consent is invalid; automatic import stopped.',
   source_unavailable: 'Android SMS inbox could not be read.',
   invalid_source_page: 'Android SMS inbox returned an invalid page.',
   stale_cursor: 'Android SMS catch-up stopped because the ledger cursor changed.',

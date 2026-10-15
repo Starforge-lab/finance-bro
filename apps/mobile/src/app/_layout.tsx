@@ -13,8 +13,15 @@ import { StatusBar } from 'expo-status-bar';
 import AppTabs from '@/components/app-tabs';
 import { getLedger, type ThemePreference } from '@/db';
 import { AppearanceProvider, useColorScheme } from '@/hooks/appearance';
-import { runEnabledAndroidSmsCatchup, abortAndroidSmsCatchup, recordAndroidSmsCatchupFailure } from '@/imports/android-sms-flow';
-import { getSmsReader } from '../../modules/sms-reader';
+import {
+  AndroidSmsBackgroundUnavailableError,
+  runEnabledAndroidSmsCatchup,
+  abortAndroidSmsCatchup,
+  recordAndroidSmsCatchupFailure,
+} from '@/imports/android-sms-flow';
+import { AndroidSmsCatchupError } from '@/imports/android-sms-catchup';
+import { reconcileAndroidSmsBackgroundTask } from '@/imports/android-sms-background-task';
+import { getSmsReader, type SmsPermissionState } from '../../modules/sms-reader';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -51,11 +58,37 @@ export default function RootLayout() {
       try {
         const reader = getSmsReader();
         if (!reader) return;
+        let backgroundUnavailable: AndroidSmsBackgroundUnavailableError | null = null;
+        try {
+          await reconcileAndroidSmsBackgroundTask(reader);
+        } catch (error) {
+          if (error instanceof AndroidSmsBackgroundUnavailableError) backgroundUnavailable = error;
+          if (isForeground(generation)) recordAndroidSmsCatchupFailure(error);
+        }
+        if (!isForeground(generation)) return;
         const settings = await reader.getImportSettingsAsync();
-        if (!isForeground(generation) || settings.enabled !== true || settings.startDateMs === null) return;
+        if (!isForeground(generation) || settings.enabled !== true) return;
+        if (settings.startDateMs === null || !Number.isSafeInteger(settings.startDateMs) ||
+            settings.startDateMs <= 0 || settings.startDateMs > Date.now()) {
+          recordAndroidSmsCatchupFailure(new AndroidSmsCatchupError('invalid_consent'));
+          return;
+        }
+        let permissions: SmsPermissionState;
+        try {
+          permissions = await reader.getPermissionsAsync();
+        } catch {
+          if (isForeground(generation)) recordAndroidSmsCatchupFailure(new AndroidSmsCatchupError('permission_unavailable'));
+          return;
+        }
+        if (!isForeground(generation)) return;
+        if (permissions.granted !== true || permissions.readSms !== true || permissions.receiveSms !== true) {
+          recordAndroidSmsCatchupFailure(new AndroidSmsCatchupError('permission_denied'));
+          return;
+        }
         const ledger = await getLedger();
         if (!isForeground(generation)) return;
         await runEnabledAndroidSmsCatchup(reader, ledger, settings.startDateMs, Date.now());
+        if (isForeground(generation) && backgroundUnavailable) recordAndroidSmsCatchupFailure(backgroundUnavailable);
       } catch (error) {
         if (isForeground(generation)) recordAndroidSmsCatchupFailure(error);
       }
