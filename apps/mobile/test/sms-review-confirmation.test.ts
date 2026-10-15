@@ -2,6 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import { rmSync, rmdirSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { createDataLayer } from '../src/db/service';
@@ -10,7 +11,7 @@ import { FingerprintKeyUnavailableError } from '../src/imports/fingerprint';
 import type { FingerprintKeyPolicy, FingerprintKeyProvider, Fingerprinter } from '../src/imports/fingerprint';
 import type { ReviewCorrections } from '../src/imports/paste';
 import type { SmsInboxRow, SmsReviewPreparation } from '../src/imports/sms';
-import { ledgerMigrations, openTestLedger } from './helpers/ledger';
+import { ledgerMigrations, openTestLedger, temporaryFile } from './helpers/ledger';
 
 const strongSms = {
   sender: 'VM-HDFCBK-S',
@@ -90,6 +91,85 @@ function totalChanges(sqlite: DatabaseSync): number {
 }
 
 describe('selected Android SMS review confirmation', () => {
+  it('keeps the SQLite writer available while the source and fingerprint preflight are pending', async () => {
+    const temp = temporaryFile();
+    const importFixture = openTestLedger(temp.filename);
+    const manualFixture = openTestLedger(temp.filename);
+    let releaseSource!: () => void;
+    let releaseFingerprint!: () => void;
+    const sourceGate = new Promise<void>((resolve) => { releaseSource = resolve; });
+    const fingerprintGate = new Promise<void>((resolve) => { releaseFingerprint = resolve; });
+    let notifySourceStarted!: () => void;
+    let notifyFingerprintStarted!: () => void;
+    const sourceStarted = new Promise<void>((resolve) => { notifySourceStarted = resolve; });
+    const fingerprintStarted = new Promise<void>((resolve) => { notifyFingerprintStarted = resolve; });
+    let pending: Promise<unknown> | undefined;
+    try {
+      const row = { ...strongSms, platformId: '72' };
+      const key = fingerprinter('fictional-sms-confirmation-preflight-key');
+      const initialApi = createDataLayer(
+        importFixture.client, ledgerMigrations, async () => key,
+        transactionRunner(importFixture.sqlite, importFixture.client),
+      );
+      const manualApi = createDataLayer(manualFixture.client, ledgerMigrations);
+      await initialApi.migrateLedger();
+      await manualApi.migrateLedger();
+      await initialApi.importSmsBatch([row], null);
+      const expected = await ready(initialApi, row);
+      const blockedKey: Fingerprinter = {
+        keyId: key.keyId,
+        async fingerprint(value) {
+          notifyFingerprintStarted();
+          await fingerprintGate;
+          return key.fingerprint(value);
+        },
+      };
+      const api = createDataLayer(
+        importFixture.client, ledgerMigrations, async () => blockedKey,
+        transactionRunner(importFixture.sqlite, importFixture.client),
+      );
+      let sourceReads = 0;
+      pending = confirm(api, expected.referenceId, expected, async (id) => {
+        assert.equal(id, row.platformId);
+        sourceReads += 1;
+        if (sourceReads === 1) {
+          notifySourceStarted();
+          await sourceGate;
+        }
+        return { ...row };
+      });
+
+      await sourceStarted;
+      await manualApi.saveManualEntry({
+        id: 'manual-during-sms-review-source-read', amountInr: '1.25', direction: 'debit',
+        occurredAt: new Date(row.receivedAt + 1_000),
+      });
+      assert.ok(await manualApi.getTransaction('manual-during-sms-review-source-read'));
+      releaseSource();
+
+      await fingerprintStarted;
+      await manualApi.saveManualEntry({
+        id: 'manual-during-sms-review-fingerprint', amountInr: '2.50', direction: 'debit',
+        occurredAt: new Date(row.receivedAt + 2_000),
+      });
+      assert.ok(await manualApi.getTransaction('manual-during-sms-review-fingerprint'));
+      releaseFingerprint();
+
+      assert.deepEqual(await pending, {
+        kind: 'saved', referenceId: expected.referenceId, platformId: row.platformId, transactionId: `sms:${expected.referenceId}`,
+      });
+      assert.equal(sourceReads, 2, 'confirmation checks the exact inbox row both before and inside the writer');
+    } finally {
+      releaseSource();
+      releaseFingerprint();
+      await pending?.catch(() => {});
+      importFixture.sqlite.close();
+      manualFixture.sqlite.close();
+      rmSync(temp.filename, { force: true });
+      rmdirSync(temp.directory);
+    }
+  });
+
   it('applies validated corrections and resolves the reference atomically without moving the cursor', async () => {
     const row = { ...strongSms, platformId: '72' };
     const test = await fixture([row]);
@@ -147,7 +227,10 @@ describe('selected Android SMS review confirmation', () => {
       ]);
       assert.equal(results.filter((result) => (result as { kind: string }).kind === 'saved').length, 1);
       assert.equal(results.filter((result) => (result as { kind: string }).kind === 'unavailable').length, 1);
-      assert.equal(sourceReads, 1, 'the serialized replay should stop before rereading an already resolved source');
+      assert.deepEqual(results.find((result) => (result as { kind: string }).kind === 'unavailable'), {
+        kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'not_pending',
+      });
+      assert.equal(sourceReads, 3, 'both preflights read the selected source; only the winner rereads it inside the writer');
       const saved = await test.api.getTransaction(`sms:${expected.referenceId}`);
       assert.equal(saved?.amountPaise, 46_000);
       assert.equal(saved?.note, 'Fictional correction');
@@ -175,8 +258,24 @@ describe('selected Android SMS review confirmation', () => {
       const altered = await confirm(test.api, expected.referenceId, changedPreparation, async () => ({ ...row }));
       assert.deepEqual(altered, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'stale_preparation' });
 
-      const changedSource = await confirm(test.api, expected.referenceId, expected, async () => ({ ...row, body: `${row.body} changed` }));
+      let changedSourceReads = 0;
+      const changedSource = await confirm(test.api, expected.referenceId, expected, async () => {
+        changedSourceReads += 1;
+        return changedSourceReads === 2 ? { ...row, body: `${row.body} changed` } : { ...row };
+      });
       assert.deepEqual(changedSource, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'source_changed' });
+      assert.equal(changedSourceReads, 2, 'the final source read rejects changes after preflight');
+
+      let failedSourceReads = 0;
+      const privateSourceError = new TypeError('FICTIONAL_PRIVATE_SOURCE_DETAIL');
+      const failedSource = await confirm(test.api, expected.referenceId, expected, async () => {
+        failedSourceReads += 1;
+        if (failedSourceReads === 2) throw privateSourceError;
+        return { ...row };
+      });
+      assert.deepEqual(failedSource, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'source_unavailable' });
+      assert.equal(JSON.stringify(failedSource).includes(privateSourceError.message), false);
+      assert.equal(failedSourceReads, 2, 'the final source read sanitizes provider failures');
 
       let readerCalls = 0;
       const unavailableApi = createDataLayer(test.client, ledgerMigrations, async () => { throw new FingerprintKeyUnavailableError(); }, test.runner);
@@ -202,6 +301,14 @@ describe('selected Android SMS review confirmation', () => {
       assert.deepEqual(failedKey, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
       assert.equal(JSON.stringify(failedKey).includes(privateKeyError.message), false);
 
+      const noRunnerApi = createDataLayer(test.client, ledgerMigrations, test.provider);
+      const noRunner = await confirm(noRunnerApi, expected.referenceId, expected, async () => {
+        readerCalls += 1;
+        return { ...row };
+      });
+      assert.deepEqual(noRunner, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'transaction_unavailable' });
+      assert.equal(readerCalls, 0, 'an unavailable platform runner is rejected before source access');
+
       for (const error of [new TypeError('FICTIONAL_PRIVATE_DB_TYPE'), new RangeError('FICTIONAL_PRIVATE_DB_RANGE')]) {
         const failedRunner: LedgerSQLiteTransactionRunner = async () => { throw error; };
         const failedDbApi = createDataLayer(test.client, ledgerMigrations, test.provider, failedRunner);
@@ -212,14 +319,14 @@ describe('selected Android SMS review confirmation', () => {
         assert.deepEqual(failedDb, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'storage_unavailable' });
         assert.equal(JSON.stringify(failedDb).includes(error.message), false);
       }
-      assert.equal(readerCalls, 0);
+      assert.equal(readerCalls, 2, 'a transaction acquisition failure can follow the read-only preflight');
       assert.equal(totalChanges(test.sqlite), before);
       assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
       assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
     } finally { test.sqlite.close(); }
   });
 
-  it('copies corrections before the source read and ignores later caller mutation', async () => {
+  it('copies corrections before either source read and ignores later caller mutation', async () => {
     const row = { ...strongSms, platformId: '72' };
     const test = await fixture([row]);
     try {
@@ -246,7 +353,7 @@ describe('selected Android SMS review confirmation', () => {
     } finally { test.sqlite.close(); }
   });
 
-  it('rechecks the protected key after the inbox read without recreating a lost or swapped key', async () => {
+  it('rechecks the protected key and history after the final inbox read without creating a key', async () => {
     const row = { ...strongSms, platformId: '72' };
     const test = await fixture([row]);
     try {
@@ -260,9 +367,11 @@ describe('selected Android SMS review confirmation', () => {
       const expected = await ready(api, row);
       const before = totalChanges(test.sqlite);
 
+      let readerCalls = 0;
       activeKey = test.key;
       const lost = await confirm(api, expected.referenceId, expected, async () => {
-        activeKey = null;
+        readerCalls += 1;
+        if (readerCalls === 2) activeKey = null;
         return { ...row };
       });
       assert.deepEqual(lost, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
@@ -270,16 +379,35 @@ describe('selected Android SMS review confirmation', () => {
       assert.equal(await api.getTransaction(`sms:${expected.referenceId}`), undefined);
       assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
       assert.equal(totalChanges(test.sqlite), before);
+      assert.equal(readerCalls, 2, 'the key is rechecked after the final exact-source read');
 
+      readerCalls = 0;
       activeKey = test.key;
       const swapped = await confirm(api, expected.referenceId, expected, async () => {
-        activeKey = fingerprinter('fictional-replacement-key');
+        readerCalls += 1;
+        if (readerCalls === 2) activeKey = fingerprinter('fictional-replacement-key');
         return { ...row };
       });
       assert.deepEqual(swapped, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
       assert.equal(await api.getTransaction(`sms:${expected.referenceId}`), undefined);
       assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
       assert.equal(totalChanges(test.sqlite), before);
+      assert.equal(readerCalls, 2);
+
+      readerCalls = 0;
+      activeKey = test.key;
+      const historyMismatch = await confirm(api, expected.referenceId, expected, async () => {
+        readerCalls += 1;
+        if (readerCalls === 2) {
+          test.sqlite.prepare('UPDATE import_key_state SET key_id = ? WHERE id = 1').run('a'.repeat(64));
+        }
+        return { ...row };
+      });
+      assert.deepEqual(historyMismatch, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
+      assert.equal(await api.getTransaction(`sms:${expected.referenceId}`), undefined);
+      assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
+      assert.equal(readerCalls, 2);
+      test.sqlite.prepare('UPDATE import_key_state SET key_id = ? WHERE id = 1').run(test.key.keyId);
       assert.equal(policies.every((policy) => policy.allowCreate === false), true);
     } finally { test.sqlite.close(); }
   });
@@ -471,13 +599,103 @@ describe('selected Android SMS review confirmation', () => {
     } finally { ambiguous.sqlite.close(); }
   });
 
-  it('propagates reader cancellation and rolls back the immediate transaction', async () => {
+  it('preserves a corrected tombstone committed after preflight while SMS waits for its writer', async () => {
+    const temp = temporaryFile();
+    const smsFixture = openTestLedger(temp.filename);
+    const otherFixture = openTestLedger(temp.filename);
+    let releaseWriter!: () => void;
+    let notifyWriterWaiting!: () => void;
+    const writerGate = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    const writerWaiting = new Promise<void>((resolve) => { notifyWriterWaiting = resolve; });
+    let pending: Promise<unknown> | undefined;
+    try {
+      const row = { ...strongSms, platformId: '72' };
+      const key = fingerprinter('fictional-sms-concurrent-tombstone-key');
+      const smsApi = createDataLayer(
+        smsFixture.client, ledgerMigrations, async () => key,
+        transactionRunner(smsFixture.sqlite, smsFixture.client),
+      );
+      const otherApi = createDataLayer(
+        otherFixture.client, ledgerMigrations, async () => key,
+        transactionRunner(otherFixture.sqlite, otherFixture.client),
+      );
+      await smsApi.migrateLedger();
+      await otherApi.migrateLedger();
+      await smsApi.importSmsBatch([row], null);
+      const expected = await ready(smsApi, row);
+      const candidate = expected.preparation.candidate!;
+      const existing = {
+        id: 'paste-concurrent-existing',
+        amountPaise: candidate.amountPaise,
+        direction: candidate.direction,
+        kind: candidate.kind,
+        status: candidate.status,
+        accountId: null,
+        counterparty: candidate.counterparty ?? null,
+        merchantId: null,
+        categoryId: null,
+        occurredAt: new Date(candidate.occurredAt),
+        note: null,
+        source: 'paste' as const,
+        smsRefId: null,
+        upiRef: candidate.upiRef ?? null,
+        dedupeKey: expected.preparation.identity.dedupeKey,
+        bodyHash: expected.preparation.identity.bodyHash,
+        ruleId: expected.preparation.ruleId,
+        ruleVersion: expected.preparation.ruleVersion,
+        linkedTxnId: null,
+        excludeFromStats: false,
+      };
+      const normalRunner = transactionRunner(smsFixture.sqlite, smsFixture.client);
+      const delayedRunner: LedgerSQLiteTransactionRunner = async (task) => {
+        notifyWriterWaiting();
+        await writerGate;
+        return normalRunner(task);
+      };
+      const confirmingApi = createDataLayer(smsFixture.client, ledgerMigrations, async () => key, delayedRunner);
+      pending = confirm(confirmingApi, expected.referenceId, expected, async () => ({ ...row }), { amountPaise: 46_000 });
+      await writerWaiting;
+
+      await otherFixture.ledger.upsertImportedTransaction(existing);
+      await otherFixture.ledger.editTransaction(existing.id, { amountPaise: 47_000, note: 'Fictional concurrent correction' });
+      await otherFixture.ledger.softDeleteTransaction(existing.id);
+      releaseWriter();
+
+      assert.deepEqual(await pending, {
+        kind: 'duplicate', referenceId: expected.referenceId, platformId: row.platformId, transactionId: existing.id,
+      });
+      const untouched = smsFixture.sqlite.prepare('SELECT amount_paise, note, deleted_at FROM transactions WHERE id = ?').get(existing.id) as {
+        amount_paise: number;
+        note: string | null;
+        deleted_at: number | null;
+      };
+      assert.equal(untouched.amount_paise, 47_000);
+      assert.equal(untouched.note, 'Fictional concurrent correction');
+      assert.notEqual(untouched.deleted_at, null);
+      assert.equal(await smsApi.getTransaction(`sms:${expected.referenceId}`), undefined);
+    } finally {
+      releaseWriter();
+      await pending?.catch(() => {});
+      smsFixture.sqlite.close();
+      otherFixture.sqlite.close();
+      rmSync(temp.filename, { force: true });
+      rmdirSync(temp.directory);
+    }
+  });
+
+  it('propagates reader cancellation without writing', async () => {
     const row = { ...strongSms, platformId: '72' };
     const test = await fixture([row]);
     try {
       const expected = await ready(test.api, row);
       const cancelled = Object.assign(new Error('cancelled'), { name: 'AbortError' });
-      await assert.rejects(confirm(test.api, expected.referenceId, expected, async () => { throw cancelled; }), (error) => error === cancelled);
+      let sourceReads = 0;
+      await assert.rejects(confirm(test.api, expected.referenceId, expected, async () => {
+        sourceReads += 1;
+        if (sourceReads === 2) throw cancelled;
+        return { ...row };
+      }), (error) => error === cancelled);
+      assert.equal(sourceReads, 2, 'the exact in-writer source reread preserves cancellation');
       assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
       assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
       assert.equal(test.sqlite.prepare('SELECT 1 AS active').get()?.active, 1);

@@ -271,6 +271,66 @@ async function fingerprintHistoryMatches(ledger: ReturnType<typeof createLedger>
   return importState?.keyId === keyId && (!smsState || smsState.keyId === keyId);
 }
 
+function smsReviewReferenceFailure(
+  current: typeof smsImportRefs.$inferSelect | undefined,
+  expected: typeof smsImportRefs.$inferSelect,
+): SmsReviewConfirmationUnavailableReason | undefined {
+  if (!current || current.status !== 'review' || current.transactionId !== null) return 'not_pending';
+  if (current.platformId !== expected.platformId || current.receivedAt !== expected.receivedAt ||
+      current.bodyHash !== expected.bodyHash || current.senderHash !== expected.senderHash) return 'source_changed';
+  if (current.keyId !== expected.keyId) return 'key_unavailable';
+  if (current.referenceId !== expected.referenceId || current.dedupeKey !== expected.dedupeKey ||
+      current.reason !== expected.reason || current.ruleId !== expected.ruleId ||
+      current.ruleVersion !== expected.ruleVersion || current.createdAt !== expected.createdAt) return 'stale_preparation';
+  return undefined;
+}
+
+async function smsReviewKeyFailure(
+  ledger: ReturnType<typeof createLedger>,
+  fingerprints: FingerprintKeyProvider | undefined,
+  expectedKeyId: string,
+): Promise<'key_unavailable' | 'storage_unavailable' | undefined> {
+  let policy: Awaited<ReturnType<typeof getFingerprintKeyPolicy>>;
+  try { policy = await getFingerprintKeyPolicy(ledger); }
+  catch { return 'storage_unavailable'; }
+  if (policy.allowCreate || !fingerprints) return 'key_unavailable';
+
+  let fingerprinter: Fingerprinter;
+  try { fingerprinter = await fingerprints({ allowCreate: false }); }
+  catch (error) {
+    if (isAbortError(error)) throw error;
+    return 'key_unavailable';
+  }
+  let keyId: string;
+  try { keyId = fingerprinter.keyId; }
+  catch { return 'key_unavailable'; }
+  if (!/^[a-f0-9]{64}$/.test(keyId) || keyId !== expectedKeyId) return 'key_unavailable';
+
+  try {
+    return await fingerprintHistoryMatches(ledger, keyId) ? undefined : 'key_unavailable';
+  } catch {
+    return 'storage_unavailable';
+  }
+}
+
+async function smsReviewSourceFailure(
+  readOriginal: SmsOriginalReader,
+  expected: SmsInboxRow,
+): Promise<SmsReviewConfirmationUnavailableReason | undefined> {
+  let original: SmsInboxRow | null;
+  try { original = await readOriginal(expected.platformId); }
+  catch (error) {
+    if (isAbortError(error)) throw error;
+    return 'source_unavailable';
+  }
+  if (original === null) return 'missing_original';
+
+  try { validateBatch([original], null); }
+  catch { return 'source_changed'; }
+  return original.platformId === expected.platformId && original.receivedAt === expected.receivedAt &&
+    original.sender === expected.sender && original.body === expected.body ? undefined : 'source_changed';
+}
+
 function currentCursor(state: { cursorReceivedAt: number | null; cursorPlatformId: string | null } | undefined): SmsCursor | null {
   if (!state || state.cursorReceivedAt === null) return null;
   if (state.cursorPlatformId === null) throw new Error('Stored SMS cursor is incomplete');
@@ -360,6 +420,7 @@ function sameTransactionEvidence(
 type ReadySmsReviewCheck = {
   result: Extract<SmsReviewPreparation, { kind: 'ready' }>;
   reference: typeof smsImportRefs.$inferSelect;
+  source: SmsInboxRow;
 };
 type SmsReviewCheck = ReadySmsReviewCheck | {
   result: Extract<SmsReviewPreparation, { kind: 'unavailable' }>;
@@ -535,6 +596,7 @@ async function prepareSmsReviewForLedger(
   return {
     result: { kind: 'ready', referenceId, platformId: reference.platformId, receivedAt: reference.receivedAt, preparation },
     reference: currentReference,
+    source: row,
   };
 }
 
@@ -825,17 +887,46 @@ export function createSmsIngestion(
       });
       if (!runTransaction) return unavailable('transaction_unavailable');
 
+      let checked: SmsReviewCheck;
+      try { checked = await prepareSmsReviewForLedger(readLedger, fingerprints, referenceId, readOriginal); }
+      catch (error) {
+        if (isAbortError(error)) throw error;
+        return unavailable('storage_unavailable');
+      }
+      if (!('reference' in checked)) return checked.result;
+      if (smsReviewSnapshot(referenceId, checked.result) !== expectedSnapshot) return unavailable('stale_preparation');
+
       let result: SmsReviewConfirmationResult | undefined;
       try {
         await runTransaction(async (transaction) => {
           const ledger = createLedger(transaction, migrations);
-          const checked = await prepareSmsReviewForLedger(ledger, fingerprints, referenceId, readOriginal);
-          if (!('reference' in checked)) {
-            result = checked.result;
+          const currentReference = await ledger.db.select().from(smsImportRefs)
+            .where(eq(smsImportRefs.referenceId, referenceId)).get();
+          const referenceFailure = smsReviewReferenceFailure(currentReference, checked.reference);
+          if (referenceFailure) {
+            result = unavailable(referenceFailure);
             return;
           }
-          if (smsReviewSnapshot(referenceId, checked.result) !== expectedSnapshot) {
-            result = unavailable('stale_preparation');
+          const initialKeyFailure = await smsReviewKeyFailure(ledger, fingerprints, checked.reference.keyId);
+          if (initialKeyFailure) {
+            result = unavailable(initialKeyFailure);
+            return;
+          }
+          const sourceFailure = await smsReviewSourceFailure(readOriginal, checked.source);
+          if (sourceFailure) {
+            result = unavailable(sourceFailure);
+            return;
+          }
+          const finalReference = await ledger.db.select().from(smsImportRefs)
+            .where(eq(smsImportRefs.referenceId, referenceId)).get();
+          const finalReferenceFailure = smsReviewReferenceFailure(finalReference, checked.reference);
+          if (finalReferenceFailure) {
+            result = unavailable(finalReferenceFailure);
+            return;
+          }
+          const finalKeyFailure = await smsReviewKeyFailure(ledger, fingerprints, checked.reference.keyId);
+          if (finalKeyFailure) {
+            result = unavailable(finalKeyFailure);
             return;
           }
           const preparation = checked.result.preparation;
