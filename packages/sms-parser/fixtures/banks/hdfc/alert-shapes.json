@@ -1,66 +1,173 @@
 {
-  "note": "Two body shapes voluntarily supplied on 2026-10-11; all amounts, dates, account/card digits, VPAs, references and contact numbers below are fictional replacements. VM-HDFCBK-S, AD-HDFCBK-S and JM-HDFCBK-S were reported as sender labels, but exact original header/body pairings were not confirmed. Header/body combinations and negative variants are therefore test constructions, not a verified auto-import corpus. Existing generic-rule behavior only; no high-confidence HDFC rule or auto-save eligibility is established.",
+  "note": "Suvo supplied two fictionalized HDFC body shapes on 2026-10-11 and confirmed on 2026-10-15 that both came from the HDFCBK-S sender family. VM-, AD- and JM- labels were reported; exact prefix/body pairings were not asserted. The shared credit-reference text had its last four digits masked by the user, so this fixture uses a wholly fictional 12-digit value. All amounts, dates, account/card digits, VPAs, references and contact numbers shown here are fictional. The card and credit body shapes are observed; all date variants and other boundary cases are synthetic constructions, not additional bank samples or a universal-coverage corpus.",
   "cases": [
     {
-      "name": "supplied card UPI shape without direction stays in review",
+      "name": "observed card UPI shape without direction stays in review",
       "sender": "VM-HDFCBK-S",
       "body": "Txn Rs.47.35\nOn HDFC Bank Card xxxx\nAt merchant@apl \nby UPI 11223344xxxx\nOn 07-10\nNot You?\nCall 1800000000/SMS BLOCK CC 1234 to 7300000000",
       "receivedAt": "2026-10-07T10:00:00+05:30",
       "expected": { "kind": "review", "ruleId": null }
     },
     {
-      "name": "supplied credit alert shape uses medium-confidence generic parsing",
+      "name": "observed credit body with fictional full reference",
       "sender": "AD-HDFCBK-S",
-      "body": "Credit Alert!\nRs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 11223344xxxx)",
+      "body": "Credit Alert!\nRs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 123456789012)",
       "receivedAt": "2026-09-27T10:00:00+05:30",
       "expected": {
         "kind": "transaction",
-        "ruleId": "generic.keyword",
-        "confidence": "medium",
-        "txn": { "amountPaise": 25075, "direction": "credit", "kind": "income", "status": "posted", "channel": "upi", "institution": "hdfc", "accountLast4": "1234", "vpa": "payer@examplebank", "upiRef": null }
+        "ruleId": "hdfc.upi.credit",
+        "confidence": "high",
+        "txn": { "amountPaise": 25075, "direction": "credit", "kind": "income", "status": "posted", "channel": "upi", "institution": "hdfc", "accountLast4": "1234", "vpa": "payer@examplebank", "upiRef": "123456789012" }
       }
     },
     {
-      "name": "synthetic failed credit look-alike is not posted",
+      "name": "synthetic year rollover preserves India receipt clock",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.48.60 credited to HDFC Bank A/c XX6789 on 31-12-26 from VPA payer@examplebank (UPI 234567890123)",
+      "receivedAt": "2027-01-01T00:15:17.123+05:30",
+      "expectedOccurredAt": "2026-12-31T00:15:17.123+05:30",
+      "expected": { "kind": "transaction", "ruleId": "hdfc.upi.credit", "confidence": "high", "txn": { "amountPaise": 4860, "accountLast4": "6789" } }
+    },
+    {
+      "name": "synthetic valid leap day is accepted",
       "sender": "JM-HDFCBK-S",
-      "body": "Credit Alert!\nRs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 11223344xxxx). Transaction failed.",
+      "body": "Credit Alert! Rs.1.00 credited to HDFC Bank A/c XX5678 on 29-02-28 from VPA payer@examplebank (UPI 345678901234)",
+      "receivedAt": "2028-03-01T08:00:00+05:30",
+      "expectedOccurredAt": "2028-02-29T08:00:00+05:30",
+      "expected": { "kind": "transaction", "ruleId": "hdfc.upi.credit", "confidence": "high", "txn": { "amountPaise": 100 } }
+    },
+    {
+      "name": "synthetic failed credit look-alike stays in review",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 456789012345). Transaction failed.",
       "receivedAt": "2026-09-27T10:00:00+05:30",
-      "expected": { "kind": "transaction", "ruleId": "generic.keyword", "confidence": "medium", "txn": { "amountPaise": 25075, "direction": "credit", "status": "failed" } }
+      "expected": { "kind": "review", "ruleId": "hdfc.upi.credit", "txn": { "amountPaise": 25075, "direction": "credit", "status": "failed" } }
+    },
+    {
+      "name": "synthetic failed marker cannot be hidden in a valid-looking VPA",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA failed@examplebank (UPI 567890123456)",
+      "receivedAt": "2026-09-27T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": "hdfc.upi.credit", "txn": { "amountPaise": 25075, "status": "failed" } }
+    },
+    {
+      "name": "synthetic HDFC OTP is ignored before rules",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Your OTP is 123456",
+      "receivedAt": "2026-09-27T10:00:00+05:30",
+      "expected": { "kind": "ignored", "reason": "otp" }
     },
     {
       "name": "synthetic future credit notice is ignored",
       "sender": "VM-HDFCBK-S",
-      "body": "Credit Alert!\nRs.250.75 will be credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 11223344xxxx)",
+      "body": "Credit Alert! Rs.250.75 will be credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 567890123456)",
+      "receivedAt": "2026-09-26T10:00:00+05:30",
+      "expected": { "kind": "ignored", "reason": "reminder" }
+    },
+    {
+      "name": "synthetic AutoPay credit notice is ignored as a reminder",
+      "sender": "AD-HDFCBK-S",
+      "body": "AutoPay of Rs.250.75 will be credited to HDFC Bank A/c XX1234 on 27-09-26",
       "receivedAt": "2026-09-26T10:00:00+05:30",
       "expected": { "kind": "ignored", "reason": "reminder" }
     },
     {
       "name": "synthetic collect request mentioning a credit is ignored",
       "sender": "AD-HDFCBK-S",
-      "body": "Collect request: Rs.250.75 will be credited to HDFC Bank A/c XX1234 from VPA payer@examplebank (UPI 11223344xxxx)",
+      "body": "Collect request: Rs.250.75 will be credited to HDFC Bank A/c XX1234 from VPA payer@examplebank (UPI 678901234567)",
       "receivedAt": "2026-09-27T10:00:00+05:30",
       "expected": { "kind": "ignored", "reason": "request" }
     },
     {
-      "name": "synthetic promotional header cannot become a posted credit",
+      "name": "synthetic promotional DLT suffix is ignored",
       "sender": "VM-HDFCBK-P",
-      "body": "Credit Alert!\nRs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 11223344xxxx)",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 789012345678)",
       "receivedAt": "2026-09-27T10:00:00+05:30",
       "expected": { "kind": "ignored", "reason": "promo" }
     },
     {
-      "name": "synthetic unknown sender with a masked reference stays in review",
+      "name": "synthetic unknown sender is not promoted to the HDFC rule",
       "sender": "NOTICE",
-      "body": "Credit Alert!\nRs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 11223344xxxx)",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 789012345678)",
       "receivedAt": "2026-09-27T10:00:00+05:30",
       "expected": { "kind": "review", "ruleId": "generic.keyword", "txn": { "amountPaise": 25075, "direction": "credit", "institution": null, "upiRef": null } }
     },
     {
-      "name": "synthetic credit with unsafe integer paise stays in review",
+      "name": "synthetic unsafe integer paise stays in review",
       "sender": "JM-HDFCBK-S",
-      "body": "Credit Alert!\nRs.90071992547410.00 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 11223344xxxx)",
+      "body": "Credit Alert! Rs.90071992547410.00 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 890123456789)",
       "receivedAt": "2026-09-27T10:00:00+05:30",
       "expected": { "kind": "review", "ruleId": null }
+    },
+    {
+      "name": "synthetic masked reference stays in review",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 89012345xxxx)",
+      "receivedAt": "2026-09-27T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": "hdfc.upi.credit", "txn": { "amountPaise": 25075, "upiRef": null } }
+    },
+    {
+      "name": "synthetic missing reference stays in review",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank",
+      "receivedAt": "2026-09-27T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": "hdfc.upi.credit", "txn": { "amountPaise": 25075, "upiRef": null } }
+    },
+    {
+      "name": "synthetic invalid month day stays in review",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 31-04-26 from VPA payer@examplebank (UPI 901234567890)",
+      "receivedAt": "2026-05-01T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": "hdfc.upi.credit", "txn": { "amountPaise": 25075 } }
+    },
+    {
+      "name": "synthetic non-leap February 29 stays in review",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 29-02-27 from VPA payer@examplebank (UPI 012345678901)",
+      "receivedAt": "2027-03-01T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": "hdfc.upi.credit", "txn": { "amountPaise": 25075 } }
+    },
+    {
+      "name": "synthetic body date after receipt day stays in review",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 28-09-26 from VPA payer@examplebank (UPI 123450987654)",
+      "receivedAt": "2026-09-27T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": "hdfc.upi.credit", "txn": { "amountPaise": 25075 } }
+    },
+    {
+      "name": "synthetic ambiguous amount stays in review",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 and Rs.1.00 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 234501987654)",
+      "receivedAt": "2026-09-27T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": "hdfc.upi.credit", "txn": { "amountPaise": 25075 } }
+    },
+    {
+      "name": "synthetic malformed paise precision stays in review",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.755 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 345012987654)",
+      "receivedAt": "2026-09-27T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": null }
+    },
+    {
+      "name": "synthetic zero amount stays in review",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.0.00 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 456012987654)",
+      "receivedAt": "2026-09-27T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": null }
+    },
+    {
+      "name": "synthetic two-digit year that resolves after receipt stays in review",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 31-12-99 from VPA payer@examplebank (UPI 567012987654)",
+      "receivedAt": "2026-09-27T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": "hdfc.upi.credit", "txn": { "amountPaise": 25075 } }
+    },
+    {
+      "name": "synthetic non-service HDFC suffix does not match the HDFC rule",
+      "sender": "VM-HDFCBK-T",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 678012987654)",
+      "receivedAt": "2026-09-27T10:00:00+05:30",
+      "expected": { "kind": "transaction", "ruleId": "generic.keyword", "confidence": "medium", "txn": { "amountPaise": 25075, "direction": "credit" } }
     }
   ]
 }
