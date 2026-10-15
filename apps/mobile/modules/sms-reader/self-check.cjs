@@ -67,13 +67,22 @@ assert.equal(probeConfig.extra.androidBackgroundProbe, true);
 assert.equal(probeConfig.extra.androidSmsProbe, true);
 assertSmsReaderEnabled(probeManifest);
 
-assert.match(receiverSource, /scheduleSmsCatchupIfEnabled\(\s*intent\.action,\s*\{ readImportSettings\(context\.smsImportSettingsPreferences\(\)\)\.enabled \}/);
+assert.match(receiverSource, /intent\.action != Telephony\.Sms\.Intents\.SMS_RECEIVED_ACTION\) return/);
 assert.doesNotMatch(receiverSource, /getMessagesFromIntent|pdus|messageBody|originatingAddress|intent\.extras/,
   'the receiver must only gate and enqueue work; it must not inspect SMS payloads');
-assert.match(receiverSource, /recordSmsWakeReceived\(context\.smsWakePreferences\(\)\)/);
-assert.match(receiverSource, /runCatching\s*\{\s*SmsCatchupWakeWork\.enqueue\(context\.applicationContext\)/);
+assert.match(receiverSource, /SmsCatchupWakeWork\.enqueue\(context\.applicationContext, intent\.action, goAsync\(\)\)/);
+assert.match(workSource, /recordSmsWakeReceived\(context\.smsWakePreferences\(\)\)/);
+assert.match(workSource, /scheduleSmsCatchupIfEnabled\([\s\S]*readImportSettings\(context\.smsImportSettingsPreferences\(\)\)\.enabled/);
+assert.match(workSource, /CoroutineScope\(SupervisorJob\(\) \+ Dispatchers\.IO\)/);
 assert.match(workSource, /ExistingWorkPolicy\.APPEND_OR_REPLACE/);
 assert.match(workSource, /OneTimeWorkRequestBuilder<SmsCatchupWakeWorker>/);
+assert.match(workSource, /getWorkInfosForUniqueWork\(SMS_WAKE_WORK_NAME\)/);
+assert.match(workSource, /schedulingLock\.tryLock\(SCHEDULING_LOCK_TIMEOUT_MS, TimeUnit\.MILLISECONDS\)/);
+assert.match(workSource, /SmsWakeEnqueueDecision\.COALESCE/);
+assert.match(workSource, /SmsWakeEnqueueDecision\.APPEND_TRAILING/);
+assert.match(workSource, /class SmsCatchupWakeTaskConsumer @DoNotStrip constructor\(context: Context, taskManagerUtils: TaskManagerUtilsInterface\)/);
+assert.match(workSource, /@DoNotStrip\s+class SmsCatchupWakeTaskConsumer @DoNotStrip constructor/);
+assert.match(workSource, /@field:DoNotStrip\s+@JvmField\s+val VERSION = 0/);
 assert.doesNotMatch(workSource, /setInputData|inputData|NetworkType|requiresCharging|requiresBatteryNotLow/,
   'the receiver job must have no SMS payload or periodic worker constraints');
 assert.match(workSource, /TaskServiceProviderHelper\.getTaskServiceImpl\(context\)/);
@@ -82,8 +91,9 @@ assert.match(workSource, /registeredTask\.execute\(Bundle\(\), null, callback\)/
 assert.match(workSource, /withTimeoutOrNull\(TASK_TIMEOUT_MS\)/);
 assert.match(workSource, /continuation\.tryResume\(isSuccessfulSmsCatchupResponse\(response\)\)/);
 assert.match(workSource, /result\?\.toDouble\(\) == JS_TASK_SUCCESS/);
-assert.match(workSource, /if \(!isEligible\(context\)\) return finish\(SmsWakeOutcome\.DEFERRED/);
-assert.match(workSource, /if \(willRetry\) Result\.retry\(\) else Result\.success\(\)/);
+assert.match(workSource, /recordSmsWakeOutcome\(context\.smsWakePreferences\(\), SmsWakeOutcome\.DEFERRED, failedAttempt = false\)/);
+assert.match(workSource, /decideSmsWakeOutcomeWrite\(/);
+assert.match(workSource, /if \(!isEligible\(context\)\) return finish\(SmsWakeOutcome\.DEFERRED, failedAttempt = false\)/);
 assert.doesNotMatch(workSource, /Class\.forName|BackgroundTaskScheduler|HeadlessJsTaskService/);
 assert.match(moduleSource, /AsyncFunction\("getImportSettingsAsync"\)/);
 assert.match(moduleSource, /AsyncFunction\("setImportSettingsAsync"\)/);

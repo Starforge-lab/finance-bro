@@ -1,5 +1,6 @@
 package expo.modules.smsreader
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -24,6 +25,35 @@ class SmsWakeWorkPolicyTest {
     assertTrue(shouldRetrySmsCatchup(runAttemptCount = 1))
     assertFalse(shouldRetrySmsCatchup(runAttemptCount = 2))
     assertFalse(shouldRetrySmsCatchup(runAttemptCount = 3))
+  }
+
+  @Test
+  fun unpersistedOutcomeNeverContinuesAsSuccessAndFailsAfterTheRetryBudget() {
+    assertEquals(SmsWakeOutcomeWriteDecision.CONTINUE, decideSmsWakeOutcomeWrite(persisted = true, runAttemptCount = 0))
+    assertEquals(SmsWakeOutcomeWriteDecision.RETRY, decideSmsWakeOutcomeWrite(persisted = false, runAttemptCount = 0))
+    assertEquals(SmsWakeOutcomeWriteDecision.RETRY, decideSmsWakeOutcomeWrite(persisted = false, runAttemptCount = 1))
+    assertEquals(SmsWakeOutcomeWriteDecision.FAIL, decideSmsWakeOutcomeWrite(persisted = false, runAttemptCount = 2))
+  }
+
+  @Test
+  fun receiverWakeQueueAllowsOnlyOneTrailingPass() {
+    assertEquals(SmsWakeEnqueueDecision.ENQUEUE, decideSmsWakeEnqueue(emptyList()))
+    assertEquals(
+      SmsWakeEnqueueDecision.ENQUEUE,
+      decideSmsWakeEnqueue(listOf(SmsWakeWorkChainState.TERMINAL))
+    )
+    assertEquals(
+      SmsWakeEnqueueDecision.APPEND_TRAILING,
+      decideSmsWakeEnqueue(listOf(SmsWakeWorkChainState.RUNNING))
+    )
+    assertEquals(
+      SmsWakeEnqueueDecision.COALESCE,
+      decideSmsWakeEnqueue(listOf(SmsWakeWorkChainState.RUNNING, SmsWakeWorkChainState.QUEUED))
+    )
+    assertEquals(
+      SmsWakeEnqueueDecision.COALESCE,
+      decideSmsWakeEnqueue(listOf(SmsWakeWorkChainState.QUEUED))
+    )
   }
 
   @Test

@@ -50,7 +50,8 @@ export type AndroidSmsCatchupErrorCode =
   | 'storage_unavailable'
   | 'key_unavailable'
   | 'duplicate_review_required'
-  | 'invalid_clock';
+  | 'invalid_clock'
+  | 'time_budget_exceeded';
 
 const catchupErrorMessages: Record<AndroidSmsCatchupErrorCode, string> = {
   permission_denied: 'Android SMS permissions are unavailable.',
@@ -63,6 +64,7 @@ const catchupErrorMessages: Record<AndroidSmsCatchupErrorCode, string> = {
   key_unavailable: 'The saved import key is unavailable; restore access before importing.',
   duplicate_review_required: 'Existing imports need duplicate review before SMS catch-up can continue.',
   invalid_clock: 'Android SMS catch-up clock returned an invalid timestamp.',
+  time_budget_exceeded: 'Android SMS catch-up exceeded its background time budget.',
 };
 
 export class AndroidSmsCatchupError extends Error {

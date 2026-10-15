@@ -7,14 +7,8 @@ import android.provider.Telephony
 
 class SmsWakeReceiver : BroadcastReceiver() {
   override fun onReceive(context: Context, intent: Intent) {
-    scheduleSmsCatchupIfEnabled(
-      intent.action,
-      { readImportSettings(context.smsImportSettingsPreferences()).enabled },
-      {
-        runCatching { recordSmsWakeReceived(context.smsWakePreferences()) }
-        runCatching { SmsCatchupWakeWork.enqueue(context.applicationContext) }
-      }
-    )
+    if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
+    SmsCatchupWakeWork.enqueue(context.applicationContext, intent.action, goAsync())
   }
 }
 

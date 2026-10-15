@@ -12,6 +12,17 @@ import {
 import { runAndroidSmsBackgroundTask } from '../src/imports/android-sms-background-runner';
 
 const startDateMs = Date.now() - 1_000;
+const backgroundBudgetMs = 7 * 60 * 1_000;
+
+function deferred<Value>() {
+  let resolve!: (value: Value) => void;
+  const promise = new Promise<Value>((complete) => { resolve = complete; });
+  return { promise, resolve };
+}
+
+function flushTurn(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 function fakeReader(
   settings: SmsImportSettings,
@@ -78,6 +89,20 @@ test('Android SMS background task gates access before storage and shares the cat
     assert.equal(getAndroidSmsCatchupFailure(), null);
   });
 
+  await t.test('clears the handler budget timer on disabled and denied exits', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const disabled = fakeReader({ enabled: false, startDateMs }, { readSms: false, receiveSms: false, granted: false });
+    clearAndroidSmsCatchupFailure();
+    assert.equal(await runAndroidSmsBackgroundTask('android', () => disabled.reader, async () => ({} as DataLayer)), 'success');
+    t.mock.timers.tick(backgroundBudgetMs);
+    assert.equal(getAndroidSmsCatchupFailure(), null);
+
+    const denied = fakeReader({ enabled: true, startDateMs }, { readSms: false, receiveSms: true, granted: false });
+    assert.equal(await runAndroidSmsBackgroundTask('android', () => denied.reader, async () => ({} as DataLayer)), 'failed');
+    t.mock.timers.tick(backgroundBudgetMs);
+    assert.equal(getAndroidSmsCatchupFailure(), 'permission_denied');
+  });
+
   await t.test('invalid consent fails before permission, ledger, or inbox access', async () => {
     clearAndroidSmsCatchupFailure();
     const source = fakeReader({ enabled: true, startDateMs: null }, granted);
@@ -130,6 +155,83 @@ test('Android SMS background task gates access before storage and shares the cat
     assert.ok(storage.calls().cursorReads > 0);
     assert.equal(storage.calls().batchWrites, 1);
     assert.equal(getAndroidSmsCatchupFailure(), null);
+  });
+
+  await t.test('budget expiry during consent read blocks late permission, ledger, and inbox work', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    clearAndroidSmsCatchupFailure();
+    const settingsPending = deferred<SmsImportSettings>();
+    const settingsStarted = deferred<void>();
+    let permissionReads = 0;
+    let ledgerReads = 0;
+    const reader = {
+      getImportSettingsAsync() { settingsStarted.resolve(); return settingsPending.promise; },
+      async getPermissionsAsync() { permissionReads += 1; return granted; },
+      async queryInboxAsync() { throw new Error('Inbox must not be queried'); },
+    } as unknown as SmsReaderModule;
+
+    const task = runAndroidSmsBackgroundTask('android', () => reader, async () => {
+      ledgerReads += 1;
+      return {} as DataLayer;
+    });
+    await settingsStarted.promise;
+    t.mock.timers.tick(backgroundBudgetMs);
+    assert.equal(await task, 'failed');
+    assert.equal(getAndroidSmsCatchupFailure(), 'time_budget_exceeded');
+
+    settingsPending.resolve({ enabled: true, startDateMs });
+    await flushTurn();
+    assert.equal(permissionReads, 0);
+    assert.equal(ledgerReads, 0);
+  });
+
+  await t.test('budget expiry during ledger open blocks late catch-up startup', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    clearAndroidSmsCatchupFailure();
+    const ledgerPending = deferred<DataLayer>();
+    const ledgerStarted = deferred<void>();
+    let queries = 0;
+    const reader = {
+      async getImportSettingsAsync() { return { enabled: true, startDateMs }; },
+      async getPermissionsAsync() { return granted; },
+      async queryInboxAsync() { queries += 1; return { messages: [], next: null }; },
+    } as unknown as SmsReaderModule;
+
+    const task = runAndroidSmsBackgroundTask('android', () => reader, () => {
+      ledgerStarted.resolve();
+      return ledgerPending.promise;
+    });
+    await ledgerStarted.promise;
+    t.mock.timers.tick(backgroundBudgetMs);
+    assert.equal(await task, 'failed');
+    assert.equal(getAndroidSmsCatchupFailure(), 'time_budget_exceeded');
+
+    ledgerPending.resolve(fakeLedger().ledger);
+    await flushTurn();
+    assert.equal(queries, 0);
+  });
+
+  await t.test('budget expiry during inbox read aborts later writes after the native read returns', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    clearAndroidSmsCatchupFailure();
+    const queryPending = deferred<{ messages: []; next: null }>();
+    const queryStarted = deferred<void>();
+    const source = fakeReader({ enabled: true, startDateMs }, granted, () => {
+      queryStarted.resolve();
+      return queryPending.promise;
+    });
+    const storage = fakeLedger();
+
+    const task = runAndroidSmsBackgroundTask('android', () => source.reader, async () => storage.ledger);
+    await queryStarted.promise;
+    t.mock.timers.tick(backgroundBudgetMs);
+    assert.equal(await task, 'failed');
+    assert.equal(getAndroidSmsCatchupFailure(), 'time_budget_exceeded');
+
+    queryPending.resolve({ messages: [], next: null });
+    await flushTurn();
+    assert.equal(storage.calls().batchWrites, 0);
+    assert.equal(getAndroidSmsCatchupFailure(), 'time_budget_exceeded');
   });
 
   await t.test('returns a static failure code and writes no log when source errors contain message text', async () => {

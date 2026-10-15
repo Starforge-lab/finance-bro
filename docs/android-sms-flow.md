@@ -56,26 +56,42 @@ consumer for `SMS_RECEIVED`. After checking persisted consent, the receiver queu
 one-time WorkManager work with no message data; it does not decode PDUs or read
 the inbox. The worker rechecks the original consent floor and both SMS permissions,
 then calls the alias through Expo's task service and waits for the JS completion
-callback. Its unique `APPEND_OR_REPLACE` chain retains wakes received during a
-running catch-up, so a burst may queue redundant idempotent passes. Each attempt
-has an eight-minute callback bound and the worker applies exponential backoff
-for three attempts. It checks for the numeric success result. A body-free native
+callback. Receiver scheduling is bounded to active work plus at most one trailing
+pass: wakes coalesce while a pass is already queued, and one pass is appended only
+when work is running with no trailing pass. Its unique `APPEND_OR_REPLACE` chain
+retains that trailing wake. The JS runner has a seven-minute cooperative deadline;
+the worker's eight-minute bound only limits how long it waits for the callback.
+Expo's `TaskInterface` has no cancellation handle, so a native inbox read already
+in progress may finish after the worker stops waiting. The abort signal prevents
+the JS catch-up from starting later reads or writes after that await returns, and
+the existing active catch-up guard avoids parallel writes in the same runtime.
+Each worker attempt applies exponential backoff for three attempts and checks for
+the numeric success result. A body-free native
 metadata record exposes the last attempt time and `success`, `deferred` or `failed`
 outcome plus a cumulative saturating failed-attempt count; the multipart field
 remains API-compatible but is always zero because this wake path does not inspect
-PDUs. On retry exhaustion a work item finishes so queued wakes can proceed, while
-the stored outcome remains `failed`. This status is limited native capture-health
-groundwork, not detailed JS failure reporting or proof of a successful import.
+PDUs. If outcome metadata cannot be committed, the worker retries without invoking
+JS and reports a failed WorkManager result after the retry budget; this storage
+failure can fail an already-appended pass. Opening the app or a later SMS wake can
+recover. For ordinary JS failure or retry exhaustion, a work item finishes so a
+queued wake can proceed, while the stored outcome remains `failed`. This status is
+limited native capture-health groundwork, not detailed JS failure reporting or
+proof of a successful import.
 Registration failure attempts to turn import off and remove both tasks and queued
 work, and reports a body-free error. Disable persists off before unregistering;
 the receiver gate and worker gate prevent inbox access if queued work races with
 disable. Launch reconciles persisted consent and both task registrations.
 
-The background runner checks consent, its start date and both SMS permissions
-before opening the ledger. It uses the same bounded catch-up path as app-open
-recovery. Receiver-triggered execution on the matching native build remains
-unverified. The native outcome record does not establish durable, detailed JS
-failure reporting after the headless runtime ends.
+The background runner starts its seven-minute budget at handler entry, checks
+consent, its start date and both SMS permissions before opening the ledger, and
+uses the same bounded catch-up path as app-open recovery. The budget is cooperative:
+if expiry occurs during a settings, ledger, key-provider or inbox native await,
+that native call itself may continue until it returns. After return, the runner
+does not start a catch-up that had not begun before expiry; an active catch-up is
+aborted and its guards prevent later page reads or writes. Receiver-triggered
+execution on the matching native build remains unverified. The native outcome
+record does not establish durable, detailed JS failure reporting after the
+headless runtime ends.
 
 The verified rule list is still empty: uncertain formats remain in review.
 Later-timestamp/changed-body row-ID reuse and unreadable-row progress

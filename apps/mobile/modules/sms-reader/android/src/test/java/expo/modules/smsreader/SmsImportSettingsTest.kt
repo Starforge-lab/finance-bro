@@ -143,7 +143,16 @@ class SmsImportSettingsTest {
     assertEquals(MAX_SAFE_INTEGER.toDouble(), readSmsWakeMetadata(preferences)["failedAttemptCount"])
   }
 
-  private fun fakePreferences(commitResult: Boolean = true): SharedPreferences {
+  @Test
+  fun failedOutcomeCommitAndThrownCommitAreBothReportedAsUnpersisted() {
+    val commitReturnedFalse = fakePreferences(commitResult = false)
+    val commitThrew = fakePreferences(commitThrows = true)
+
+    assertFalse(recordSmsWakeOutcome(commitReturnedFalse, SmsWakeOutcome.FAILED, failedAttempt = true, nowMs = NOW))
+    assertFalse(recordSmsWakeOutcome(commitThrew, SmsWakeOutcome.FAILED, failedAttempt = true, nowMs = NOW))
+  }
+
+  private fun fakePreferences(commitResult: Boolean = true, commitThrows: Boolean = false): SharedPreferences {
     val values = mutableMapOf<String, Any>()
 
     fun newEditor(): SharedPreferences.Editor {
@@ -174,7 +183,7 @@ class SmsImportSettingsTest {
             proxy
           }
           "clear" -> { clear = true; proxy }
-          "commit" -> save()
+          "commit" -> if (commitThrows) throw IllegalStateException("preference commit failed") else save()
           "apply" -> { save(); null }
           else -> throw AssertionError("Unexpected SharedPreferences.Editor call: ${method.name}")
         }

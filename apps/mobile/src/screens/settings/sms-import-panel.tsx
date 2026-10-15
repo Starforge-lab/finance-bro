@@ -94,6 +94,8 @@ function catchupFailureCopy(code: AndroidSmsCatchupFailure): string {
       return 'Catch-up paused because earlier imported messages need review below. Review them, then preview again.';
     case 'invalid_clock':
       return 'The device time could not be verified. Check the date and time, then preview again.';
+    case 'time_budget_exceeded':
+      return 'Background catch-up ran out of time. A read already in progress may finish; opening the app or a later SMS wake can retry.';
     case 'background_unavailable':
       return 'Android could not schedule automatic SMS checks. Review the import setting and try again; paste still works.';
     default:
