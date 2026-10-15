@@ -4,8 +4,8 @@ import android.content.SharedPreferences
 import java.lang.reflect.Proxy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SmsImportSettingsTest {
@@ -120,12 +120,27 @@ class SmsImportSettingsTest {
   }
 
   @Test
-  fun disabledReceiverDoesNotReadPduParts() {
-    var decoded = false
+  fun wakeMetadataKeepsTheMultipartFieldUnknownAndRecordsOnlyBodyFreeOutcomes() {
+    val preferences = fakePreferences()
+    recordSmsWakeReceived(preferences, NOW)
+    assertEquals(0, readSmsWakeMetadata(preferences)["lastMultipartCount"])
 
-    assertNull(readPartCountIfImportEnabled(enabled = false) { decoded = true; 1 })
-    assertFalse(decoded)
-    assertEquals(1L, readPartCountIfImportEnabled(enabled = true) { 1 }?.toLong() ?: 0L)
+    assertTrue(recordSmsWakeOutcome(preferences, SmsWakeOutcome.DEFERRED, failedAttempt = true, nowMs = NOW + 1))
+    assertTrue(recordSmsWakeOutcome(preferences, SmsWakeOutcome.SUCCESS, failedAttempt = false, nowMs = NOW + 2))
+    val metadata = readSmsWakeMetadata(preferences)
+    assertEquals(NOW + 2.0, metadata["lastAttemptAtMs"])
+    assertEquals("success", metadata["lastOutcome"])
+    assertEquals(1.0, metadata["failedAttemptCount"])
+  }
+
+  @Test
+  fun failedAttemptCounterSaturatesAtSafeInteger() {
+    val preferences = fakePreferences()
+    preferences.edit().putLong(FAILED_ATTEMPT_COUNT, MAX_SAFE_INTEGER).commit()
+
+    recordSmsWakeOutcome(preferences, SmsWakeOutcome.FAILED, failedAttempt = true, nowMs = NOW)
+
+    assertEquals(MAX_SAFE_INTEGER.toDouble(), readSmsWakeMetadata(preferences)["failedAttemptCount"])
   }
 
   private fun fakePreferences(commitResult: Boolean = true): SharedPreferences {
@@ -148,7 +163,7 @@ class SmsImportSettingsTest {
       ) { proxy, method, args ->
         val key = args?.firstOrNull() as? String
         when (method.name) {
-          "putBoolean", "putLong" -> {
+          "putBoolean", "putLong", "putInt", "putString" -> {
             pending[key!!] = args[1]!!
             removed.remove(key)
             proxy
@@ -175,6 +190,8 @@ class SmsImportSettingsTest {
         "contains" -> values.containsKey(args?.firstOrNull() as String)
         "getBoolean" -> values[args!![0] as String]?.let { it as Boolean } ?: args[1] as Boolean
         "getLong" -> values[args!![0] as String]?.let { it as Long } ?: args[1] as Long
+        "getInt" -> values[args!![0] as String]?.let { it as Int } ?: args[1] as Int
+        "getString" -> values[args!![0] as String]?.let { it as String } ?: args[1] as String?
         "getAll" -> values.toMap()
         "edit" -> newEditor()
         "toString" -> "FakeSharedPreferences"

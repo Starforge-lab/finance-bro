@@ -7,6 +7,7 @@ import android.provider.BaseColumns
 import android.provider.Telephony
 import expo.modules.interfaces.permissions.PermissionsResponseListener
 import expo.modules.interfaces.permissions.PermissionsStatus
+import expo.modules.interfaces.taskManager.TaskManagerInterface
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.functions.Coroutine
@@ -17,11 +18,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 private const val MAX_BATCH_SIZE = 100
-private const val WAKE_PREFERENCES = "finance-bro.sms-reader.wake"
-private const val EVENT_COUNT = "eventCount"
-private const val LAST_RECEIVED_AT_MS = "lastReceivedAtMs"
-private const val LAST_PART_COUNT = "lastPartCount"
-
 private val SMS_PERMISSIONS = arrayOf(Manifest.permission.READ_SMS, Manifest.permission.RECEIVE_SMS)
 
 private data class InboxCursor(val dateMs: Long, val id: Long) {
@@ -59,6 +55,22 @@ class SmsReaderModule : Module() {
       withContext(Dispatchers.IO) { setImportSettings(context.smsImportSettingsPreferences(), options).toMap() }
     }
 
+    AsyncFunction("registerWakeTaskAsync") {
+      val taskManager = appContext.legacyModule<TaskManagerInterface>()
+        ?: throw IllegalStateException("TaskManager is unavailable")
+      taskManager.registerTask(SMS_WAKE_TASK_NAME, SmsCatchupWakeTaskConsumer::class.java, emptyMap())
+    }
+
+    AsyncFunction("unregisterWakeTaskAsync") {
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      SmsCatchupWakeWork.cancel(context.applicationContext)
+      appContext.legacyModule<TaskManagerInterface>()?.let { taskManager ->
+        if (taskManager.taskHasConsumerOfClass(SMS_WAKE_TASK_NAME, SmsCatchupWakeTaskConsumer::class.java)) {
+          taskManager.unregisterTask(SMS_WAKE_TASK_NAME, SmsCatchupWakeTaskConsumer::class.java)
+        }
+      }
+    }
+
     AsyncFunction("queryInboxAsync") Coroutine { options: Map<String, Any?> ->
       val query = parseQuery(options)
       val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
@@ -81,13 +93,7 @@ class SmsReaderModule : Module() {
 
     AsyncFunction("getWakeMetadataAsync") Coroutine { ->
       val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
-      val preferences = context.getSharedPreferences(WAKE_PREFERENCES, Context.MODE_PRIVATE)
-      val receivedAtMs = preferences.getLong(LAST_RECEIVED_AT_MS, 0L).takeIf { it > 0L }
-      mapOf(
-        "count" to preferences.getLong(EVENT_COUNT, 0L).coerceAtMost(MAX_SAFE_INTEGER).toDouble(),
-        "lastReceivedAtMs" to receivedAtMs?.toDouble(),
-        "lastMultipartCount" to preferences.getInt(LAST_PART_COUNT, 0)
-      )
+      readSmsWakeMetadata(context.smsWakePreferences())
     }
   }
 

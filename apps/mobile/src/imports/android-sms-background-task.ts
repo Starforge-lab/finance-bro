@@ -12,35 +12,55 @@ import {
 import { runAndroidSmsBackgroundTask } from './android-sms-background-runner';
 
 export const ANDROID_SMS_BACKGROUND_TASK = 'finance-bro-android-sms-catchup';
+export const ANDROID_SMS_WAKE_TASK = 'finance-bro-android-sms-wake';
+
+async function executeAndroidSmsCatchupTask({ error }: { error: unknown | null }) {
+  try {
+    const outcome = await runAndroidSmsBackgroundTask(Platform.OS, getSmsReader, getLedger, error);
+    return outcome === 'success'
+      ? BackgroundTask.BackgroundTaskResult.Success
+      : BackgroundTask.BackgroundTaskResult.Failed;
+  } catch {
+    recordAndroidSmsCatchupFailure(new AndroidSmsBackgroundUnavailableError('registration_rollback'));
+    return BackgroundTask.BackgroundTaskResult.Failed;
+  }
+}
 
 if (Platform.OS === 'android') {
-  TaskManager.defineTask(ANDROID_SMS_BACKGROUND_TASK, async ({ error }) => {
-    try {
-      const outcome = await runAndroidSmsBackgroundTask(Platform.OS, getSmsReader, getLedger, error);
-      return outcome === 'success'
-        ? BackgroundTask.BackgroundTaskResult.Success
-        : BackgroundTask.BackgroundTaskResult.Failed;
-    } catch {
-      recordAndroidSmsCatchupFailure(new AndroidSmsBackgroundUnavailableError('registration_rollback'));
-      return BackgroundTask.BackgroundTaskResult.Failed;
-    }
-  });
+  TaskManager.defineTask(ANDROID_SMS_BACKGROUND_TASK, executeAndroidSmsCatchupTask);
+  TaskManager.defineTask(ANDROID_SMS_WAKE_TASK, executeAndroidSmsCatchupTask);
 }
 
 export const androidSmsBackgroundScheduler = {
   async register() {
     if (Platform.OS !== 'android') throw new AndroidSmsBackgroundUnavailableError('registration_rollback');
-    if (await TaskManager.isTaskRegisteredAsync(ANDROID_SMS_BACKGROUND_TASK)) return;
-    if (await BackgroundTask.getStatusAsync() !== BackgroundTask.BackgroundTaskStatus.Available) {
-      throw new AndroidSmsBackgroundUnavailableError('registration_rollback');
+    if (!(await TaskManager.isTaskRegisteredAsync(ANDROID_SMS_BACKGROUND_TASK))) {
+      if (await BackgroundTask.getStatusAsync() !== BackgroundTask.BackgroundTaskStatus.Available) {
+        throw new AndroidSmsBackgroundUnavailableError('registration_rollback');
+      }
+      await BackgroundTask.registerTaskAsync(ANDROID_SMS_BACKGROUND_TASK, { minimumInterval: 15 });
     }
-    await BackgroundTask.registerTaskAsync(ANDROID_SMS_BACKGROUND_TASK, { minimumInterval: 15 });
+    const reader = getSmsReader();
+    if (!reader) throw new AndroidSmsBackgroundUnavailableError('registration_rollback');
+    await reader.registerWakeTaskAsync();
   },
   async unregister() {
     if (Platform.OS !== 'android') return;
-    if (await TaskManager.isTaskRegisteredAsync(ANDROID_SMS_BACKGROUND_TASK)) {
-      await BackgroundTask.unregisterTaskAsync(ANDROID_SMS_BACKGROUND_TASK);
+    let failed = false;
+    const reader = getSmsReader();
+    if (reader) {
+      try { await reader.unregisterWakeTaskAsync(); } catch { failed = true; }
+    } else {
+      failed = true;
     }
+    try {
+      if (await TaskManager.isTaskRegisteredAsync(ANDROID_SMS_BACKGROUND_TASK)) {
+        await BackgroundTask.unregisterTaskAsync(ANDROID_SMS_BACKGROUND_TASK);
+      }
+    } catch {
+      failed = true;
+    }
+    if (failed) throw new AndroidSmsBackgroundUnavailableError('unregistration');
   },
 };
 

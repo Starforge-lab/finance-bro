@@ -9,7 +9,8 @@ acceptance.
 
 Normal Android builds declare READ_SMS and RECEIVE_SMS. Neither declaration nor
 an OS grant enables import. The native setting defaults off; the receiver checks
-it before decoding PDUs. Manual entry and paste remain available.
+it before enqueuing work and never decodes SMS PDUs. Manual entry and paste remain
+available.
 
 The user starts the preview before either permission is requested. First use
 counts a fixed 90-day interval in batches of at most 100. No preview write or
@@ -46,21 +47,37 @@ with receipt time used only when no parsed date exists. A missing original or
 unavailable key offers manual/paste recovery. Raw text is never displayed by
 this flow or saved in its status state.
 
-The app entry defines the Android task before loading the router. Confirming an
-opt-in registers a best-effort Expo background task with a minimum interval of
-15 minutes; Android controls actual timing and may require network availability
-and sufficient battery. Registration failure attempts to turn import off and
-remove the task, and reports a body-free error. Disable persists off before
-unregistering. Launch reconciles persisted consent and task registration.
+The app entry defines the periodic and receiver-wake Expo tasks before loading
+the router. Both call the same guarded catch-up runner. Confirming an opt-in
+registers the existing best-effort Expo background task with a minimum interval
+of 15 minutes; Android controls actual timing and may require network availability
+and sufficient battery. It also registers a separate persisted TaskManager
+consumer for `SMS_RECEIVED`. After checking persisted consent, the receiver queues
+one-time WorkManager work with no message data; it does not decode PDUs or read
+the inbox. The worker rechecks the original consent floor and both SMS permissions,
+then calls the alias through Expo's task service and waits for the JS completion
+callback. Its unique `APPEND_OR_REPLACE` chain retains wakes received during a
+running catch-up, so a burst may queue redundant idempotent passes. Each attempt
+has an eight-minute callback bound and the worker applies exponential backoff
+for three attempts. It checks for the numeric success result. A body-free native
+metadata record exposes the last attempt time and `success`, `deferred` or `failed`
+outcome plus a cumulative saturating failed-attempt count; the multipart field
+remains API-compatible but is always zero because this wake path does not inspect
+PDUs. On retry exhaustion a work item finishes so queued wakes can proceed, while
+the stored outcome remains `failed`. This status is limited native capture-health
+groundwork, not detailed JS failure reporting or proof of a successful import.
+Registration failure attempts to turn import off and remove both tasks and queued
+work, and reports a body-free error. Disable persists off before unregistering;
+the receiver gate and worker gate prevent inbox access if queued work races with
+disable. Launch reconciles persisted consent and both task registrations.
 
 The background runner checks consent, its start date and both SMS permissions
 before opening the ledger. It uses the same bounded catch-up path as app-open
-recovery. Background execution on the matching native build remains unverified;
-the current failure status is held in runtime memory and does not establish
-durable capture-health reporting after the headless runtime ends.
+recovery. Receiver-triggered execution on the matching native build remains
+unverified. The native outcome record does not establish durable, detailed JS
+failure reporting after the headless runtime ends.
 
 The verified rule list is still empty: uncertain formats remain in review.
-Receiver-triggered processing is not yet connected.
 Later-timestamp/changed-body row-ID reuse and unreadable-row progress
 have source fixes; the private device run exercised fictional ID reuse. Full
 range replay addresses same-cursor changes and out-of-order dates in source;

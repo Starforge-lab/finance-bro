@@ -33,6 +33,9 @@ export type SmsWakeMetadata = {
   count: number;
   lastReceivedAtMs: number | null;
   lastMultipartCount: number;
+  lastAttemptAtMs?: number | null;
+  lastOutcome?: 'success' | 'failed' | 'deferred' | null;
+  failedAttemptCount?: number;
 };
 
 export type SmsImportSettings = {
@@ -51,6 +54,8 @@ export type SmsReaderModule = {
   requestPermissionsAsync(): Promise<SmsPermissionState>;
   getImportSettingsAsync(): Promise<SmsImportSettings>;
   setImportSettingsAsync(settings: SmsImportSettingsUpdate): Promise<SmsImportSettings>;
+  registerWakeTaskAsync(): Promise<void>;
+  unregisterWakeTaskAsync(): Promise<void>;
   queryInboxAsync(options: SmsInboxQuery): Promise<SmsInboxQueryResult>;
   readInboxMessageAsync(platformId: string): Promise<SmsInboxMessage | null>;
   getWakeMetadataAsync(): Promise<SmsWakeMetadata>;

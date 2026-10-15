@@ -182,8 +182,14 @@ test('Android SMS background task gates access before storage and shares the cat
     const routerImport = entry.indexOf("import 'expo-router/entry';");
     assert.ok(taskImport >= 0 && routerImport > taskImport);
     const binding = readFileSync(new URL('../src/imports/android-sms-background-task.ts', import.meta.url), 'utf8');
-    assert.match(binding, /if \(Platform\.OS === 'android'\)\s*\{\s*TaskManager\.defineTask/);
+    assert.match(binding, /ANDROID_SMS_WAKE_TASK = 'finance-bro-android-sms-wake'/);
+    assert.match(binding, /TaskManager\.defineTask\(ANDROID_SMS_BACKGROUND_TASK, executeAndroidSmsCatchupTask\)/);
+    assert.match(binding, /TaskManager\.defineTask\(ANDROID_SMS_WAKE_TASK, executeAndroidSmsCatchupTask\)/);
+    assert.equal(binding.match(/runAndroidSmsBackgroundTask\(/g)?.length, 1,
+      'the periodic and receiver task names must delegate to the same guarded runner');
     assert.match(binding, /minimumInterval:\s*15/);
     assert.doesNotMatch(binding, /triggerTaskWorkerForTestingAsync/);
+    assert.match(binding, /reader\.registerWakeTaskAsync\(\)/);
+    assert.match(binding, /reader\.unregisterWakeTaskAsync\(\)/);
   });
 });

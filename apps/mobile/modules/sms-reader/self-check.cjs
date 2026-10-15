@@ -7,6 +7,9 @@ const appDirectory = path.resolve(__dirname, '../..');
 const receiverSource = readFileSync(path.join(__dirname, 'android/src/main/java/expo/modules/smsreader/SmsWakeReceiver.kt'), 'utf8');
 const moduleSource = readFileSync(path.join(__dirname, 'android/src/main/java/expo/modules/smsreader/SmsReaderModule.kt'), 'utf8');
 const settingsSource = readFileSync(path.join(__dirname, 'android/src/main/java/expo/modules/smsreader/SmsImportSettings.kt'), 'utf8');
+const workSource = readFileSync(path.join(__dirname, 'android/src/main/java/expo/modules/smsreader/SmsCatchupWakeWork.kt'), 'utf8');
+const metadataSource = readFileSync(path.join(__dirname, 'android/src/main/java/expo/modules/smsreader/SmsWakeMetadata.kt'), 'utf8');
+const gradleSource = readFileSync(path.join(__dirname, 'android/build.gradle'), 'utf8');
 const typesSource = readFileSync(path.join(__dirname, 'index.ts'), 'utf8');
 
 function getAndroidManifest(probeEnabled, variant = 'development') {
@@ -64,18 +67,45 @@ assert.equal(probeConfig.extra.androidBackgroundProbe, true);
 assert.equal(probeConfig.extra.androidSmsProbe, true);
 assertSmsReaderEnabled(probeManifest);
 
-assert.ok(receiverSource.indexOf('readImportSettings') < receiverSource.indexOf('getMessagesFromIntent'),
-  'the receiver must gate SMS payload decoding on the persisted import setting');
+assert.match(receiverSource, /scheduleSmsCatchupIfEnabled\(\s*intent\.action,\s*\{ readImportSettings\(context\.smsImportSettingsPreferences\(\)\)\.enabled \}/);
+assert.doesNotMatch(receiverSource, /getMessagesFromIntent|pdus|messageBody|originatingAddress|intent\.extras/,
+  'the receiver must only gate and enqueue work; it must not inspect SMS payloads');
+assert.match(receiverSource, /recordSmsWakeReceived\(context\.smsWakePreferences\(\)\)/);
+assert.match(receiverSource, /runCatching\s*\{\s*SmsCatchupWakeWork\.enqueue\(context\.applicationContext\)/);
+assert.match(workSource, /ExistingWorkPolicy\.APPEND_OR_REPLACE/);
+assert.match(workSource, /OneTimeWorkRequestBuilder<SmsCatchupWakeWorker>/);
+assert.doesNotMatch(workSource, /setInputData|inputData|NetworkType|requiresCharging|requiresBatteryNotLow/,
+  'the receiver job must have no SMS payload or periodic worker constraints');
+assert.match(workSource, /TaskServiceProviderHelper\.getTaskServiceImpl\(context\)/);
+assert.match(workSource, /getTaskConsumers\(context\.packageName\)/);
+assert.match(workSource, /registeredTask\.execute\(Bundle\(\), null, callback\)/);
+assert.match(workSource, /withTimeoutOrNull\(TASK_TIMEOUT_MS\)/);
+assert.match(workSource, /continuation\.tryResume\(isSuccessfulSmsCatchupResponse\(response\)\)/);
+assert.match(workSource, /result\?\.toDouble\(\) == JS_TASK_SUCCESS/);
+assert.match(workSource, /if \(!isEligible\(context\)\) return finish\(SmsWakeOutcome\.DEFERRED/);
+assert.match(workSource, /if \(willRetry\) Result\.retry\(\) else Result\.success\(\)/);
+assert.doesNotMatch(workSource, /Class\.forName|BackgroundTaskScheduler|HeadlessJsTaskService/);
 assert.match(moduleSource, /AsyncFunction\("getImportSettingsAsync"\)/);
 assert.match(moduleSource, /AsyncFunction\("setImportSettingsAsync"\)/);
+assert.match(moduleSource, /registerTask\(SMS_WAKE_TASK_NAME, SmsCatchupWakeTaskConsumer::class\.java/);
+assert.ok(moduleSource.indexOf('SmsCatchupWakeWork.cancel') < moduleSource.indexOf('taskManager.unregisterTask'),
+  'native unregister must cancel queued work before unregistering the consumer');
 assert.match(typesSource, /previewEndDateMs\?: number/);
+assert.match(typesSource, /registerWakeTaskAsync\(\): Promise<void>/);
+assert.match(typesSource, /lastMultipartCount: number/);
+assert.match(typesSource, /lastOutcome\?: 'success' \| 'failed' \| 'deferred' \| null/);
+assert.match(metadataSource, /"lastMultipartCount" to 0/);
+assert.match(metadataSource, /"lastAttemptAtMs"/);
+assert.match(metadataSource, /"lastOutcome"/);
+assert.match(metadataSource, /"failedAttemptCount"/);
+assert.match(gradleSource, /androidx\.work:work-runtime-ktx:2\.9\.1/);
 assert.match(settingsSource, /previewEndDateMs is required for the initial SMS import/);
 assert.match(settingsSource, /previewEndDateMs - requestedStartDateMs <= MAX_RANGE_MS/);
 assert.match(settingsSource, /private fun commitFailClosed[\s\S]*editor\.commit\(\)/);
 assert.doesNotMatch(settingsSource, /\.apply\(\)/);
-assert.match(receiverSource, /getMessagesFromIntent/);
 assert.doesNotMatch(receiverSource, /messageBody|originatingAddress|putString|putStringSet|Log\.|println\(/);
 assert.doesNotMatch(moduleSource, /Log\.|println\(/);
+assert.doesNotMatch(workSource, /Log\.|println\(|stackTraceToString|putString\("error"/);
 
 const { config: productionConfig, manifest: productionManifest } = getAndroidManifest(true, 'production');
 assert.equal(productionConfig.android.package, 'com.rohangupta.financebro');
@@ -92,4 +122,4 @@ assert.ok(modules.some((module) => module.projects?.some((project) =>
   project.modules?.some((entry) => entry.classifier === 'expo.modules.smsreader.SmsReaderModule'))),
   'Android resolver must register the actual Kotlin module');
 
-process.stdout.write('SMS reader manifest, scope, and privacy self-checks passed.\n');
+process.stdout.write('SMS reader manifest, wake bridge, scope, and privacy self-checks passed.\n');
