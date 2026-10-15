@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isSameTransaction, isTransferPair, resolveSender, smsDedupeKey, toPaise } from '../src';
+import { isSameTransaction, isTransferPair, parseSms, resolveSender, smsDedupeKey, toPaise } from '../src';
 import type { ParsedTxn } from '../src';
 
 describe('toPaise', () => {
@@ -37,6 +37,33 @@ describe('resolveSender', () => {
   it('leaves phone numbers and unknown headers without an institution', () => {
     expect(resolveSender('+919800000000').institution).toBeNull();
     expect(resolveSender('VM-ABCDEF-T')).toEqual({ header: 'ABCDEF', institution: null, dltSuffix: 'T' });
+  });
+});
+
+describe('parseSms receipt timestamps', () => {
+  const body = 'Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 123456789012)';
+  const invalidReceivedAt: Array<[string, unknown]> = [
+    ['null', null],
+    ['undefined', undefined],
+    ['false', false],
+    ['true', true],
+    ['fractional milliseconds', 1_000_000.5],
+    ['NaN', Number.NaN],
+    ['positive infinity', Number.POSITIVE_INFINITY],
+    ['negative infinity', Number.NEGATIVE_INFINITY],
+    ['symbol', Symbol('timestamp')],
+    ['bigint', 1n],
+    ['unsafe integer', Number.MAX_SAFE_INTEGER + 1],
+    ['safe integer whose India offset overflows', Number.MAX_SAFE_INTEGER],
+    ['outside the Date range', 8_640_000_000_000_001],
+  ];
+
+  it.each(invalidReceivedAt)('%s stays in review', (_name, receivedAt) => {
+    const sms = { sender: 'VM-HDFCBK-S', body, receivedAt } as unknown as Parameters<typeof parseSms>[0];
+    const result = parseSms(sms);
+
+    expect(result.kind).toBe('review');
+    if (result.kind === 'review') expect(result.ruleId).toBe('hdfc.upi.credit');
   });
 });
 
