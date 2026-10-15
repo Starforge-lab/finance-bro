@@ -101,3 +101,14 @@ idempotent, and keys, foreign keys, raw-body exclusion and cleanup passed.
 It used the same verified native APK with a temporary fictional database;
 native SMS consent stayed off and source access was simulated. This does not
 establish real opt-in, receiver delivery, background execution or process restart.
+
+A second private diagnostic on that APK exercised the public native task APIs
+with scheduling source `b727a82`: all 13 assertions passed, including task
+definition, availability, registration at a 15-minute minimum, idempotent
+registration, and removal. It made no inbox query, permission request or consent
+write; native and fictional consent remained off. The installed development
+client retained its old router entry URL, so this diagnostic loaded through the
+private route harness. It proves native registration/removal, not the new global
+entry's cold-start behavior or a delivered background import. The new entry
+exported successfully for Android, iOS and web; matching native execution remains
+required.
