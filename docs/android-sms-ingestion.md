@@ -128,14 +128,23 @@ selected `referenceId` and its platform ID when available.
 
 `confirmSmsReview(referenceId, expected, readOriginal, corrections?, options?)`
 is the transactional human-confirmation boundary. It copies and validates the
-reviewed values before awaiting, then rereads the exact source and protected key
-state inside the Android writer transaction. The preparation snapshot binds the
-reference ID, platform ID and received timestamp. Confirmation rechecks the
-source fingerprints and conditionally resolves only that reference, inserting a
-new transaction in the same transaction or rolling both changes back. New SMS
-transaction and SMS-link identifiers derive from `referenceId`; existing
-transaction identifiers and links are unchanged. Confirmation results carry the
-selected reference ID and platform ID. It never advances the batch cursor.
+reviewed values before awaiting, then freshly rereads, parses and fingerprints
+the selected source before acquiring the writer. It compares that preparation
+with the caller's snapshot. Under the writer, it rereads the exact source and
+compares its platform ID, timestamp, sender and body with the transient
+preflight copy; it also revalidates the complete pending reference, the current
+protected key with creation forbidden, and matching database key history before
+any write. Both source reads use the supplied reader, so its caller must keep
+consent and permission checks in force for each read. The preflight can finish
+even if later writer acquisition fails; that outcome remains body-free and
+performs no ledger write. Source text remains transient and is never returned,
+stored or logged. The preparation snapshot binds the reference ID, platform ID
+and received timestamp. Confirmation conditionally resolves only that reference,
+inserting a new transaction in the same transaction or rolling both changes
+back. New SMS transaction and SMS-link identifiers derive from `referenceId`;
+existing transaction identifiers and links are unchanged. Confirmation results
+carry the selected reference ID and platform ID. It never advances the batch
+cursor.
 Corrections and existing edited or deleted transactions are preserved; an
 unknown format may be saved only after the reviewer supplies all required
 transaction fields, and its rule ID/version stay paired as null. A weak-identity
@@ -196,8 +205,20 @@ cursor, the existing protected key with creation forbidden, and matching key
 history before committing database-dependent decisions. Cancellation checks
 surround each prepared row. SecureStore key creation cannot be rolled back by
 SQLite, as before; a later failed batch may leave its initial protected key.
-Selected-review confirmation still performs source/key awaits inside its writer
-transaction and needs separate lock-duration validation.
+Selected-review confirmation now parses and fingerprints outside its writer.
+The final exact-source reread, protected-key checks and database-dependent
+matching still await or run inside the writer and need separate lock-duration
+validation on Android.
+
+On 2026-10-15, source `7d79467` passed 14 additional assertions on the same
+Motorola Edge 60 Pro / Android 17 isolated native client. A second SQLite
+connection saved manual entries while the confirmation's first source read and
+fingerprinting were each paused. Confirmation then saved the corrected amount,
+reread the source under the writer, and rejected repeat confirmation; transaction
+count, foreign keys, source-table body-column exclusion and fixture cleanup
+passed. The diagnostic used fictional rows and a temporary private database;
+native consent stayed off. This proves the preflight contention improvement,
+not the latency of the final real-provider read or locked-key access.
 
 Automatic saving requires an explicitly verified rule/version, high confidence,
 posted status, safe integer paise and one active mapped account. The verified

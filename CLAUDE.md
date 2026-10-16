@@ -110,7 +110,7 @@ Dev builds use `APP_VARIANT=development` (set in `eas.json`), giving the id `com
 - One file per institution: `rules/banks/<bank>.ts`, `rules/upi/<app>.ts`, `rules/cards/<issuer>.ts`, `rules/wallets/<wallet>.ts`, registered in `rules/index.ts`.
 - A rule = `{ id, version, institutions?, match(sms) → { txn, confidence } | null }`. Reuse the extractors in `src/extract/`; don't re-implement them per rule. Institution rules built from real samples should return `high`.
 - The generic rule returns `medium` only when the sender is a known institution (or the SMS has a UPI ref) **and** there is an anchor (last4 / VPA / ref). Otherwise it returns `low`, which becomes `review`.
-- `occurredAt` is the SMS arrival time; dates in the message body are not parsed yet.
+- `occurredAt` uses a valid, nonfuture institutional body date when that format defines one, preserving the SMS receipt's India time-of-day; otherwise it uses the SMS arrival time. Resolve two-digit years only in the receipt's India-year century; ambiguous or invalid dates stay in review.
 - Deterministic rules/regex only. **No AI/ML.** Avoid regex lookbehind; the same bundle must run in Hermes and in iOS JavaScriptCore.
 - Unknown financial-looking SMS may retain extracted review fields, never the body; Android re-reads by platform id, with manual/paste recovery if the original is gone. The iOS import path is later work and must retain no raw text or durable failed-message payload.
 - `fixtures/synthetic/` holds made-up messages that exercise the classifier and generic rule. They are not real bank formats; real anonymised samples go under `fixtures/<type>/<institution>/`.

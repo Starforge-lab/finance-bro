@@ -10,6 +10,7 @@ interface FixtureCase {
   sender: string;
   body: string;
   receivedAt: string;
+  expectedOccurredAt?: string;
   expected:
     | { kind: 'transaction'; ruleId?: string; confidence?: string; txn?: Partial<ParsedTxn> }
     | { kind: 'review'; ruleId?: string | null; txn?: Partial<ParsedTxn> }
@@ -47,7 +48,7 @@ for (const { file, cases } of suites) {
         if (exp.ruleId) expect(result.ruleId).toBe(exp.ruleId);
         if (exp.confidence) expect(result.confidence).toBe(exp.confidence);
         if (exp.txn) expect(result.txn).toMatchObject(exp.txn);
-        expect(result.txn.occurredAt).toBe(Date.parse(c.receivedAt));
+        expect(result.txn.occurredAt).toBe(Date.parse(c.expectedOccurredAt ?? c.receivedAt));
       }
       if (exp.kind === 'review' && result.kind === 'review') {
         if (exp.ruleId !== undefined) expect(result.ruleId).toBe(exp.ruleId);
