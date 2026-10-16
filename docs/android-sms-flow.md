@@ -161,5 +161,19 @@ Opening it loaded the new global entry. A forced scheduled cold-start attempt
 reached the background callback, but its isolation assertion found the new
 fictional reference already present before that callback; this is not a passing
 fresh-source ingestion proof. The temporary arm flag was removed and the probe
-was stopped after the test. Receiver-bridge native compilation and matching
-device acceptance remain open.
+was stopped after the test. Matching receiver-bridge device acceptance remains open.
+
+On 2026-10-16, hosted Android build
+[`38940585460`](https://github.com/Starforge-lab/finance-bro/actions/runs/38940585460)
+at `d4255d7` compiled the receiver bridge, passed its JVM tests and built the
+normal ARM64 development APK. Native/module files are unchanged through source
+`5e0986f`. The isolated phone build for that source is
+[`38942149039`](https://github.com/Starforge-lab/finance-bro/actions/runs/38942149039);
+its device execution has not been verified.
+
+Source `5e0986f` passed `pnpm check` (260 mobile and 134 parser tests, typecheck
+and lint), Android/iOS/web exports, the installed-SDK offline dependency check,
+and Expo Doctor 1.21.4's 20 checks. Independent standards and spec reviews found
+no actionable findings in the durable replay checkpoint change. The simulated
+50,000-row resume test and Node SQLite corpus acceptance are source evidence;
+they do not establish Android provider latency, battery cost or cold delivery.
