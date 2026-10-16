@@ -145,3 +145,13 @@ private route harness. It proves native registration/removal, not the new global
 entry's cold-start behavior or a delivered background import. The new entry
 exported successfully for Android, iOS and web; matching native execution remains
 required.
+
+The later isolated APK from workflow `38775730895`, native revision `d03ddab`,
+was installed and its SHA-256 matched
+`2fa18ee74e698d4462e727cdcf972b9efd88951b3fea02a086d65f9a44171845`.
+Opening it loaded the new global entry. A forced scheduled cold-start attempt
+reached the background callback, but its isolation assertion found the new
+fictional reference already present before that callback; this is not a passing
+fresh-source ingestion proof. The temporary arm flag was removed and the probe
+was stopped after the test. Receiver-bridge native compilation and matching
+device acceptance remain open.
