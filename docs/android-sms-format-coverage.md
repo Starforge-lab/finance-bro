@@ -51,3 +51,15 @@ The parser test run now passes 134 tests, including the 49 legacy fixture cases,
 ### Node SQLite corpus ingestion run
 
 The 53 independently labelled acceptance cases also ran through `createDataLayer.importSmsBatch`, each against a fresh in-memory Node `node:sqlite` ledger with a fictional HDFC Bank account seeded from the body suffix (and any distinct parser-extracted suffix). The frozen outcomes are six saves, 39 reviews and eight ignored messages: all six positives saved one transaction with the expected paise amount, credit direction, India occurrence time, `hdfc.upi.credit@1`, UPI reference and account mapping; each negative saved no transaction and matched its review/ignored disposition. Each review has a valid nonempty reason, but the corpus does not freeze individual reason codes because those depend on the candidate and identity successfully extracted; targeted tests cover specific reason behavior. Replaying every source left transaction and reference counts unchanged, and persisted SMS references contained no raw body or sender. A separate regression confirms identical credit economics with distinct UPI references and platform IDs create two transactions. These are Node SQLite tests; they do not exercise Expo SQLite, Android SMS access, background capture or a matching device. Native acceptance remains open.
+
+### Android Expo SQLite corpus ingestion run
+
+On 2026-10-16, the matching isolated Android build at `5e0986f` passed the same
+53 fictional cases through production ingestion, Expo SQLite and platform-backed
+fingerprinting: six saved, 39 reviewed and eight ignored. Replay preserved six
+transactions and 45 references, reporting 45 duplicates and eight ignored.
+Saved field/provenance assertions, unchanged key checks, no raw body/sender
+columns and temporary database cleanup all passed. Native import consent
+remained off and no real inbox was read. See the [APK and run evidence](android-sms-flow.md).
+Native provider access, receiver delivery and background lifecycle remain open;
+this pass covers foreground fictional import/storage only.

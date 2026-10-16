@@ -169,7 +169,8 @@ at `d4255d7` compiled the receiver bridge, passed its JVM tests and built the
 normal ARM64 development APK. Native/module files are unchanged through source
 `5e0986f`. The isolated phone build for that source is
 [`38942149039`](https://github.com/Starforge-lab/finance-bro/actions/runs/38942149039);
-its device execution has not been verified.
+its fictional corpus device execution passed as recorded below. Receiver and
+cold-start acceptance remain open.
 
 Source `5e0986f` passed `pnpm check` (260 mobile and 134 parser tests, typecheck
 and lint), Android/iOS/web exports, the installed-SDK offline dependency check,
@@ -177,3 +178,17 @@ and Expo Doctor 1.21.4's 20 checks. Independent standards and spec reviews found
 no actionable findings in the durable replay checkpoint change. The simulated
 50,000-row resume test and Node SQLite corpus acceptance are source evidence;
 they do not establish Android provider latency, battery cost or cold delivery.
+
+The matching isolated APK was installed on the Motorola Edge 60 Pro running
+Android 17/API 37. Its installed SHA-256 matched
+`9b5aa164b219d2acb466bf595651c2914710db76f54612878037b86006bfbd7b`.
+Manual diagnostic run `1792174008888-7pn9ubty`, reporting source `5e0986f`,
+completed all 53 fictional HDFC cases using the production ingestion code,
+Expo SQLite and the platform-backed fingerprinter: six saved, 39 reviewed,
+eight ignored. Replay returned 45 duplicates and eight ignored cases, retaining
+six transactions and 45 references. All assertions passed, including exact
+saved economics and provenance, absence of raw body/sender columns, unchanged
+private key and production-slot surrogate, and cleanup of this run's databases.
+Native import consent stayed off before and after; the source reader was
+fictional and no real inbox was accessed. This is foreground import/storage
+proof, not native provider, receiver, cold-start or permission-lifecycle proof.
