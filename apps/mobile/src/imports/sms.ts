@@ -339,13 +339,26 @@ function currentCursor(state: { cursorReceivedAt: number | null; cursorPlatformI
   return cursor;
 }
 
-async function resolveAccount(ledger: ReturnType<typeof createLedger>, candidate: ParsedTxn | null): Promise<string | null> {
-  if (!candidate?.institution || !candidate.accountLast4) return null;
-  const matches = await ledger.db.select({ id: accounts.id }).from(accounts).where(and(
-    eq(accounts.institution, candidate.institution),
-    eq(accounts.last4, candidate.accountLast4),
-    eq(accounts.archived, false),
-  )).all();
+function normalizeInstitution(value: string | null): string | null {
+  if (value === null) return null;
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, ' ');
+  return normalized === 'hdfc bank' ? 'hdfc' : normalized || null;
+}
+
+async function resolveAccount(
+  ledger: ReturnType<typeof createLedger>,
+  ruleId: string | null,
+  candidate: ParsedTxn | null,
+): Promise<string | null> {
+  const institution = normalizeInstitution(candidate?.institution ?? null);
+  if (!institution || !candidate?.accountLast4) return null;
+  const possibleMatches = await ledger.db.select({ id: accounts.id, institution: accounts.institution, type: accounts.type })
+    .from(accounts).where(and(
+      eq(accounts.last4, candidate.accountLast4),
+      eq(accounts.archived, false),
+    )).all();
+  const matches = possibleMatches.filter((account) => normalizeInstitution(account.institution) === institution &&
+    (ruleId !== 'hdfc.upi.credit' || account.type === 'bank'));
   return matches.length === 1 ? matches[0]!.id : null;
 }
 
@@ -933,7 +946,7 @@ export function createSmsIngestion(
           const isWeak = preparation.identity.dedupeKey.startsWith('body:');
 
           const accountId = checkedCorrections.accountId === undefined
-            ? await resolveAccount(ledger, preparation.candidate)
+            ? await resolveAccount(ledger, preparation.ruleId, preparation.candidate)
             : checkedCorrections.accountId;
           const reviewed = correctedSmsTransaction(referenceId, preparation, checkedCorrections, accountId ?? null);
           const canonical = await ledger.db.select().from(transactions).where(eq(transactions.id, reviewed.id)).get();
@@ -1230,7 +1243,7 @@ export function createSmsIngestion(
             }
 
             const candidate = preparation.candidate;
-            const accountId = await resolveAccount(ledger, candidate);
+            const accountId = await resolveAccount(ledger, preparation.ruleId, candidate);
             const reason = getReviewReason(parsed, candidate, accountId, preparation.identity.dedupeKey);
             const strongIdentity = preparation.identity.dedupeKey.startsWith('upi:');
             if (strongIdentity) {

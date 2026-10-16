@@ -8,7 +8,7 @@ import { eq } from 'drizzle-orm';
 import { describe, it } from 'node:test';
 import { createDataLayer } from '../src/db/service';
 import type { LedgerSQLiteClient, LedgerSQLiteTransactionRunner, LedgerMigrations } from '../src/db/ledger';
-import { importKeyState, preferences, smsImportRefs, smsImportState, transactions } from '../src/db/schema';
+import { accounts, importKeyState, preferences, smsImportRefs, smsImportState, transactions } from '../src/db/schema';
 import { FingerprintKeyUnavailableError, type FingerprintKeyProvider, type Fingerprinter } from '../src/imports/fingerprint';
 import { ledgerMigrations, openTestLedger, temporaryFile } from './helpers/ledger';
 import { smsReferenceId } from './helpers/sms';
@@ -23,6 +23,13 @@ const weakSms = {
   body: 'INR 450.00 debited from A/c XX1234 at a fictional shop.',
   receivedAt: Date.parse('2026-10-07T10:00:00.000Z'),
 };
+const hdfcCreditSms = {
+  sender: 'VM-HDFCBK-S',
+  body: 'Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 123456789012)',
+  receivedAt: Date.parse('2026-10-07T10:00:00.000Z'),
+};
+
+type HdfcCreditAccount = { id: string; institution: string; type: 'bank' | 'credit_card'; archived?: boolean };
 
 function fingerprinter(key: string): Fingerprinter {
   const keyId = createHmac('sha256', key).update('fictional-key-id').digest('hex');
@@ -62,6 +69,28 @@ async function addHdfcAccount(api: ReturnType<typeof createApi>) {
 
 function smsRow(platformId: string, raw = strongSms, receivedAt = raw.receivedAt) {
   return { ...raw, platformId, receivedAt };
+}
+
+async function importHdfcCreditWithAccounts(accountRows: HdfcCreditAccount[]) {
+  const fixture = openTestLedger();
+  try {
+    const api = createApi(fixture);
+    await api.migrateLedger();
+    for (const account of accountRows) {
+      await api.createAccount({
+        id: account.id,
+        name: `Fictional account ${account.id}`,
+        type: account.type,
+        institution: account.institution,
+        last4: '1234',
+      });
+      if (account.archived) fixture.sqlite.prepare('UPDATE accounts SET archived = 1 WHERE id = ?').run(account.id);
+    }
+    const result = await api.importSmsBatch([smsRow('80', hdfcCreditSms)], null);
+    const reference = await fixture.ledger.db.select().from(smsImportRefs).where(eq(smsImportRefs.platformId, '80')).get();
+    const institutions = await fixture.ledger.db.select({ institution: accounts.institution }).from(accounts).all();
+    return { reason: reference?.reason, result, institutions: institutions.map((account) => account.institution) };
+  } finally { fixture.sqlite.close(); }
 }
 
 describe('Android SMS ingestion storage seam', () => {
@@ -187,6 +216,36 @@ describe('Android SMS ingestion storage seam', () => {
       assert.equal(columns.some(({ name }) => /^(body|sender)$/i.test(name)), false);
       assert.deepEqual(await api.getSmsImportCursor(), result.cursor);
     } finally { fixture.sqlite.close(); }
+  });
+
+  it('resolves HDFC credit suffixes only to one active HDFC bank account', async () => {
+    const scenarios: Array<{ name: string; accounts: HdfcCreditAccount[]; reason: string }> = [
+      { name: 'canonical institution', accounts: [{ id: 'canonical', institution: 'hdfc', type: 'bank' }], reason: 'unverified_rule' },
+      { name: 'Settings institution alias', accounts: [{ id: 'alias', institution: 'HDFC Bank', type: 'bank' }], reason: 'unverified_rule' },
+      { name: 'case and whitespace normalization', accounts: [{ id: 'normalized', institution: '  hDfC   BaNk  ', type: 'bank' }], reason: 'unverified_rule' },
+      { name: 'two aliased banks are ambiguous', accounts: [
+        { id: 'canonical-bank', institution: 'hdfc', type: 'bank' },
+        { id: 'alias-bank', institution: 'HDFC Bank', type: 'bank' },
+      ], reason: 'unknown_account' },
+      { name: 'card-only match stays unresolved', accounts: [{ id: 'card-only', institution: 'HDFC Bank', type: 'credit_card' }], reason: 'unknown_account' },
+      { name: 'bank wins over same-suffix card', accounts: [
+        { id: 'bank-and-card-bank', institution: 'HDFC Bank', type: 'bank' },
+        { id: 'bank-and-card-card', institution: 'hdfc', type: 'credit_card' },
+      ], reason: 'unverified_rule' },
+      { name: 'archived account is excluded', accounts: [{ id: 'archived', institution: 'hdfc', type: 'bank', archived: true }], reason: 'unknown_account' },
+      { name: 'unknown institution is not guessed by suffix', accounts: [{ id: 'unknown-bank', institution: 'HDFC Financial', type: 'bank' }], reason: 'unknown_account' },
+    ];
+    const actual: string[] = [];
+
+    for (const scenario of scenarios) {
+      const imported = await importHdfcCreditWithAccounts(scenario.accounts);
+      actual.push(imported.reason ?? 'missing_reference');
+      assert.equal(imported.result.review, 1, scenario.name);
+      assert.equal(imported.result.inserted, 0, scenario.name);
+      assert.deepEqual(imported.institutions, scenario.accounts.map((account) => account.institution), scenario.name);
+    }
+
+    assert.deepEqual(actual, scenarios.map((scenario) => scenario.reason), scenarios.map((scenario) => scenario.name).join(', '));
   });
 
   it('keeps unreadable string content in body-free review and advances the cursor', async () => {
