@@ -192,3 +192,14 @@ private key and production-slot surrogate, and cleanup of this run's databases.
 Native import consent stayed off before and after; the source reader was
 fictional and no real inbox was accessed. This is foreground import/storage
 proof, not native provider, receiver, cold-start or permission-lifecycle proof.
+
+A separate explicitly authorized, read-only provider probe on that same APK
+completed as run `1792174357583`. It queried only the prior 24 hours, with a
+10-row ascending request and a 10-row newest-first request. Both returned ten
+rows with valid identifiers, in-range receipt timestamps, strict date/id order
+and valid cursor behavior; newest-first returned no continuation cursor. The
+observed query times were 96 ms ascending and 23 ms descending. Source rows
+remained in memory and were discarded; only counts, timings and assertion
+booleans left the device. No ledger writes or permission requests occurred,
+and native import consent stayed off. This verifies the bounded provider API
+on this device, not 10k/50k history performance, capture delivery or battery cost.
