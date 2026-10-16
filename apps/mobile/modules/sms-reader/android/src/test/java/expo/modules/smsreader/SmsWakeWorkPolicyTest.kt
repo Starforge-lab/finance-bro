@@ -64,7 +64,7 @@ class SmsWakeWorkPolicyTest {
     assertFalse(isSuccessfulSmsCatchupResponse(mapOf("eventId" to "event", "result" to true)))
     assertFalse(isSuccessfulSmsCatchupResponse(mapOf("eventId" to "", "result" to 1)))
     assertFalse(isSuccessfulSmsCatchupResponse(mapOf("result" to 1)))
-    assertFalse(isSuccessfulSmsCatchupResponse(emptyMap()))
+    assertFalse(isSuccessfulSmsCatchupResponse(emptyMap<String, Any?>()))
   }
 
   companion object {
