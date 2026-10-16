@@ -59,6 +59,7 @@ export type SmsReaderModule = {
   queryInboxAsync(options: SmsInboxQuery): Promise<SmsInboxQueryResult>;
   readInboxMessageAsync(platformId: string): Promise<SmsInboxMessage | null>;
   getWakeMetadataAsync(): Promise<SmsWakeMetadata>;
+  getElapsedRealtimeAsync(): Promise<number>;
 };
 
 export function getSmsReader(): SmsReaderModule | null {

@@ -9,7 +9,10 @@ import {
   clearAndroidSmsCatchupFailure,
   getAndroidSmsCatchupFailure,
 } from '../src/imports/android-sms-flow';
-import { runAndroidSmsBackgroundTask } from '../src/imports/android-sms-background-runner';
+import {
+  readAndroidSmsWakeDeadline,
+  runAndroidSmsBackgroundTask,
+} from '../src/imports/android-sms-background-runner';
 
 const startDateMs = Date.now() - 1_000;
 const backgroundBudgetMs = 7 * 60 * 1_000;
@@ -36,6 +39,7 @@ function fakeReader(
     async getImportSettingsAsync() { settingsReads += 1; return settings; },
     async getPermissionsAsync() { permissionReads += 1; return permissions; },
     async queryInboxAsync() { queries += 1; return await onQuery(); },
+    async getElapsedRealtimeAsync() { return 0; },
   } as unknown as SmsReaderModule;
   return {
     reader,
@@ -64,6 +68,21 @@ function fakeLedger(importFailure?: Error) {
 
 test('Android SMS background task gates access before storage and shares the catch-up path', async (t) => {
   const granted = { readSms: true, receiveSms: true, granted: true };
+
+  await t.test('wake task data accepts only a single safe monotonic deadline', () => {
+    assert.equal(readAndroidSmsWakeDeadline({ deadlineElapsedRealtimeMs: 123_456 }), 123_456);
+    for (const data of [
+      null,
+      [],
+      {},
+      { deadlineElapsedRealtimeMs: 0 },
+      { deadlineElapsedRealtimeMs: Number.MAX_SAFE_INTEGER + 1 },
+      { deadlineElapsedRealtimeMs: 123_456, message: 'must not be present' },
+      Object.create({ deadlineElapsedRealtimeMs: 123_456 }),
+    ]) {
+      assert.equal(readAndroidSmsWakeDeadline(data), null);
+    }
+  });
 
   await t.test('non-Android platforms do not load the reader or ledger', async () => {
     let readerCalls = 0;
@@ -114,6 +133,103 @@ test('Android SMS background task gates access before storage and shares the cat
     assert.deepEqual(source.reads(), { settingsReads: 1, permissionReads: 0, queries: 0 });
     assert.equal(ledgerCalls, 0);
     assert.equal(getAndroidSmsCatchupFailure(), 'invalid_consent');
+  });
+
+  await t.test('invalid wake metadata fails before loading the native reader or ledger', async () => {
+    clearAndroidSmsCatchupFailure();
+    const source = fakeReader({ enabled: true, startDateMs }, granted);
+    let readerCalls = 0;
+    let ledgerCalls = 0;
+    assert.equal(await runAndroidSmsBackgroundTask('android', () => {
+      readerCalls += 1;
+      return source.reader;
+    }, async () => {
+      ledgerCalls += 1;
+      return {} as DataLayer;
+    }, null, { deadlineElapsedRealtimeMs: readAndroidSmsWakeDeadline({}) }), 'failed');
+    assert.equal(readerCalls, 0);
+    assert.equal(ledgerCalls, 0);
+    assert.equal(getAndroidSmsCatchupFailure(), 'time_budget_exceeded');
+  });
+
+  await t.test('expired or implausibly distant wake deadlines fail before settings or ledger reads', async () => {
+    for (const deadlineElapsedRealtimeMs of [499_999, 500_000 + backgroundBudgetMs + 1]) {
+      clearAndroidSmsCatchupFailure();
+      const source = fakeReader({ enabled: true, startDateMs }, granted);
+      let clockReads = 0;
+      source.reader.getElapsedRealtimeAsync = async () => { clockReads += 1; return 500_000; };
+      let ledgerCalls = 0;
+      assert.equal(await runAndroidSmsBackgroundTask('android', () => source.reader, async () => {
+        ledgerCalls += 1;
+        return {} as DataLayer;
+      }, null, { deadlineElapsedRealtimeMs }), 'failed');
+      assert.equal(clockReads, 1);
+      assert.deepEqual(source.reads(), { settingsReads: 0, permissionReads: 0, queries: 0 });
+      assert.equal(ledgerCalls, 0);
+      assert.equal(getAndroidSmsCatchupFailure(), 'time_budget_exceeded');
+    }
+
+    clearAndroidSmsCatchupFailure();
+    const source = fakeReader({ enabled: false, startDateMs }, granted);
+    let clockReads = 0;
+    source.reader.getElapsedRealtimeAsync = async () => { clockReads += 1; return 500_000; };
+    assert.equal(await runAndroidSmsBackgroundTask('android', () => source.reader,
+      async () => ({} as DataLayer), null,
+      { deadlineElapsedRealtimeMs: 500_000 + backgroundBudgetMs }), 'success');
+    assert.equal(clockReads, 1);
+    assert.deepEqual(source.reads(), { settingsReads: 1, permissionReads: 0, queries: 0 });
+    assert.equal(getAndroidSmsCatchupFailure(), null);
+  });
+
+  await t.test('wake deadline expires while the native clock bridge is delayed before settings access', async () => {
+    clearAndroidSmsCatchupFailure();
+    const clockPending = deferred<number>();
+    const clockStarted = deferred<void>();
+    const source = fakeReader({ enabled: true, startDateMs }, granted);
+    source.reader.getElapsedRealtimeAsync = () => {
+      clockStarted.resolve();
+      return clockPending.promise;
+    };
+    let ledgerCalls = 0;
+    const task = runAndroidSmsBackgroundTask('android', () => source.reader, async () => {
+      ledgerCalls += 1;
+      return {} as DataLayer;
+    }, null, { deadlineElapsedRealtimeMs: 500_000 + backgroundBudgetMs });
+    await clockStarted.promise;
+    clockPending.resolve(500_000 + backgroundBudgetMs);
+    assert.equal(await task, 'failed');
+    assert.deepEqual(source.reads(), { settingsReads: 0, permissionReads: 0, queries: 0 });
+    assert.equal(ledgerCalls, 0);
+    assert.equal(getAndroidSmsCatchupFailure(), 'time_budget_exceeded');
+  });
+
+  await t.test('remaining wake deadline aborts a late settings response before permission or ledger work', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    clearAndroidSmsCatchupFailure();
+    const settingsPending = deferred<SmsImportSettings>();
+    const settingsStarted = deferred<void>();
+    let permissionReads = 0;
+    let ledgerReads = 0;
+    const reader = {
+      async getElapsedRealtimeAsync() { return 500_000; },
+      getImportSettingsAsync() { settingsStarted.resolve(); return settingsPending.promise; },
+      async getPermissionsAsync() { permissionReads += 1; return granted; },
+      async queryInboxAsync() { throw new Error('Inbox must not be queried'); },
+    } as unknown as SmsReaderModule;
+
+    const task = runAndroidSmsBackgroundTask('android', () => reader, async () => {
+      ledgerReads += 1;
+      return {} as DataLayer;
+    }, null, { deadlineElapsedRealtimeMs: 501_000 });
+    await settingsStarted.promise;
+    t.mock.timers.tick(1_000);
+    assert.equal(await task, 'failed');
+    assert.equal(getAndroidSmsCatchupFailure(), 'time_budget_exceeded');
+
+    settingsPending.resolve({ enabled: true, startDateMs });
+    await flushTurn();
+    assert.equal(permissionReads, 0);
+    assert.equal(ledgerReads, 0);
   });
 
   await t.test('denied and unavailable permissions fail before opening the ledger or querying', async () => {
@@ -286,7 +402,8 @@ test('Android SMS background task gates access before storage and shares the cat
     const binding = readFileSync(new URL('../src/imports/android-sms-background-task.ts', import.meta.url), 'utf8');
     assert.match(binding, /ANDROID_SMS_WAKE_TASK = 'finance-bro-android-sms-wake'/);
     assert.match(binding, /TaskManager\.defineTask\(ANDROID_SMS_BACKGROUND_TASK, executeAndroidSmsCatchupTask\)/);
-    assert.match(binding, /TaskManager\.defineTask\(ANDROID_SMS_WAKE_TASK, executeAndroidSmsCatchupTask\)/);
+    assert.match(binding, /TaskManager\.defineTask\(ANDROID_SMS_WAKE_TASK, executeAndroidSmsWakeTask\)/);
+    assert.match(binding, /readAndroidSmsWakeDeadline\(data\)/);
     assert.equal(binding.match(/runAndroidSmsBackgroundTask\(/g)?.length, 1,
       'the periodic and receiver task names must delegate to the same guarded runner');
     assert.match(binding, /minimumInterval:\s*15/);

@@ -9,14 +9,27 @@ import {
   reconcileAndroidSmsImportSettings,
   recordAndroidSmsCatchupFailure,
 } from './android-sms-flow';
-import { runAndroidSmsBackgroundTask } from './android-sms-background-runner';
+import { readAndroidSmsWakeDeadline, runAndroidSmsBackgroundTask } from './android-sms-background-runner';
 
 export const ANDROID_SMS_BACKGROUND_TASK = 'finance-bro-android-sms-catchup';
 export const ANDROID_SMS_WAKE_TASK = 'finance-bro-android-sms-wake';
 
 async function executeAndroidSmsCatchupTask({ error }: { error: unknown | null }) {
+  return executeAndroidSmsTask(error);
+}
+
+async function executeAndroidSmsWakeTask({ data, error }: { data: unknown; error: unknown | null }) {
+  return executeAndroidSmsTask(error, {
+    deadlineElapsedRealtimeMs: readAndroidSmsWakeDeadline(data),
+  });
+}
+
+async function executeAndroidSmsTask(
+  error: unknown | null,
+  timing?: { deadlineElapsedRealtimeMs: unknown },
+) {
   try {
-    const outcome = await runAndroidSmsBackgroundTask(Platform.OS, getSmsReader, getLedger, error);
+    const outcome = await runAndroidSmsBackgroundTask(Platform.OS, getSmsReader, getLedger, error, timing);
     return outcome === 'success'
       ? BackgroundTask.BackgroundTaskResult.Success
       : BackgroundTask.BackgroundTaskResult.Failed;
@@ -28,7 +41,7 @@ async function executeAndroidSmsCatchupTask({ error }: { error: unknown | null }
 
 if (Platform.OS === 'android') {
   TaskManager.defineTask(ANDROID_SMS_BACKGROUND_TASK, executeAndroidSmsCatchupTask);
-  TaskManager.defineTask(ANDROID_SMS_WAKE_TASK, executeAndroidSmsCatchupTask);
+  TaskManager.defineTask(ANDROID_SMS_WAKE_TASK, executeAndroidSmsWakeTask);
 }
 
 export const androidSmsBackgroundScheduler = {

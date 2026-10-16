@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.work.BackoffPolicy
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
@@ -20,11 +21,12 @@ import expo.modules.interfaces.taskManager.TaskManagerUtilsInterface
 import expo.modules.interfaces.taskManager.TaskServiceProviderHelper
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
+import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -34,9 +36,11 @@ internal const val SMS_WAKE_TASK_NAME = "finance-bro-android-sms-wake"
 internal const val SMS_WAKE_WORK_NAME = "finance-bro-android-sms-wake"
 private const val JS_TASK_SUCCESS = 1.0
 private const val MAX_ATTEMPTS = 3
+private const val JS_TASK_BUDGET_MS = 7 * 60 * 1000L
 private const val TASK_TIMEOUT_MS = 8 * 60 * 1000L
 private const val WORK_QUERY_TIMEOUT_MS = 2_000L
 private const val SCHEDULING_LOCK_TIMEOUT_MS = 1_500L
+private const val WAKE_DEADLINE_KEY = "deadlineElapsedRealtimeMs"
 
 // Expo persists this class name and reconstructs its consumer through reflection after process restart.
 @DoNotStrip
@@ -55,9 +59,10 @@ class SmsCatchupWakeTaskConsumer @DoNotStrip constructor(context: Context, taskM
     task = null
   }
 
-  fun executeTask(callback: TaskExecutionCallback) {
+  fun executeTask(deadlineElapsedRealtimeMs: Long, callback: TaskExecutionCallback) {
     val registeredTask = task ?: throw IllegalStateException("SMS wake task is not registered")
-    registeredTask.execute(Bundle(), null, callback)
+    val data = Bundle().apply { putLong(WAKE_DEADLINE_KEY, deadlineElapsedRealtimeMs) }
+    registeredTask.execute(data, null, callback)
   }
 
   companion object {
@@ -110,7 +115,7 @@ internal object SmsCatchupWakeWork {
             ExistingWorkPolicy.APPEND_OR_REPLACE,
             request
           // Keep the process lock until WorkManager has published the chain entry.
-          ).result.get()
+          ).result.get(WORK_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         }
       }
     } finally {
@@ -162,7 +167,10 @@ class SmsCatchupWakeWorker(context: Context, parameters: WorkerParameters) : Cor
         .singleOrNull()
         ?: return finishFailure(context)
 
-      val success = withTimeoutOrNull(TASK_TIMEOUT_MS) { awaitTaskSuccess(consumer) } ?: false
+      val deadlineElapsedRealtimeMs = SystemClock.elapsedRealtime() + JS_TASK_BUDGET_MS
+      val success = withTimeoutOrNull(TASK_TIMEOUT_MS) {
+        awaitTaskSuccess(consumer, deadlineElapsedRealtimeMs)
+      } ?: false
       if (success) {
         finish(SmsWakeOutcome.SUCCESS, failedAttempt = false)
       } else {
@@ -175,11 +183,16 @@ class SmsCatchupWakeWorker(context: Context, parameters: WorkerParameters) : Cor
     }
   }
 
-  @OptIn(ExperimentalCoroutinesApi::class)
-  private suspend fun awaitTaskSuccess(consumer: SmsCatchupWakeTaskConsumer): Boolean =
+  private suspend fun awaitTaskSuccess(
+    consumer: SmsCatchupWakeTaskConsumer,
+    deadlineElapsedRealtimeMs: Long
+  ): Boolean =
     suspendCancellableCoroutine { continuation ->
-      consumer.executeTask(TaskExecutionCallback { response ->
-        continuation.tryResume(isSuccessfulSmsCatchupResponse(response))?.let(continuation::completeResume)
+      val callbackResumed = AtomicBoolean(false)
+      consumer.executeTask(deadlineElapsedRealtimeMs, TaskExecutionCallback { response ->
+        if (callbackResumed.compareAndSet(false, true)) {
+          continuation.resume(isSuccessfulSmsCatchupResponse(response))
+        }
       })
     }
 

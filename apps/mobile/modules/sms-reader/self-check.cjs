@@ -87,15 +87,20 @@ assert.doesNotMatch(workSource, /setInputData|inputData|NetworkType|requiresChar
   'the receiver job must have no SMS payload or periodic worker constraints');
 assert.match(workSource, /TaskServiceProviderHelper\.getTaskServiceImpl\(context\)/);
 assert.match(workSource, /getTaskConsumers\(context\.packageName\)/);
-assert.match(workSource, /registeredTask\.execute\(Bundle\(\), null, callback\)/);
+assert.match(workSource, /registeredTask\.execute\(data, null, callback\)/);
+assert.match(workSource, /putLong\(WAKE_DEADLINE_KEY, deadlineElapsedRealtimeMs\)/);
 assert.match(workSource, /withTimeoutOrNull\(TASK_TIMEOUT_MS\)/);
-assert.match(workSource, /continuation\.tryResume\(isSuccessfulSmsCatchupResponse\(response\)\)/);
+assert.match(workSource, /callbackResumed\.compareAndSet\(false, true\)/);
+assert.match(workSource, /continuation\.resume\(isSuccessfulSmsCatchupResponse\(response\)\)/);
+assert.doesNotMatch(workSource, /tryResume|completeResume|ExperimentalCoroutinesApi/);
+assert.match(workSource, /\.result\.get\(WORK_QUERY_TIMEOUT_MS, TimeUnit\.MILLISECONDS\)/);
 assert.match(workSource, /result\?\.toDouble\(\) == JS_TASK_SUCCESS/);
 assert.match(workSource, /recordSmsWakeOutcome\(context\.smsWakePreferences\(\), SmsWakeOutcome\.DEFERRED, failedAttempt = false\)/);
 assert.match(workSource, /decideSmsWakeOutcomeWrite\(/);
 assert.match(workSource, /if \(!isEligible\(context\)\) return finish\(SmsWakeOutcome\.DEFERRED, failedAttempt = false\)/);
 assert.doesNotMatch(workSource, /Class\.forName|BackgroundTaskScheduler|HeadlessJsTaskService/);
 assert.match(moduleSource, /AsyncFunction\("getImportSettingsAsync"\)/);
+assert.match(moduleSource, /AsyncFunction\("getElapsedRealtimeAsync"\)/);
 assert.match(moduleSource, /AsyncFunction\("setImportSettingsAsync"\)/);
 assert.match(moduleSource, /registerTask\(SMS_WAKE_TASK_NAME, SmsCatchupWakeTaskConsumer::class\.java/);
 assert.ok(moduleSource.indexOf('SmsCatchupWakeWork.cancel') < moduleSource.indexOf('taskManager.unregisterTask'),

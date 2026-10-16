@@ -48,7 +48,7 @@ unavailable key offers manual/paste recovery. Raw text is never displayed by
 this flow or saved in its status state.
 
 The app entry defines the periodic and receiver-wake Expo tasks before loading
-the router. Both call the same guarded catch-up runner. Confirming an opt-in
+the router. Both delegate to the same guarded catch-up runner. Confirming an opt-in
 registers the existing best-effort Expo background task with a minimum interval
 of 15 minutes; Android controls actual timing and may require network availability
 and sufficient battery. It also registers a separate persisted TaskManager
@@ -56,7 +56,13 @@ consumer for `SMS_RECEIVED`. After checking persisted consent, the receiver queu
 one-time WorkManager work with no message data; it does not decode PDUs or read
 the inbox. The worker rechecks the original consent floor and both SMS permissions,
 then calls the alias through Expo's task service and waits for the JS completion
-callback. Receiver scheduling is bounded to active work plus at most one trailing
+callback. The worker stamps a body-free `deadlineElapsedRealtimeMs` into the wake
+task data immediately before dispatch, using Android's monotonic elapsed clock.
+The wake handler accepts only that single safe-integer field, reads the same
+native clock, and subtracts the JS-to-native bridge round trip from the remaining
+budget. It fails before settings or ledger access if the deadline is invalid,
+expired, or more than seven minutes ahead; it does not assume the JS and native
+clock origins match. Receiver scheduling is bounded to active work plus at most one trailing
 pass: wakes coalesce while a pass is already queued, and one pass is appended only
 when work is running with no trailing pass. Its unique `APPEND_OR_REPLACE` chain
 retains that trailing wake. The JS runner has a seven-minute cooperative deadline;
@@ -82,9 +88,11 @@ work, and reports a body-free error. Disable persists off before unregistering;
 the receiver gate and worker gate prevent inbox access if queued work races with
 disable. Launch reconciles persisted consent and both task registrations.
 
-The background runner starts its seven-minute budget at handler entry, checks
-consent, its start date and both SMS permissions before opening the ledger, and
-uses the same bounded catch-up path as app-open recovery. The budget is cooperative:
+The periodic background runner starts its seven-minute budget at handler entry.
+The receiver wake runner uses the native dispatch deadline, capped at seven
+minutes. Both check consent, its start date and both SMS permissions before
+opening the ledger, and use the same bounded catch-up path as app-open recovery.
+These budgets are cooperative:
 if expiry occurs during a settings, ledger, key-provider or inbox native await,
 that native call itself may continue until it returns. After return, the runner
 does not start a catch-up that had not begun before expiry; an active catch-up is

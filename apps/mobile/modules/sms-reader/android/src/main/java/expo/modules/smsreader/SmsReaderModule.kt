@@ -3,6 +3,7 @@ package expo.modules.smsreader
 import android.Manifest
 import android.content.Context
 import android.database.Cursor
+import android.os.SystemClock
 import android.provider.BaseColumns
 import android.provider.Telephony
 import expo.modules.interfaces.permissions.PermissionsResponseListener
@@ -94,6 +95,10 @@ class SmsReaderModule : Module() {
     AsyncFunction("getWakeMetadataAsync") Coroutine { ->
       val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
       readSmsWakeMetadata(context.smsWakePreferences())
+    }
+
+    AsyncFunction("getElapsedRealtimeAsync") {
+      SystemClock.elapsedRealtime().toDouble()
     }
   }
 

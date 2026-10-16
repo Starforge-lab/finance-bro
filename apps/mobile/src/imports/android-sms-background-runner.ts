@@ -10,6 +10,17 @@ import {
 export type AndroidSmsBackgroundTaskOutcome = 'success' | 'failed';
 
 const backgroundBudgetMs = 7 * 60 * 1_000;
+const wakeDeadlineKey = 'deadlineElapsedRealtimeMs';
+
+/** Accept only the body's single body-free monotonic wake deadline field. */
+export function readAndroidSmsWakeDeadline(data: unknown): number | null {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const keys = Reflect.ownKeys(data);
+  if (keys.length !== 1 || keys[0] !== wakeDeadlineKey) return null;
+  const descriptor = Object.getOwnPropertyDescriptor(data, wakeDeadlineKey);
+  const value = descriptor && 'value' in descriptor ? descriptor.value : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
 
 /** Check consent and permissions before opening storage, within the native worker's callback budget. */
 export async function runAndroidSmsBackgroundTask(
@@ -17,6 +28,7 @@ export async function runAndroidSmsBackgroundTask(
   getReader: () => SmsReaderModule | null,
   getLedger: () => Promise<DataLayer>,
   taskError: unknown | null = null,
+  timing?: { deadlineElapsedRealtimeMs: unknown },
 ): Promise<AndroidSmsBackgroundTaskOutcome> {
   let timedOut = false;
   let catchupJoined = false;
@@ -31,18 +43,27 @@ export async function runAndroidSmsBackgroundTask(
     if (timedOut) throw new AndroidSmsCatchupError('time_budget_exceeded');
   };
 
-  timeoutHandle = setTimeout(() => {
+  const expire = () => {
     timedOut = true;
     if (catchupJoined) abortAndroidSmsCatchup();
     recordAndroidSmsCatchupFailure(new AndroidSmsCatchupError('time_budget_exceeded'));
     resolveTimeout('failed');
-  }, backgroundBudgetMs);
+  };
+  const setBudgetTimer = (budgetMs: number) => {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    timeoutHandle = setTimeout(expire, budgetMs);
+  };
+  setBudgetTimer(backgroundBudgetMs);
 
   const task = (async (): Promise<AndroidSmsBackgroundTaskOutcome> => {
     if (platform !== 'android') return 'success';
     if (taskError !== null) {
       recordAndroidSmsCatchupFailure(taskError);
       return 'failed';
+    }
+    if (timing && (!Number.isSafeInteger(timing.deadlineElapsedRealtimeMs) ||
+        (timing.deadlineElapsedRealtimeMs as number) <= 0)) {
+      return fail('time_budget_exceeded');
     }
 
     let reader: SmsReaderModule | null;
@@ -52,6 +73,27 @@ export async function runAndroidSmsBackgroundTask(
       return fail('source_unavailable');
     }
     if (!reader) return fail('source_unavailable');
+
+    if (timing) {
+      const requestStartedAt = performance.now();
+      let elapsedRealtimeMs: number;
+      try {
+        elapsedRealtimeMs = await reader.getElapsedRealtimeAsync();
+        assertWithinBudget();
+      } catch {
+        return fail('time_budget_exceeded');
+      }
+      const bridgeRoundTripMs = performance.now() - requestStartedAt;
+      const deadlineElapsedRealtimeMs = timing.deadlineElapsedRealtimeMs as number;
+      const nativeRemainingBudgetMs = deadlineElapsedRealtimeMs - elapsedRealtimeMs;
+      const remainingBudgetMs = nativeRemainingBudgetMs - bridgeRoundTripMs;
+      if (!Number.isSafeInteger(elapsedRealtimeMs) || elapsedRealtimeMs < 0 ||
+          !Number.isFinite(bridgeRoundTripMs) || bridgeRoundTripMs < 0 ||
+          nativeRemainingBudgetMs <= 0 || nativeRemainingBudgetMs > backgroundBudgetMs || remainingBudgetMs < 1) {
+        return fail('time_budget_exceeded');
+      }
+      setBudgetTimer(Math.min(remainingBudgetMs, backgroundBudgetMs));
+    }
 
     let settings: SmsImportSettings;
     try {
