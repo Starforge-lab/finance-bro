@@ -8,7 +8,7 @@ Suvo named HDFC Bank, Paytm, PhonePe and CRED as initial priorities on 2026-10-1
 
 | Priority | Available evidence | Parser status |
 | --- | --- | --- |
-| HDFC Bank | Two user-supplied body shapes; HDFCBK-S sender family confirmed on 2026-10-15, with VM-, AD- and JM- labels reported. Individual prefix/body pairings were not asserted. | Version 1 high-confidence rule for the exact posted credit body below. Account mapping and auto-save eligibility remain separate gates. |
+| HDFC Bank | Two user-supplied body shapes; HDFCBK-S sender family confirmed on 2026-10-15, with VM-, AD- and JM- labels reported. Individual prefix/body pairings were not asserted. | Version 1 high-confidence rule for the exact posted credit body below. Draft Android ingestion enables that version for one known active bank account; matching-device acceptance remains open. |
 | Paytm | No supplied SMS corpus yet | Not verified |
 | PhonePe | No supplied SMS corpus yet | Not verified |
 | CRED | No supplied SMS corpus yet | Not verified |
@@ -44,6 +44,6 @@ The eight classifier-ignored cases are one OTP, one promotional sender, two coll
 
 Money checks passed for all six `hdfc-high` results: each was posted with a positive safe-integer-paise amount, including the maximum safe integer paise value. Malformed precision, an unsafe amount, zero, negative and ambiguous amounts did not receive high-confidence HDFC output. The valid leap-day and year-rollover cases retained the expected India receipt clock; all five impossible, future or malformed date cases avoided high-confidence output.
 
-Account mapping remains unaccepted: the parser extracts a masked account suffix, but this corpus does not map it to a ledger account. The import whitelist remains empty, and no production eligibility behavior changed. This corpus does not test native capture or real inbox messages. Issue #46 remains open for account mapping, the other priority senders and the remaining ingestion evidence.
+The parser corpus alone does not establish account-to-ledger behavior. Separate ingestion regressions at `3c47508` enable exactly `hdfc.upi.credit@1` in the draft Android implementation: canonical HDFC and normal `HDFC Bank` names resolve only to one active bank account with the matching suffix. Multiple matching banks, archived accounts, unknown institutions and card-only matches stay in review. Nine focused tests cover exact persisted transaction fields, replay, protected edits, tombstones, paste overlap and inconsistent or ambiguous evidence; all 200 mobile tests passed at that integration stage. No persisted account names are rewritten. These are source/SQLite tests, not matching-device automatic-import proof. Issue #46 stays open for native acceptance and the other priority senders; Paytm, PhonePe and CRED are not enabled.
 
 The parser test run now passes 134 tests, including the 49 legacy fixture cases, one rule-coverage assertion and all 53 independent acceptance cases. The historical 79-case fictional mutation check was a development probe; it is not part of this labelled corpus or an automatic-save test.
