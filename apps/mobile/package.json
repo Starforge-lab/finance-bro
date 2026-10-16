@@ -7,7 +7,7 @@
     "@expo-google-fonts/space-mono": "0.4.2",
     "@expo/ui": "58.0.16",
     "@finance-bro/sms-parser": "workspace:*",
-    "drizzle-orm": "0.45.3",
+    "drizzle-orm": "0.45.4",
     "expo": "58.0.8",
     "expo-constants": "58.0.11",
     "expo-crypto": "58.0.6",
@@ -39,7 +39,7 @@
   },
   "devDependencies": {
     "@react-native/metro-config": "0.88.0-rc.4",
-    "@types/node": "26.6.4",
+    "@types/node": "26.6.5",
     "@types/react": "19.3.0",
     "babel-plugin-inline-import": "3.0.0",
     "babel-preset-expo": "58.0.12",
