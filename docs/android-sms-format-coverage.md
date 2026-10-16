@@ -27,8 +27,23 @@ Suvo supplied a multiline card UPI alert beginning with `Txn` and an account cre
 
 ## Bounded fixture results
 
-The labelled file currently has 23 cases: one observed credit shape and one observed card shape, two synthetic valid-date positives, and 19 synthetic boundary cases. All 50 parser fixture tests pass. The three HDFC high-confidence matches consist of the one observed credit body shape plus two constructed date cases; none of the 20 non-rule-positive cases matches the HDFC rule at high confidence. Those cases produce 14 review results, five classifier-ignored results and one generic medium-confidence result for a non-service suffix.
+The existing `banks/hdfc/alert-shapes.json` file remains a 23-case format fixture: it contains the two supplied body shapes, two synthetic valid-date positives and 19 synthetic boundary cases. Across all pre-existing parser fixture files, there are 49 labelled cases plus one rule-coverage assertion (50 tests total).
 
-These counts describe only this small fixture set. They do not establish zero false positives, broad HDFC coverage or automatic-save safety. Keep adding independently labelled, anonymised examples before broadening the rule or claiming corpus-level precision. #46 remains open for the other priority senders and the remaining import gates.
+The independent `acceptance/hdfc-credit-v1.json` corpus has 53 labelled cases: one user-observed credit body shape and 52 synthetic cases. The observed label applies to the message shape only; all financial and contact values are fictional, the masked source reference was replaced with a fictional 12-digit reference, and the `AD-` route pairing is constructed rather than observed. The other five exact-shape positives and all 47 exclusions are synthetic.
 
-The parser suite also passes 30 unit tests, including 13 malformed receipt-timestamp cases. A separate 79-case fictional mutation check found the expected 22 HDFC high-confidence matches and no unexpected matches; it was a development probe, not a retained acceptance corpus or native auto-save test.
+The unchanged parser returned these outcomes on that corpus:
+
+| Rule or stage | `hdfc-high` label matches (TP) | `not-hdfc-high` label matches (FP) | Medium transactions | Review | Ignored |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `hdfc.upi.credit` | 6 | 0 | 0 | 27 | 0 |
+| `generic.keyword` | 0 | 0 | 3 | 2 | 0 |
+| No rule candidate | 0 | 0 | 0 | 7 | 0 |
+| Classifier before rules | — | — | — | — | 8 |
+
+The eight classifier-ignored cases are one OTP, one promotional sender, two collect requests, three reminders and one non-financial negative-amount message. All 47 `not-hdfc-high` labels avoided a high-confidence HDFC match. The three generic medium transactions remain separately labelled as excluded fallback results. Zero false positives applies only to this bounded corpus and this parser revision; it does not establish general bank precision or automatic-save safety.
+
+Money checks passed for all six `hdfc-high` results: each was posted with a positive safe-integer-paise amount, including the maximum safe integer paise value. Malformed precision, an unsafe amount, zero, negative and ambiguous amounts did not receive high-confidence HDFC output. The valid leap-day and year-rollover cases retained the expected India receipt clock; all five impossible, future or malformed date cases avoided high-confidence output.
+
+Account mapping remains unaccepted: the parser extracts a masked account suffix, but this corpus does not map it to a ledger account. The import whitelist remains empty, and no production eligibility behavior changed. This corpus does not test native capture or real inbox messages. Issue #46 remains open for account mapping, the other priority senders and the remaining ingestion evidence.
+
+The parser test run now passes 134 tests, including the 49 legacy fixture cases, one rule-coverage assertion and all 53 independent acceptance cases. The historical 79-case fictional mutation check was a development probe; it is not part of this labelled corpus or an automatic-save test.

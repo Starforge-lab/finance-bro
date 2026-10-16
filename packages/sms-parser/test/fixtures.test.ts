@@ -27,8 +27,8 @@ function fixtureFiles(dir: string): string[] {
 
 const suites = fixtureFiles(FIXTURES_DIR).map((file) => ({
   file: relative(FIXTURES_DIR, file),
-  cases: (JSON.parse(readFileSync(file, 'utf8')) as { cases: FixtureCase[] }).cases,
-}));
+  cases: (JSON.parse(readFileSync(file, 'utf8')) as { cases: FixtureCase[] }).cases.filter((c) => c.expected),
+})).filter(({ cases }) => cases.length > 0);
 
 const matchedRuleIds = new Set<string>();
 

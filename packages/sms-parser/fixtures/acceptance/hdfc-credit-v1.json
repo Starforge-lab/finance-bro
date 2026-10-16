@@ -1,0 +1,497 @@
+{
+  "corpus": "hdfc-credit-v1",
+  "note": "Independent bounded acceptance corpus for issue #46. Exactly one case is labelled user-observed for its credit body shape only; its AD-prefixed sender pairing, like every other sender pairing, is synthetic within the confirmed HDFCBK-S family. Every other body, amount, date and reference is synthetic. The observed UPI reference was masked by the user and is replaced here with a wholly fictional 12-digit value. All account digits, amounts, VPAs, references and timestamps are fictional.",
+  "ruleId": "hdfc.upi.credit",
+  "ruleVersion": 1,
+  "cases": [
+    {
+      "name": "observed posted HDFC UPI credit shape",
+      "source": "user-observed-shape",
+      "label": "hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert!\nRs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 123456789012)",
+      "receivedAt": "2026-09-27T10:00:00+05:30",
+      "expectedTxn": { "amountPaise": 25075, "accountLast4": "1234", "vpa": "payer@examplebank", "upiRef": "123456789012" },
+      "expectedOccurredAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic minimum positive amount and VM route",
+      "source": "synthetic",
+      "label": "hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! ₹0.01 credited to HDFC Bank A/c XX6789 on 01-01-26 from VPA shop@ybl (UPI 000000000001)",
+      "receivedAt": "2026-01-01T00:15:17.123+05:30",
+      "expectedTxn": { "amountPaise": 1, "accountLast4": "6789", "vpa": "shop@ybl", "upiRef": "000000000001" },
+      "expectedOccurredAt": "2026-01-01T00:15:17.123+05:30"
+    },
+    {
+      "name": "synthetic high rupee amount and no route prefix",
+      "source": "synthetic",
+      "label": "hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "HDFCBK-S",
+      "body": "Credit Alert! Rs.99999.99 credited to HDFC Bank A/c XX5678 on 15-06-26 from VPA payer@okaxis (UPI 234567890123)",
+      "receivedAt": "2026-06-15T18:42:09+05:30",
+      "expectedTxn": { "amountPaise": 9999999, "accountLast4": "5678", "vpa": "payer@okaxis", "upiRef": "234567890123" },
+      "expectedOccurredAt": "2026-06-15T18:42:09+05:30"
+    },
+    {
+      "name": "synthetic leap day and JM route",
+      "source": "synthetic",
+      "label": "hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! INR 1.00 credited to HDFC Bank A/c XX2468 on 29-02-28 from VPA rent@okicici (UPI 345678901234)",
+      "receivedAt": "2028-03-01T08:00:00+05:30",
+      "expectedTxn": { "amountPaise": 100, "accountLast4": "2468", "vpa": "rent@okicici", "upiRef": "345678901234" },
+      "expectedOccurredAt": "2028-02-29T08:00:00+05:30"
+    },
+    {
+      "name": "synthetic year rollover keeps India receipt clock",
+      "source": "synthetic",
+      "label": "hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.48.60 credited to HDFC Bank A/c XX1357 on 31-12-26 from VPA payer@examplebank (UPI 456789012345)",
+      "receivedAt": "2027-01-01T00:15:17.123+05:30",
+      "expectedTxn": { "amountPaise": 4860, "accountLast4": "1357", "vpa": "payer@examplebank", "upiRef": "456789012345" },
+      "expectedOccurredAt": "2026-12-31T00:15:17.123+05:30"
+    },
+    {
+      "name": "synthetic maximum safe integer paise amount",
+      "source": "synthetic",
+      "label": "hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.90071992547409.91 credited to HDFC Bank A/c XX8642 on 27-09-26 from VPA payer@apl (UPI 567890123456)",
+      "receivedAt": "2026-09-27T22:30:00+05:30",
+      "expectedTxn": { "amountPaise": 9007199254740991, "accountLast4": "8642", "vpa": "payer@apl", "upiRef": "567890123456" },
+      "expectedOccurredAt": "2026-09-27T22:30:00+05:30"
+    },
+    {
+      "name": "synthetic standalone OTP",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "otp",
+      "sender": "VM-HDFCBK-S",
+      "body": "HDFC Bank verification code is 482691. Do not share this OTP.",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic OTP appended to a credit lookalike",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 678901234567). OTP 482691.",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic promotional DLT suffix",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "promo",
+      "sender": "VM-HDFCBK-P",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 789012345678)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic offer wording appended to a credit lookalike",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 890123456789). Exclusive offer: click here.",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic collect request",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "request",
+      "sender": "AD-HDFCBK-S",
+      "body": "Collect request: Rs.250.75 will be credited to HDFC Bank A/c XX1234 from VPA payer@examplebank (UPI 901234567890)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic requested-money wording",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "request",
+      "sender": "VM-HDFCBK-S",
+      "body": "VPA payer@examplebank has requested money INR 250.75. UPI ref 012345678901",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic AutoPay future credit reminder",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "reminder",
+      "sender": "AD-HDFCBK-S",
+      "body": "AutoPay of Rs.250.75 will be credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 123450987654)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic scheduled e-mandate notice",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "reminder",
+      "sender": "JM-HDFCBK-S",
+      "body": "E-mandate of INR 250.75 is scheduled for 27-09-26 to HDFC Bank A/c XX1234",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic future-tense credit notice",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "reminder",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 will be credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 234501987654)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic failed credit transaction",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 345019876543). Transaction failed.",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic failed marker in VPA",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA failed@examplebank (UPI 456019876543)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic posted credit later reversed",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 567019876543). This credit was reversed.",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic reversal wording without posted credit verb",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 reversed to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 678019876543)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic refund lookalike",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited as refund to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 789019876543)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic refunded verb replaces credited",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 refunded to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 890129876543)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic NEFT transfer credit",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 through NEFT from RAHUL SHARMA, ref 901298765432",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic IMPS transfer credit",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 by IMPS from XX0007, ref 012398765432",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic bank transfer with no UPI VPA",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from account XX9001, transfer reference 123098765432",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic credit-card payment",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Rs.250.75 paid to HDFC Bank Credit Card XX1234 on 27-09-26 from A/c XX9001",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic directionless card transaction remains review",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "unknown",
+      "sender": "VM-HDFCBK-S",
+      "body": "Txn Rs.47.35 On HDFC Bank Card xxxx At shop@apl by UPI 112233445566 On 27-09 Not You? Call 1800000000/SMS BLOCK CC 1234 to 7300000000",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic UPI Lite credit lookalike",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI Lite ref 234098765432)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic UPI Lite wallet add notice",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "UPI Lite balance added: Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26, ref 345098765432",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic exact body from unknown sender",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "NOTICE",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 456098765432)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic non-service HDFC suffix",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "VM-HDFCBK-T",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 567098765432)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic unknown HDFC-like header",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBX-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 678098765432)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic malformed three-decimal amount",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.755 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 789098765432)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic unsafe integer paise amount",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.90071992547410.00 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 890198765432)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic zero amount",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.0.00 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 901098765432)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic negative amount",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "other",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.-1.00 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 012098765432)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic ambiguous two-amount credit",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 and Rs.1.00 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 123098765432)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic missing UPI reference",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic masked UPI reference",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 12345678xxxx)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic eleven-digit UPI reference",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 12345678901)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic thirteen-digit UPI reference",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 1234567890123)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic two distinct references are ambiguous",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 234567890123), ref 345678901234",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic appended informational text after reference",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 456789123012). This is an informational sample only.",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic appended support instruction after reference",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 567891234012). For help call 1800000000.",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic missing account identifier",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank on 27-09-26 from VPA payer@examplebank (UPI 678912345012)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic short masked account identifier",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX12 on 27-09-26 from VPA payer@examplebank (UPI 789123456012)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic missing VPA",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 (UPI 891234567012)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic impossible April date",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 31-04-26 from VPA payer@examplebank (UPI 912345678012)",
+      "receivedAt": "2026-05-01T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic non-leap February 29 date",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 29-02-27 from VPA payer@examplebank (UPI 987654321012)",
+      "receivedAt": "2027-03-01T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic future body date relative to receipt",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "AD-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 28-09-26 from VPA payer@examplebank (UPI 098765432101)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic distant two-digit year resolves to future",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 31-12-99 from VPA payer@examplebank (UPI 109876543210)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic non-zero-padded date fields",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "transaction",
+      "sender": "JM-HDFCBK-S",
+      "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 7-9-26 from VPA payer@examplebank (UPI 210987654321)",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic identical directionless card purchase A without reference",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "unknown",
+      "sender": "VM-HDFCBK-S",
+      "body": "Txn Rs.47.35 On HDFC Bank Card xxxx At shop@apl On 27-09 Not You? Call 1800000000/SMS BLOCK CC 1234 to 7300000000",
+      "receivedAt": "2026-09-27T10:00:00+05:30"
+    },
+    {
+      "name": "synthetic identical directionless card purchase B without reference",
+      "source": "synthetic",
+      "label": "not-hdfc-high",
+      "expectedClassification": "unknown",
+      "sender": "VM-HDFCBK-S",
+      "body": "Txn Rs.47.35 On HDFC Bank Card xxxx At shop@apl On 27-09 Not You? Call 1800000000/SMS BLOCK CC 1234 to 7300000000",
+      "receivedAt": "2026-09-27T10:05:00+05:30"
+    }
+  ]
+}
