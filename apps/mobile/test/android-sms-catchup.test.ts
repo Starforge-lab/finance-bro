@@ -18,6 +18,7 @@ import {
   type AndroidSmsReaderMessage,
 } from '../src/imports/android-sms-catchup';
 import { runEnabledAndroidSmsCatchup } from '../src/imports/android-sms-flow';
+import type { SmsCursor, SmsImportBatchOptions, SmsImportBatchResult, SmsReplayCheckpoint } from '../src/imports/sms';
 import { ledgerMigrations, openTestLedger } from './helpers/ledger';
 
 const start = 1_800_000_000_000;
@@ -57,17 +58,30 @@ function transactionSms(id: string, dateMs: number, amount: string, reference: s
 function fakeReader(
   query: (options: Query, index: number) => QueryResult | Promise<QueryResult>,
   initialPermissions = permissions,
+  inboxRows: AndroidSmsReaderMessage[] = [],
 ) {
   const calls: Query[] = [];
+  const newestCalls: Query[] = [];
+  const events: ('newest' | 'scan')[] = [];
   const state = { ...initialPermissions };
   const reader: AndroidSmsReader = {
     async getPermissionsAsync() { return { ...state }; },
     async queryInboxAsync(options) {
-      calls.push({ ...options, ...(options.after ? { after: { ...options.after } } : {}) });
+      const snapshot = { ...options, ...(options.after ? { after: { ...options.after } } : {}) };
+      if (options.newestFirst === true) {
+        events.push('newest');
+        newestCalls.push(snapshot);
+        const messages = inboxRows.filter((row) => row.dateMs >= options.startDateMs && row.dateMs <= options.endDateMs)
+          .sort((left, right) => right.dateMs - left.dateMs || (BigInt(right.id) > BigInt(left.id) ? 1 : BigInt(right.id) < BigInt(left.id) ? -1 : 0))
+          .slice(0, options.limit);
+        return { messages, next: null };
+      }
+      events.push('scan');
+      calls.push(snapshot);
       return query(options, calls.length - 1);
     },
   };
-  return { reader, calls, state };
+  return { reader, calls, newestCalls, events, state };
 }
 
 function storageSpy(api: ReturnType<typeof openApi>['api']) {
@@ -76,6 +90,7 @@ function storageSpy(api: ReturnType<typeof openApi>['api']) {
   return {
     storage: {
       async getSmsImportCursor() { cursorReads += 1; return api.getSmsImportCursor(); },
+      async getSmsReplayCheckpoint() { return api.getSmsReplayCheckpoint(); },
       importSmsBatch(rows: Parameters<typeof api.importSmsBatch>[0], cursor: Parameters<typeof api.importSmsBatch>[1], options?: Parameters<typeof api.importSmsBatch>[2]) {
         writes += 1;
         return api.importSmsBatch(rows, cursor, options);
@@ -188,6 +203,51 @@ describe('Android SMS foreground catch-up coordinator', () => {
       assert.equal(revokedStorage.writes, 0);
       assert.equal((await fixture.api.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
       assert.equal(await fixture.api.getSmsImportCursor(), null);
+    } finally { fixture.fixture.sqlite.close(); }
+  });
+
+  it('imports a bounded newest-first page before replaying history', async () => {
+    const fixture = openApi();
+    const consentStart = start - 200 * 24 * 60 * 60 * 1_000;
+    const newest = [sms('12', start + 20), sms('10', start + 10), sms('11', start + 10)];
+    try {
+      await fixture.api.migrateLedger();
+      const reader = fakeReader(() => ({ messages: [], next: null }), permissions, newest);
+      const result = await catchUpAndroidSms({
+        reader: reader.reader,
+        storage: fixture.api,
+        startDateMs: consentStart,
+        endDateMs: start + 20,
+        clock: () => start + 30,
+      });
+
+      assert.deepEqual(reader.events, ['newest', 'scan', 'scan', 'scan']);
+      assert.deepEqual(reader.newestCalls, [{
+        startDateMs: start + 20 - maxWindowMs + 1,
+        endDateMs: start + 20,
+        newestFirst: true,
+        limit: 100,
+      }]);
+      assert.deepEqual(await fixture.api.getSmsImportCursor(), { receivedAt: start + 20, platformId: '12' });
+      assert.equal((await fixture.fixture.ledger.db.select().from(smsImportRefs).all()).length, 3);
+      assert.equal(result.review, 3);
+      assert.equal(result.completedAt, start + 30);
+    } finally { fixture.fixture.sqlite.close(); }
+  });
+
+  it('rejects a client that ignores the newest-first query instead of silently using its first page', async () => {
+    const fixture = openApi();
+    try {
+      await fixture.api.migrateLedger();
+      const oldestFirst = [sms('10', start), sms('11', start + 1)];
+      const reader: AndroidSmsReader = {
+        async getPermissionsAsync() { return permissions; },
+        async queryInboxAsync() { return { messages: oldestFirst, next: null }; },
+      };
+      await assert.rejects(catchup(reader, fixture.api, start, start + 1), (error: unknown) =>
+        error instanceof AndroidSmsCatchupError && error.code === 'invalid_source_page');
+      assert.equal(await fixture.api.getSmsImportCursor(), null);
+      assert.equal((await fixture.fixture.ledger.db.select().from(smsImportRefs).all()).length, 0);
     } finally { fixture.fixture.sqlite.close(); }
   });
 
@@ -431,6 +491,90 @@ describe('Android SMS foreground catch-up coordinator', () => {
     } finally { fixture.fixture.sqlite.close(); }
   });
 
+  it('does not report a stale replay horizon as current health before the replacement cycle completes', async () => {
+    const fixture = openApi();
+    const controller = new AbortController();
+    const checkpoint = {
+      version: 1 as const,
+      consentStartMs: start,
+      cycleEndMs: start,
+      windowStartMs: start,
+      after: null,
+    };
+    let interrupted = false;
+    try {
+      await fixture.api.migrateLedger();
+      await fixture.api.importSmsBatch([], null, {
+        replayAfter: null,
+        replayCheckpoint: { expected: null, next: checkpoint },
+      });
+      const reader = fakeReader((options) => {
+        if (options.endDateMs === start + 1 && !interrupted) {
+          interrupted = true;
+          controller.abort(body);
+        }
+        return { messages: [], next: null };
+      });
+
+      await assert.rejects(catchUpAndroidSms({
+        reader: reader.reader, storage: fixture.api, startDateMs: start, endDateMs: start + 1,
+        signal: controller.signal, clock: () => start + 4,
+      }), (error: unknown) => error instanceof Error && error.name === 'AbortError');
+      assert.deepEqual(await fixture.api.getSmsReplayCheckpoint(), {
+        version: 1,
+        consentStartMs: start,
+        cycleEndMs: start + 1,
+        windowStartMs: start,
+        after: null,
+      });
+      assert.equal((await fixture.api.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
+
+      const resumed = await catchUpAndroidSms({
+        reader: reader.reader, storage: fixture.api, startDateMs: start, endDateMs: start + 1,
+        clock: () => start + 5,
+      });
+      assert.equal(resumed.completedAt, start + 5);
+      assert.equal(await fixture.api.getSmsReplayCheckpoint(), null);
+      assert.equal((await fixture.api.getSmsImportHealth()).lastSuccessfulCatchupAt, start + 5);
+    } finally { fixture.fixture.sqlite.close(); }
+  });
+
+  it('restarts from the active consent floor when a stored checkpoint belongs to an older consent range', async () => {
+    const fixture = openApi();
+    const oldConsentStart = start - 10 * 24 * 60 * 60 * 1_000;
+    const currentConsentStart = start - 5 * 24 * 60 * 60 * 1_000;
+    try {
+      await fixture.api.migrateLedger();
+      await fixture.api.importSmsBatch([], null, {
+        replayAfter: null,
+        replayCheckpoint: {
+          expected: null,
+          next: {
+            version: 1,
+            consentStartMs: oldConsentStart,
+            cycleEndMs: start,
+            windowStartMs: oldConsentStart,
+            after: null,
+          },
+        },
+      });
+      const outsideConsent = sms('40', currentConsentStart - 1);
+      const reader = fakeReader(() => ({ messages: [], next: null }), permissions, [outsideConsent]);
+
+      await catchUpAndroidSms({
+        reader: reader.reader, storage: fixture.api, startDateMs: currentConsentStart, endDateMs: start,
+        clock: () => start + 6,
+      });
+
+      assert.deepEqual(reader.calls, [{ startDateMs: currentConsentStart, endDateMs: start, limit: 100 }]);
+      assert.deepEqual(reader.newestCalls, [{
+        startDateMs: currentConsentStart, endDateMs: start, newestFirst: true, limit: 100,
+      }]);
+      assert.equal((await fixture.fixture.ledger.db.select().from(smsImportRefs).all()).length, 0);
+      assert.equal(await fixture.api.getSmsReplayCheckpoint(), null);
+    } finally { fixture.fixture.sqlite.close(); }
+  });
+
   it('replays the consented date range below the main cursor and preserves protected transactions', async () => {
     const fixture = openApi();
     const previousDate = start + 1;
@@ -587,6 +731,7 @@ describe('Android SMS foreground catch-up coordinator', () => {
         assert.equal(await fixture.fixture.ledger.db.select().from(smsImportState).get(), undefined);
         assert.equal(await fixture.fixture.ledger.db.select().from(importKeyState).get(), undefined);
         assert.equal((await fixture.api.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
+        assert.equal(await fixture.api.getSmsReplayCheckpoint(), null);
       } finally {
         releaseFingerprint();
         fixture.fixture.sqlite.close();
@@ -641,6 +786,13 @@ describe('Android SMS foreground catch-up coordinator', () => {
         signal: controller.signal, clock: () => start + 3,
       }), (error: unknown) => error instanceof Error && error.name === 'AbortError');
       assert.deepEqual(await fixture.api.getSmsImportCursor(), { receivedAt: start, platformId: '30' });
+      assert.deepEqual(await fixture.api.getSmsReplayCheckpoint(), {
+        version: 1,
+        consentStartMs: start,
+        cycleEndMs: start + 1,
+        windowStartMs: start,
+        after: { receivedAt: start, platformId: '30' },
+      });
       assert.equal((await fixture.api.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
 
       firstRun = false;
@@ -648,10 +800,127 @@ describe('Android SMS foreground catch-up coordinator', () => {
         reader: reader.reader, storage: fixture.api, startDateMs: start, endDateMs: start + 1,
         clock: () => start + 4,
       });
-      assert.deepEqual(resumed, { inserted: 0, duplicate: 1, review: 1, ignored: 0, completedAt: start + 4 });
+      assert.deepEqual(resumed, { inserted: 0, duplicate: 0, review: 1, ignored: 0, completedAt: start + 4 });
+      assert.deepEqual(reader.calls.at(-1)?.after, { dateMs: start, id: '30' });
       assert.deepEqual(await fixture.api.getSmsImportCursor(), { receivedAt: start + 1, platformId: '31' });
+      assert.equal(await fixture.api.getSmsReplayCheckpoint(), null);
       assert.equal((await fixture.api.getSmsImportHealth()).lastSuccessfulCatchupAt, start + 4);
     } finally { fixture.fixture.sqlite.close(); }
+  });
+
+  it('resumes a 50,000-row replay fairly and finds a later backdated source change', async () => {
+    const history = Array.from({ length: 50_000 }, (_, index) => sms(String(index + 1), start));
+    const consentStart = start - 1;
+    let providerRows = [...history];
+    const compareRows = (left: AndroidSmsReaderMessage, right: AndroidSmsReaderMessage) =>
+      left.dateMs - right.dateMs || (BigInt(left.id) < BigInt(right.id) ? -1 : BigInt(left.id) > BigInt(right.id) ? 1 : 0);
+    providerRows.sort(compareRows);
+    const lowerBound = (predicate: (row: AndroidSmsReaderMessage) => boolean) => {
+      let low = 0;
+      let high = providerRows.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (predicate(providerRows[middle]!)) high = middle;
+        else low = middle + 1;
+      }
+      return low;
+    };
+    const controller = new AbortController();
+    const seenSources = new Set<string>();
+    let cursor: SmsCursor | null = null;
+    let checkpoint: SmsReplayCheckpoint | null = null;
+    let replayWrites = 0;
+    let cancelAfterTwoPages = true;
+    const reader = fakeReader((options) => {
+      const firstInWindow = lowerBound((row) => row.dateMs >= options.startDateMs);
+      const afterIndex = options.after
+        ? lowerBound((row) => row.dateMs > options.after!.dateMs ||
+          (row.dateMs === options.after!.dateMs && BigInt(row.id) > BigInt(options.after!.id)))
+        : firstInWindow;
+      const first = Math.max(firstInWindow, afterIndex);
+      const end = lowerBound((row) => row.dateMs > options.endDateMs);
+      const page = providerRows.slice(first, Math.min(first + options.limit, end));
+      const hasMore = first + page.length < end;
+      const last = page.at(-1);
+      return {
+        messages: page,
+        next: hasMore && last ? { dateMs: last.dateMs, id: last.id } : null,
+      };
+    }, permissions, history);
+    const storage = {
+      async getSmsImportCursor() { return cursor && { ...cursor }; },
+      async getSmsReplayCheckpoint() { return checkpoint && structuredClone(checkpoint); },
+      async importSmsBatch(
+        rows: Parameters<ReturnType<typeof openApi>['api']['importSmsBatch']>[0],
+        expected: SmsCursor | null,
+        options: SmsImportBatchOptions = {},
+      ): Promise<SmsImportBatchResult> {
+        await options.assertSourceAccess?.();
+        assert.deepEqual(cursor, expected);
+        if (options.replayCheckpoint) assert.deepEqual(checkpoint, options.replayCheckpoint.expected);
+        let duplicate = 0;
+        let review = 0;
+        for (const row of rows) {
+          const key = `${row.platformId}:${row.receivedAt}:${row.body}`;
+          if (seenSources.has(key)) duplicate += 1;
+          else { seenSources.add(key); review += 1; }
+          const candidate = { receivedAt: row.receivedAt, platformId: row.platformId };
+          if (!cursor || candidate.receivedAt > cursor.receivedAt ||
+              (candidate.receivedAt === cursor.receivedAt && BigInt(candidate.platformId) > BigInt(cursor.platformId))) {
+            cursor = candidate;
+          }
+        }
+        if (options.replayCheckpoint) {
+          checkpoint = options.replayCheckpoint.next && structuredClone(options.replayCheckpoint.next);
+          replayWrites += 1;
+        }
+        if (options.catchupCompletedAt !== undefined) {
+          if (typeof options.catchupCompletedAt === 'function') options.catchupCompletedAt();
+        }
+        await options.assertSourceAccess?.();
+        if (cancelAfterTwoPages && replayWrites === 2) {
+          cancelAfterTwoPages = false;
+          controller.abort(body);
+        }
+        return { cursor: cursor && { ...cursor }, inserted: 0, duplicate, review, ignored: 0 };
+      },
+    };
+
+    await assert.rejects(catchUpAndroidSms({
+      reader: reader.reader, storage, startDateMs: consentStart, endDateMs: start,
+      signal: controller.signal, clock: () => start + 2,
+    }), (error: unknown) => error instanceof Error && error.name === 'AbortError');
+    assert.deepEqual(checkpoint, {
+      version: 1,
+      consentStartMs: consentStart,
+      cycleEndMs: start,
+      windowStartMs: consentStart,
+      after: { receivedAt: start, platformId: '200' },
+    });
+    assert.equal(seenSources.size, 300, 'the newest tail and two full replay pages committed before cancellation');
+
+    const resumedScanIndex = reader.calls.length;
+    const resumed = await catchUpAndroidSms({
+      reader: reader.reader, storage, startDateMs: consentStart, endDateMs: start,
+      clock: () => start + 3,
+    });
+    assert.deepEqual(reader.calls[resumedScanIndex]?.after, { dateMs: start, id: '200' });
+    assert.deepEqual(resumed, { inserted: 0, duplicate: 200, review: 49_700, ignored: 0, completedAt: start + 3 });
+    assert.equal(reader.calls.length - resumedScanIndex, 498);
+    assert.equal(checkpoint, null);
+    assert.equal(seenSources.size, 50_000);
+    assert.deepEqual(cursor, { receivedAt: start, platformId: '50000' });
+
+    const changedBody = `${body} changed after arrival`;
+    history[0] = { ...history[0]!, dateMs: consentStart, body: changedBody };
+    providerRows = [...history].sort(compareRows);
+    const changed = await catchUpAndroidSms({
+      reader: reader.reader, storage, startDateMs: consentStart, endDateMs: start + 1,
+      clock: () => start + 4,
+    });
+    assert.equal(changed.review, 1, 'the next full replay reaches an older row whose source identity changed');
+    assert.equal(seenSources.has(`1:${consentStart}:${changedBody}`), true);
+    assert.equal(checkpoint, null);
   });
 
   it('keeps source pages ordered and capped at 100 rows during a replay', async () => {

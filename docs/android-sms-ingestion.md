@@ -25,16 +25,21 @@ signed-64-bit range. The caller obtains `getSmsImportCursor()` before reading it
 next bounded page. A stale cursor stops the batch; callers must reload it before
 retrying.
 
-Catch-up replays the original consented date range on each run because inbox
-dates and row IDs do not identify newly inserted or changed messages. It uses
-`{ replayAfter: null }` for the first page and a separate replay cursor for
-later pages. This option validates page order independently of `expectedCursor`;
-the latter still guards the current main cursor inside the writer transaction.
-Each page commits atomically and retains the greater of the main cursor and its
-last row. Existing source tuples remain idempotent; corrections and tombstones
-are preserved. Omitting `replayAfter` retains the forward-only batch contract.
-The caller supplies the original consent floor; this storage API establishes
-no consent itself.
+Catch-up first queries the newest 100 rows in the most recent 90 days, then
+resumes a full scan of the consented range. Inbox dates and row IDs do not
+identify newly inserted or changed messages, so the full scan retains a fixed
+cycle horizon and a body-free replay checkpoint in `preferences`. The checkpoint
+stores the consent floor, cycle end, current 90-day window, and last committed
+page cursor. Each page and each empty window advances it atomically with import
+writes using compare-and-swap; an interrupted run resumes after the last
+committed page. When an older cycle ends, catch-up starts another cycle through
+the current invocation's end date. It clears the checkpoint and records health
+only after that current horizon is exhausted. The separate main cursor remains
+monotonic and retains the greater of its current value and each imported row.
+Existing source tuples remain idempotent; corrections and tombstones are
+preserved. Omitting `replayAfter` retains the forward-only batch contract. The
+caller supplies the original consent floor; this storage API establishes no
+consent itself.
 
 Only the caller that has exhausted the source pages may pass
 `{ catchupCompletedAt }`, either a positive safe-integer timestamp or a
@@ -190,15 +195,17 @@ markers, while conflicting or weak evidence requires review. Body fingerprints
 are not globally unique: two genuine identical purchases must remain
 distinguishable. Amount/time similarity alone never merges transactions.
 
-The main cursor remains `(receivedAt, platformId)`, while each catch-up uses its
-own page continuation from the consent floor. This recovers older-arriving rows
-and same-cursor body changes visible during the scan without rewinding the main
-cursor. Full scans cost more as consented history grows. The provider exposes no
-snapshot token: changes inserted behind an in-flight page require a later scan.
-Pages remain bounded and cancellation preserves earlier committed pages. A
-successful empty final page rechecks an existing protected key and key history;
-an initial empty ledger does not provision a key. Batch parsing and per-row
-fingerprints run outside the writer. A short initial transaction checks source
+The main cursor remains `(receivedAt, platformId)`, separate from each
+catch-up's durable page continuation. The bounded newest-first query makes
+recent messages reachable before a large replay; the full cycle still recovers
+older-arriving rows and same-cursor body changes visible during the scan without
+rewinding the main cursor. Full scans cost more as consented history grows. The
+provider exposes no snapshot token: changes inserted behind an in-flight page
+require a later scan. Pages remain bounded and cancellation preserves earlier
+committed pages and their replay position. A successful empty final page
+rechecks an existing protected key and key history; an initial empty ledger does
+not provision a key. Batch parsing and per-row fingerprints run outside the
+writer. A short initial transaction checks source
 access and the main cursor and serializes any permitted first-key provisioning;
 it creates no ledger key-history marker. The final writer rechecks access,
 cursor, the existing protected key with creation forbidden, and matching key

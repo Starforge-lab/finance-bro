@@ -10,6 +10,7 @@ import { createDataLayer } from '../src/db/service';
 import type { LedgerSQLiteClient, LedgerSQLiteTransactionRunner, LedgerMigrations } from '../src/db/ledger';
 import { accounts, importKeyState, preferences, smsImportRefs, smsImportState, transactions } from '../src/db/schema';
 import { FingerprintKeyUnavailableError, type FingerprintKeyProvider, type Fingerprinter } from '../src/imports/fingerprint';
+import { StaleSmsReplayCheckpointError } from '../src/imports/sms';
 import { ledgerMigrations, openTestLedger, temporaryFile } from './helpers/ledger';
 import { smsReferenceId } from './helpers/sms';
 
@@ -726,6 +727,85 @@ describe('Android SMS ingestion storage seam', () => {
 
       await api.importSmsBatch([smsRow('100')], null);
       assert.deepEqual(policies, [true, false], 'the health marker must not block first-use key creation or final key verification');
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('stores body-free replay checkpoints with compare-and-swap in the import transaction', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      const checkpoint = {
+        version: 1 as const,
+        consentStartMs: strongSms.receivedAt - 10,
+        cycleEndMs: strongSms.receivedAt + 10,
+        windowStartMs: strongSms.receivedAt - 10,
+        after: null,
+      };
+      await api.importSmsBatch([], null, {
+        replayAfter: null,
+        replayCheckpoint: { expected: null, next: checkpoint },
+      });
+      assert.deepEqual(await api.getSmsReplayCheckpoint(), checkpoint);
+      assert.equal((await fixture.ledger.db.select().from(preferences)
+        .where(eq(preferences.key, 'sms.replay_checkpoint')).get())?.value, JSON.stringify(checkpoint));
+      assert.equal(await api.getSmsImportCursor(), null);
+
+      const advanced = { ...checkpoint, after: { receivedAt: strongSms.receivedAt, platformId: '10' } };
+      await assert.rejects(api.importSmsBatch([smsRow('20')], null, {
+        replayAfter: null,
+        replayCheckpoint: { expected: null, next: advanced },
+      }), StaleSmsReplayCheckpointError);
+      assert.deepEqual(await api.getSmsReplayCheckpoint(), checkpoint);
+      assert.equal(await api.getSmsImportCursor(), null);
+      assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 0);
+
+      await api.importSmsBatch([], null, {
+        replayAfter: null,
+        replayCheckpoint: { expected: checkpoint, next: advanced },
+      });
+      assert.deepEqual(await api.getSmsReplayCheckpoint(), advanced);
+
+      const completedAt = strongSms.receivedAt + 20;
+      await api.importSmsBatch([], null, {
+        replayCheckpoint: { expected: advanced, next: null },
+        catchupCompletedAt: completedAt,
+      });
+      assert.equal(await api.getSmsReplayCheckpoint(), null);
+      assert.equal((await api.getSmsImportHealth()).lastSuccessfulCatchupAt, completedAt);
+      assert.equal(await fixture.ledger.db.select().from(smsImportState).get(), undefined);
+      assert.equal(JSON.stringify(await fixture.ledger.db.select().from(preferences).all()).includes(strongSms.body), false);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('does not advance an empty replay checkpoint when an existing protected key is unavailable', async () => {
+    const fixture = openTestLedger();
+    try {
+      const key = fingerprinter('fictional-replay-key-loss');
+      let available = true;
+      const provider: FingerprintKeyProvider = async () => {
+        if (!available) throw new FingerprintKeyUnavailableError();
+        return key;
+      };
+      const api = createDataLayer(fixture.client, ledgerMigrations, provider, transactionRunner(fixture.sqlite, fixture.client));
+      await api.migrateLedger();
+      await api.importSmsBatch([smsRow('30')], null);
+      available = false;
+
+      const checkpoint = {
+        version: 1 as const,
+        consentStartMs: strongSms.receivedAt,
+        cycleEndMs: strongSms.receivedAt,
+        windowStartMs: strongSms.receivedAt,
+        after: null,
+      };
+      await assert.rejects(api.importSmsBatch([], await api.getSmsImportCursor(), {
+        replayAfter: null,
+        replayCheckpoint: { expected: null, next: checkpoint },
+      }), FingerprintKeyUnavailableError);
+      assert.equal(await api.getSmsReplayCheckpoint(), null);
+      assert.equal((await fixture.ledger.db.select().from(preferences)
+        .where(eq(preferences.key, 'sms.replay_checkpoint')).get()), undefined);
     } finally { fixture.sqlite.close(); }
   });
 

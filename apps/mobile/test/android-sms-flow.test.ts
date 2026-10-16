@@ -175,6 +175,7 @@ test('Android SMS adapters keep the source mapping exact and catch-up failures b
     };
     const storage = {
       getSmsImportCursor: async () => null,
+      getSmsReplayCheckpoint: async () => null,
       importSmsBatch: async () => { throw new Error('Unexpected write'); },
     };
 

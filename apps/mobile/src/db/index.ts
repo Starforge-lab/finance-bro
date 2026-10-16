@@ -47,6 +47,8 @@ export { createDataLayer } from './service';
 export type { DataLayer } from './service';
 export type {
   SmsCursor,
+  SmsReplayCheckpoint,
+  SmsReplayCheckpointUpdate,
   SmsInboxRow,
   SmsImportBatchOptions,
   SmsImportBatchResult,

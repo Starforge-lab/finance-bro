@@ -52,6 +52,7 @@ function fakeLedger(importFailure?: Error) {
   let batchWrites = 0;
   const ledger = {
     async getSmsImportCursor() { cursorReads += 1; return null; },
+    async getSmsReplayCheckpoint() { return null; },
     async importSmsBatch(
       _messages: unknown,
       cursor: null,

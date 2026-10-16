@@ -1,7 +1,14 @@
 import type { DataLayer } from '../db/service';
 import { DuplicateReviewRequiredError } from './key-state';
 import { FingerprintKeyUnavailableError } from './fingerprint';
-import { StaleSmsCursorError, type SmsCursor, type SmsImportBatchResult, type SmsInboxRow } from './sms';
+import {
+  StaleSmsCursorError,
+  StaleSmsReplayCheckpointError,
+  type SmsCursor,
+  type SmsImportBatchResult,
+  type SmsInboxRow,
+  type SmsReplayCheckpoint,
+} from './sms';
 
 const batchSize = 100;
 const maxWindowMs = 90 * 24 * 60 * 60 * 1_000;
@@ -16,12 +23,13 @@ export type AndroidSmsReader = {
     endDateMs: number;
     after?: AndroidSmsReaderCursor;
     limit: number;
+    newestFirst?: true;
   }): Promise<{ messages: AndroidSmsReaderMessage[]; next: AndroidSmsReaderCursor | null }>;
 };
 
 export type AndroidSmsCatchupOptions = {
   reader: AndroidSmsReader;
-  storage: Pick<DataLayer, 'getSmsImportCursor' | 'importSmsBatch'>;
+  storage: Pick<DataLayer, 'getSmsImportCursor' | 'getSmsReplayCheckpoint' | 'importSmsBatch'>;
   startDateMs: number;
   endDateMs: number;
   signal?: AbortSignal;
@@ -155,6 +163,48 @@ function sameStorageCursor(left: SmsCursor | null, right: SmsCursor | null): boo
   return left?.receivedAt === right?.receivedAt && left?.platformId === right?.platformId;
 }
 
+function isExactPlainDataRecord(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const keys = Reflect.ownKeys(value);
+  return keys.length === fields.length && keys.every((key) => typeof key === 'string' && fields.includes(key) &&
+    'value' in Object.getOwnPropertyDescriptor(value, key)!);
+}
+
+function storageReplayCheckpoint(value: unknown): SmsReplayCheckpoint | null {
+  if (value === null) return null;
+  if (!isExactPlainDataRecord(value, ['version', 'consentStartMs', 'cycleEndMs', 'windowStartMs', 'after'])) {
+    throw new AndroidSmsCatchupError('storage_unavailable');
+  }
+  const checkpoint = value;
+  if (checkpoint.version !== 1 ||
+      !Number.isSafeInteger(checkpoint.consentStartMs) || (checkpoint.consentStartMs as number) <= 0 ||
+      !Number.isSafeInteger(checkpoint.cycleEndMs) || (checkpoint.cycleEndMs as number) < (checkpoint.consentStartMs as number) ||
+      !Number.isSafeInteger(checkpoint.windowStartMs) || (checkpoint.windowStartMs as number) < (checkpoint.consentStartMs as number) ||
+      (checkpoint.windowStartMs as number) > (checkpoint.cycleEndMs as number)) {
+    throw new AndroidSmsCatchupError('storage_unavailable');
+  }
+  if (checkpoint.after !== null && !isExactPlainDataRecord(checkpoint.after, ['receivedAt', 'platformId'])) {
+    throw new AndroidSmsCatchupError('storage_unavailable');
+  }
+  const after = storageCursor(checkpoint.after as SmsCursor | null);
+  const windowEndMs = Math.min(checkpoint.cycleEndMs as number,
+    (checkpoint.windowStartMs as number) + maxWindowMs - 1);
+  if (after && (after.receivedAt < (checkpoint.windowStartMs as number) || after.receivedAt > windowEndMs)) {
+    throw new AndroidSmsCatchupError('storage_unavailable');
+  }
+  return {
+    version: 1,
+    consentStartMs: checkpoint.consentStartMs as number,
+    cycleEndMs: checkpoint.cycleEndMs as number,
+    windowStartMs: checkpoint.windowStartMs as number,
+    after,
+  };
+}
+
+function replayWindowEnd(checkpoint: SmsReplayCheckpoint): number {
+  return Math.min(checkpoint.cycleEndMs, checkpoint.windowStartMs + maxWindowMs - 1);
+}
+
 function readerCursor(cursor: SmsCursor): ReaderCursor {
   return { dateMs: cursor.receivedAt, id: cursor.platformId };
 }
@@ -162,6 +212,33 @@ function readerCursor(cursor: SmsCursor): ReaderCursor {
 function sourcePage(value: unknown, startDateMs: number, endDateMs: number, lowerBound: ReaderCursor | null): Page {
   try { return validateSourcePage(value, startDateMs, endDateMs, lowerBound); }
   catch (error) {
+    if (error instanceof AndroidSmsCatchupError) throw error;
+    throw new AndroidSmsCatchupError('invalid_source_page');
+  }
+}
+
+function newestSourcePage(value: unknown, startDateMs: number, endDateMs: number): Page {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AndroidSmsCatchupError('invalid_source_page');
+    const result = value as Record<string, unknown>;
+    if (!Array.isArray(result.messages) || result.next !== null || result.messages.length > batchSize) {
+      throw new AndroidSmsCatchupError('invalid_source_page');
+    }
+
+    let previous: ReaderCursor | undefined;
+    const ids = new Set<string>();
+    for (const row of result.messages) {
+      const cursor = readReaderCursor(row);
+      if (cursor.dateMs < startDateMs || cursor.dateMs > endDateMs ||
+          (previous && compareReaderCursor(previous, cursor) <= 0) || ids.has(cursor.id)) {
+        throw new AndroidSmsCatchupError('invalid_source_page');
+      }
+      previous = cursor;
+      ids.add(cursor.id);
+    }
+
+    return sourcePage({ messages: [...result.messages].reverse(), next: null }, startDateMs, endDateMs, null);
+  } catch (error) {
     if (error instanceof AndroidSmsCatchupError) throw error;
     throw new AndroidSmsCatchupError('invalid_source_page');
   }
@@ -293,9 +370,11 @@ export async function catchUpAndroidSms(value: AndroidSmsCatchupOptions): Promis
   const getPermissionsAsync = reader.getPermissionsAsync;
   const queryInboxAsync = reader.queryInboxAsync;
   const getSmsImportCursor = storage.getSmsImportCursor;
+  const getSmsReplayCheckpoint = storage.getSmsReplayCheckpoint;
   const importSmsBatch = storage.importSmsBatch;
   if (typeof getPermissionsAsync !== 'function' || typeof queryInboxAsync !== 'function' ||
-      typeof getSmsImportCursor !== 'function' || typeof importSmsBatch !== 'function') {
+      typeof getSmsImportCursor !== 'function' || typeof getSmsReplayCheckpoint !== 'function' ||
+      typeof importSmsBatch !== 'function') {
     throw new TypeError('Android SMS catch-up dependencies are invalid');
   }
 
@@ -330,15 +409,81 @@ export async function catchUpAndroidSms(value: AndroidSmsCatchupOptions): Promis
     return storageCursor(value);
   };
 
+  const readCommittedReplayCheckpoint = async () => {
+    throwIfAborted(signal);
+    let value: SmsReplayCheckpoint | null;
+    try { value = await getSmsReplayCheckpoint.call(storage); }
+    catch {
+      throwIfAborted(signal);
+      throw new AndroidSmsCatchupError('storage_unavailable');
+    }
+    throwIfAborted(signal);
+    return storageReplayCheckpoint(value);
+  };
+
   await checkAccess();
   let committedCursor = await readCommittedCursor();
-  let windowStart = startDateMs;
   const counts = { inserted: 0, duplicate: 0, review: 0, ignored: 0 };
-
+  const newestStartDateMs = Math.max(startDateMs, endDateMs - maxWindowMs + 1);
+  await checkAccess();
+  let rawNewestPage: unknown;
+  try {
+    rawNewestPage = await queryInboxAsync.call(reader, {
+      startDateMs: newestStartDateMs,
+      endDateMs,
+      newestFirst: true,
+      limit: batchSize,
+    });
+  } catch {
+    throwIfAborted(signal);
+    throw new AndroidSmsCatchupError('source_unavailable');
+  }
+  throwIfAborted(signal);
+  const newestPage = newestSourcePage(rawNewestPage, newestStartDateMs, endDateMs);
+  rawNewestPage = undefined;
+  await checkAccess();
+  if (newestPage.messages.length > 0) {
+    try {
+      const latestResult = await importSmsBatch.call(storage, newestPage.messages, committedCursor, {
+        assertSourceAccess: checkAccess,
+        replayAfter: null,
+      });
+      counts.inserted += latestResult.inserted;
+      counts.duplicate += latestResult.duplicate;
+      counts.review += latestResult.review;
+      counts.ignored += latestResult.ignored;
+      const latestCursor = storageCursor(latestResult.cursor);
+      const expectedLatestCursor = newestPage.messages.reduce<SmsCursor | null>((latest, row) => {
+        const current = { receivedAt: row.receivedAt, platformId: row.platformId };
+        return !latest || compareReaderCursor(readerCursor(latest), {
+          dateMs: current.receivedAt,
+          id: current.platformId,
+        }) < 0 ? current : latest;
+      }, committedCursor);
+      if (!sameStorageCursor(latestCursor, expectedLatestCursor)) throw new AndroidSmsCatchupError('stale_cursor');
+      committedCursor = latestCursor;
+    } catch (error) {
+      if (error instanceof AndroidSmsCatchupError) throw error;
+      if (error instanceof FingerprintKeyUnavailableError) throw new AndroidSmsCatchupError('key_unavailable');
+      if (error instanceof DuplicateReviewRequiredError) throw new AndroidSmsCatchupError('duplicate_review_required');
+      if (error instanceof StaleSmsCursorError) throw new AndroidSmsCatchupError('stale_cursor');
+      if (error instanceof StaleSmsReplayCheckpointError) throw new AndroidSmsCatchupError('stale_cursor');
+      if (signal?.aborted) throw abortError();
+      throwIfAborted(signal);
+      throw new AndroidSmsCatchupError('storage_unavailable');
+    }
+  }
+  committedCursor = await readCommittedCursor();
+  let expectedCheckpoint = await readCommittedReplayCheckpoint();
+  let checkpoint: SmsReplayCheckpoint = expectedCheckpoint &&
+    expectedCheckpoint.consentStartMs === startDateMs && expectedCheckpoint.cycleEndMs <= endDateMs
+    ? expectedCheckpoint
+    : { version: 1, consentStartMs: startDateMs, cycleEndMs: endDateMs, windowStartMs: startDateMs, after: null };
   while (true) {
     throwIfAborted(signal);
-    const windowEnd = endDateMs - windowStart >= maxWindowMs ? windowStart + maxWindowMs - 1 : endDateMs;
-    let after: ReaderCursor | undefined;
+    const windowStart = checkpoint.windowStartMs;
+    const windowEnd = replayWindowEnd(checkpoint);
+    const after = checkpoint.after === null ? undefined : readerCursor(checkpoint.after);
 
     while (true) {
       throwIfAborted(signal);
@@ -365,63 +510,66 @@ export async function catchUpAndroidSms(value: AndroidSmsCatchupOptions): Promis
       rawPage = undefined;
       await checkAccess();
 
-      const finalPage = page.next === null && windowEnd === endDateMs;
-      if (page.messages.length > 0 || finalPage) {
-        let completedAt: number | undefined;
-        const getCompletionTime = () => {
-          throwIfAborted(signal);
-          let value: number;
-          try { value = clock(); }
-          catch { throw new AndroidSmsCatchupError('invalid_clock'); }
-          if (!Number.isSafeInteger(value) || value <= 0) throw new AndroidSmsCatchupError('invalid_clock');
-          completedAt = value;
-          return value;
-        };
-        let result: SmsImportBatchResult;
-        try {
-          result = await importSmsBatch.call(storage, page.messages, committedCursor, {
-            ...(finalPage ? { catchupCompletedAt: getCompletionTime } : {}),
-            assertSourceAccess: checkAccess,
-            replayAfter: lowerBound === null ? null : { receivedAt: lowerBound.dateMs, platformId: lowerBound.id },
-          });
-        } catch (error) {
-          if (error instanceof AndroidSmsCatchupError) throw error;
-          if (error instanceof FingerprintKeyUnavailableError) throw new AndroidSmsCatchupError('key_unavailable');
-          if (error instanceof DuplicateReviewRequiredError) throw new AndroidSmsCatchupError('duplicate_review_required');
-          if (error instanceof StaleSmsCursorError) throw new AndroidSmsCatchupError('stale_cursor');
-          if (signal?.aborted) throw abortError();
-          throwIfAborted(signal);
-          throw new AndroidSmsCatchupError('storage_unavailable');
+      const nextCheckpoint: SmsReplayCheckpoint | null = page.next !== null
+        ? { ...checkpoint, after: { receivedAt: page.next.dateMs, platformId: page.next.id } }
+        : windowEnd < checkpoint.cycleEndMs
+          ? { ...checkpoint, windowStartMs: windowEnd + 1, after: null }
+          : checkpoint.cycleEndMs < endDateMs
+            ? { version: 1, consentStartMs: startDateMs, cycleEndMs: endDateMs, windowStartMs: startDateMs, after: null }
+            : null;
+      const finalPage = nextCheckpoint === null;
+      let completedAt: number | undefined;
+      const getCompletionTime = () => {
+        throwIfAborted(signal);
+        let value: number;
+        try { value = clock(); }
+        catch { throw new AndroidSmsCatchupError('invalid_clock'); }
+        if (!Number.isSafeInteger(value) || value <= 0) throw new AndroidSmsCatchupError('invalid_clock');
+        completedAt = value;
+        return value;
+      };
+      let result: SmsImportBatchResult;
+      try {
+        result = await importSmsBatch.call(storage, page.messages, committedCursor, {
+          ...(finalPage ? { catchupCompletedAt: getCompletionTime } : {}),
+          assertSourceAccess: checkAccess,
+          replayAfter: lowerBound === null ? null : { receivedAt: lowerBound.dateMs, platformId: lowerBound.id },
+          replayCheckpoint: { expected: expectedCheckpoint, next: nextCheckpoint },
+        });
+      } catch (error) {
+        if (error instanceof AndroidSmsCatchupError) throw error;
+        if (error instanceof FingerprintKeyUnavailableError) throw new AndroidSmsCatchupError('key_unavailable');
+        if (error instanceof DuplicateReviewRequiredError) throw new AndroidSmsCatchupError('duplicate_review_required');
+        if (error instanceof StaleSmsCursorError || error instanceof StaleSmsReplayCheckpointError) {
+          throw new AndroidSmsCatchupError('stale_cursor');
         }
-        let expectedNextCursor = committedCursor;
-        if (page.messages.length > 0) {
-          const last = page.messages[page.messages.length - 1]!;
-          const lastCursor = { receivedAt: last.receivedAt, platformId: last.platformId };
-          if (!expectedNextCursor || compareReaderCursor(readerCursor(expectedNextCursor), {
-            dateMs: lastCursor.receivedAt,
-            id: lastCursor.platformId,
-          }) < 0) expectedNextCursor = lastCursor;
-        }
-        const returnedCursor = storageCursor(result.cursor);
-        if (!sameStorageCursor(returnedCursor, expectedNextCursor)) throw new AndroidSmsCatchupError('stale_cursor');
-        committedCursor = returnedCursor;
-        counts.inserted += result.inserted;
-        counts.duplicate += result.duplicate;
-        counts.review += result.review;
-        counts.ignored += result.ignored;
-        if (finalPage) {
-          if (completedAt === undefined) throw new AndroidSmsCatchupError('storage_unavailable');
-          return { ...counts, completedAt };
-        }
+        if (signal?.aborted) throw abortError();
+        throwIfAborted(signal);
+        throw new AndroidSmsCatchupError('storage_unavailable');
       }
-
-      if (page.next === null) {
-        if (windowEnd === endDateMs) throw new AndroidSmsCatchupError('storage_unavailable');
-        break;
+      let expectedNextCursor = committedCursor;
+      if (page.messages.length > 0) {
+        const last = page.messages[page.messages.length - 1]!;
+        const lastCursor = { receivedAt: last.receivedAt, platformId: last.platformId };
+        if (!expectedNextCursor || compareReaderCursor(readerCursor(expectedNextCursor), {
+          dateMs: lastCursor.receivedAt,
+          id: lastCursor.platformId,
+        }) < 0) expectedNextCursor = lastCursor;
       }
-      after = page.next;
+      const returnedCursor = storageCursor(result.cursor);
+      if (!sameStorageCursor(returnedCursor, expectedNextCursor)) throw new AndroidSmsCatchupError('stale_cursor');
+      committedCursor = returnedCursor;
+      counts.inserted += result.inserted;
+      counts.duplicate += result.duplicate;
+      counts.review += result.review;
+      counts.ignored += result.ignored;
+      expectedCheckpoint = nextCheckpoint;
+      if (finalPage) {
+        if (completedAt === undefined) throw new AndroidSmsCatchupError('storage_unavailable');
+        return { ...counts, completedAt };
+      }
+      checkpoint = nextCheckpoint;
+      break;
     }
-
-    windowStart = windowEnd + 1;
   }
 }

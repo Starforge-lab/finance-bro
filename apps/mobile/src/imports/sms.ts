@@ -15,18 +15,37 @@ import { preparePastedSms, type PastePreparation, type ReviewCorrections } from 
 import { FingerprintKeyUnavailableError, type FingerprintKeyProvider, type Fingerprinter } from './fingerprint';
 
 const maxBatchSize = 100;
+const maxSmsReplayWindowMs = 90 * 24 * 60 * 60 * 1_000;
 const maxBodyLength = 16_384;
 const maxSenderLength = 256;
 const maxPlatformId = 9_223_372_036_854_775_807n;
 const verifiedRuleVersions: Readonly<Record<string, number>> = { 'hdfc.upi.credit': 1 };
 const smsCatchupCompletionPreference = 'sms.last_successful_catchup_at';
+const smsReplayCheckpointPreference = 'sms.replay_checkpoint';
 
 export type SmsCursor = { receivedAt: number; platformId: string };
+export type SmsReplayCheckpoint = {
+  version: 1;
+  consentStartMs: number;
+  cycleEndMs: number;
+  windowStartMs: number;
+  after: SmsCursor | null;
+};
+export type SmsReplayCheckpointUpdate = {
+  expected: SmsReplayCheckpoint | null;
+  next: SmsReplayCheckpoint | null;
+};
 export type SmsReviewCursor = SmsCursor & { referenceId: string };
 export class StaleSmsCursorError extends Error {
   constructor() {
     super('SMS import cursor is stale; reload the current cursor before retrying');
     this.name = 'StaleSmsCursorError';
+  }
+}
+export class StaleSmsReplayCheckpointError extends Error {
+  constructor() {
+    super('SMS replay checkpoint is stale; reload it before retrying');
+    this.name = 'StaleSmsReplayCheckpointError';
   }
 }
 export type SmsInboxRow = RawSms & { platformId: string };
@@ -41,6 +60,7 @@ export type SmsImportBatchOptions = {
   catchupCompletedAt?: number | (() => number);
   assertSourceAccess?: () => void | Promise<void>;
   replayAfter?: SmsCursor | null;
+  replayCheckpoint?: SmsReplayCheckpointUpdate;
 };
 export type SmsImportHealth = {
   lastSuccessfulCatchupAt: number | null;
@@ -101,6 +121,42 @@ function assertCursor(value: unknown, name: string): asserts value is SmsCursor 
   }
 }
 
+function checkedReplayCheckpoint(value: unknown, name: string): SmsReplayCheckpoint | null {
+  if (value === null) return null;
+  const checkpoint = readOwnDataRecord(value, name, ['version', 'consentStartMs', 'cycleEndMs', 'windowStartMs', 'after']);
+  if (checkpoint.version !== 1 ||
+      !Number.isSafeInteger(checkpoint.consentStartMs) || (checkpoint.consentStartMs as number) <= 0 ||
+      !Number.isSafeInteger(checkpoint.cycleEndMs) || (checkpoint.cycleEndMs as number) < (checkpoint.consentStartMs as number) ||
+      !Number.isSafeInteger(checkpoint.windowStartMs) || (checkpoint.windowStartMs as number) < (checkpoint.consentStartMs as number) ||
+      (checkpoint.windowStartMs as number) > (checkpoint.cycleEndMs as number)) {
+    throw new TypeError(`${name} is invalid`);
+  }
+  const after = checkpoint.after === null
+    ? null
+    : readOwnDataRecord(checkpoint.after, `${name}.after`, ['receivedAt', 'platformId']);
+  assertCursor(after, `${name}.after`);
+  const windowEndMs = Math.min(checkpoint.cycleEndMs as number,
+    (checkpoint.windowStartMs as number) + maxSmsReplayWindowMs - 1);
+  if (after && (after.receivedAt < (checkpoint.windowStartMs as number) || after.receivedAt > windowEndMs)) {
+    throw new TypeError(`${name}.after is outside its replay window`);
+  }
+  return {
+    version: 1,
+    consentStartMs: checkpoint.consentStartMs as number,
+    cycleEndMs: checkpoint.cycleEndMs as number,
+    windowStartMs: checkpoint.windowStartMs as number,
+    after: after === null ? null : { receivedAt: after.receivedAt, platformId: after.platformId },
+  };
+}
+
+function sameReplayCheckpoint(left: SmsReplayCheckpoint | null, right: SmsReplayCheckpoint | null): boolean {
+  return left === null || right === null
+    ? left === right
+    : left.version === right.version && left.consentStartMs === right.consentStartMs &&
+      left.cycleEndMs === right.cycleEndMs && left.windowStartMs === right.windowStartMs &&
+      left.after?.receivedAt === right.after?.receivedAt && left.after?.platformId === right.after?.platformId;
+}
+
 function assertPlatformId(value: unknown, name = 'platformId'): asserts value is string {
   if (typeof value !== 'string' || !/^[1-9][0-9]{0,18}$/.test(value) || BigInt(value) > maxPlatformId) {
     throw new TypeError(`${name} must be a canonical positive Android row ID`);
@@ -142,7 +198,7 @@ function validateReviewPageOptions(value: unknown): asserts value is SmsReviewPa
 }
 
 function snapshotSmsImportBatchOptions(value: unknown): SmsImportBatchOptions {
-  const options = readOwnDataRecord(value, 'SMS import batch options', ['catchupCompletedAt', 'assertSourceAccess', 'replayAfter'], false);
+  const options = readOwnDataRecord(value, 'SMS import batch options', ['catchupCompletedAt', 'assertSourceAccess', 'replayAfter', 'replayCheckpoint'], false);
   const completion = options.catchupCompletedAt;
   if (completion !== undefined && typeof completion !== 'function' &&
       (!Number.isSafeInteger(completion) || (completion as number) <= 0)) {
@@ -153,10 +209,20 @@ function snapshotSmsImportBatchOptions(value: unknown): SmsImportBatchOptions {
   }
   const hasReplayAfter = Reflect.ownKeys(options).includes('replayAfter');
   if (hasReplayAfter) assertCursor(options.replayAfter, 'replayAfter');
+  const hasReplayCheckpoint = Reflect.ownKeys(options).includes('replayCheckpoint');
+  let replayCheckpoint: SmsReplayCheckpointUpdate | undefined;
+  if (hasReplayCheckpoint) {
+    const update = readOwnDataRecord(options.replayCheckpoint, 'SMS replay checkpoint update', ['expected', 'next']);
+    replayCheckpoint = {
+      expected: checkedReplayCheckpoint(update.expected, 'expected replay checkpoint'),
+      next: checkedReplayCheckpoint(update.next, 'next replay checkpoint'),
+    };
+  }
   return {
     ...(completion === undefined ? {} : { catchupCompletedAt: completion as number | (() => number) }),
     ...(options.assertSourceAccess === undefined ? {} : { assertSourceAccess: options.assertSourceAccess as () => void | Promise<void> }),
     ...(hasReplayAfter ? { replayAfter: options.replayAfter as SmsCursor | null } : {}),
+    ...(replayCheckpoint === undefined ? {} : { replayCheckpoint }),
   };
 }
 
@@ -184,6 +250,33 @@ async function saveCatchupCompletion(ledger: ReturnType<typeof createLedger>, co
   const value = String(completedAt);
   await ledger.db.insert(preferences).values({ key: smsCatchupCompletionPreference, value })
     .onConflictDoUpdate({ target: preferences.key, set: { value } }).run();
+}
+
+function parseStoredSmsReplayCheckpoint(value: string | undefined): SmsReplayCheckpoint | null {
+  if (value === undefined) return null;
+  try {
+    const checkpoint = checkedReplayCheckpoint(JSON.parse(value), 'stored SMS replay checkpoint');
+    if (!checkpoint || JSON.stringify(checkpoint) !== value) throw new Error();
+    return checkpoint;
+  } catch {
+    throw new Error('Stored SMS replay checkpoint is invalid');
+  }
+}
+
+async function saveSmsReplayCheckpoint(
+  ledger: ReturnType<typeof createLedger>,
+  update: SmsReplayCheckpointUpdate,
+): Promise<void> {
+  const stored = await ledger.db.select().from(preferences).where(eq(preferences.key, smsReplayCheckpointPreference)).get();
+  const actual = parseStoredSmsReplayCheckpoint(stored?.value);
+  if (!sameReplayCheckpoint(actual, update.expected)) throw new StaleSmsReplayCheckpointError();
+  if (update.next === null) {
+    await ledger.db.delete(preferences).where(eq(preferences.key, smsReplayCheckpointPreference)).run();
+  } else {
+    const value = JSON.stringify(update.next);
+    await ledger.db.insert(preferences).values({ key: smsReplayCheckpointPreference, value })
+      .onConflictDoUpdate({ target: preferences.key, set: { value } }).run();
+  }
 }
 
 function compareCursor(left: SmsCursor, right: SmsCursor): number {
@@ -823,6 +916,11 @@ export function createSmsIngestion(
       const state = await readLedger.db.select().from(smsImportState).where(eq(smsImportState.id, 1)).get();
       return currentCursor(state);
     },
+    async getSmsReplayCheckpoint(): Promise<SmsReplayCheckpoint | null> {
+      const stored = await readLedger.db.select().from(preferences)
+        .where(eq(preferences.key, smsReplayCheckpointPreference)).get();
+      return parseStoredSmsReplayCheckpoint(stored?.value);
+    },
     async getSmsImportHealth(): Promise<SmsImportHealth> {
       const counts = await readLedger.db.select({
         completionValue: sql<string | null>`(
@@ -1025,6 +1123,7 @@ export function createSmsIngestion(
       const checkedOptions = snapshotSmsImportBatchOptions(options);
       const catchupCompletedAt = checkedOptions.catchupCompletedAt;
       const assertSourceAccess = checkedOptions.assertSourceAccess;
+      const replayCheckpointUpdate = checkedOptions.replayCheckpoint;
       assertCursor(expectedCursor, 'expectedCursor');
       validateBatch(batch, checkedOptions.replayAfter === undefined ? expectedCursor : checkedOptions.replayAfter);
       const rows = batch.map(({ platformId, sender, body, receivedAt }) => ({ platformId, sender, body, receivedAt }));
@@ -1166,7 +1265,8 @@ export function createSmsIngestion(
 
           result = { cursor, inserted: 0, duplicate: 0, review: 0, ignored: 0 };
           if (rows.length === 0) {
-            if (catchupCompletedAt !== undefined && !(await getFingerprintKeyPolicy(ledger)).allowCreate) {
+            if ((catchupCompletedAt !== undefined || replayCheckpointUpdate !== undefined) &&
+                !(await getFingerprintKeyPolicy(ledger)).allowCreate) {
               if (!fingerprints) throw new Error('A platform fingerprint provider is required for SMS imports');
               let fingerprinter: Fingerprinter;
               try { fingerprinter = await fingerprints({ allowCreate: false }); }
@@ -1175,6 +1275,7 @@ export function createSmsIngestion(
               if (state && state.keyId !== fingerprinter.keyId) throw new DuplicateReviewRequiredError();
               if (await requiresDuplicateReview(ledger, fingerprinter.keyId)) throw new DuplicateReviewRequiredError();
             }
+            if (replayCheckpointUpdate) await saveSmsReplayCheckpoint(ledger, replayCheckpointUpdate);
             await saveCompletion();
             return;
           }
@@ -1332,6 +1433,7 @@ export function createSmsIngestion(
             }).run();
           }
           result.cursor = nextCursor;
+          if (replayCheckpointUpdate) await saveSmsReplayCheckpoint(ledger, replayCheckpointUpdate);
           await saveCompletion();
         } finally {
           // A failed final check intentionally takes precedence over a writer error so revocation wins.

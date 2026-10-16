@@ -10,7 +10,7 @@ import {
 } from './android-sms-catchup';
 
 type CatchupReader = Pick<SmsReaderModule, 'getPermissionsAsync' | 'getImportSettingsAsync' | 'queryInboxAsync'>;
-type CatchupStorage = Pick<DataLayer, 'getSmsImportCursor' | 'importSmsBatch'>;
+type CatchupStorage = Pick<DataLayer, 'getSmsImportCursor' | 'getSmsReplayCheckpoint' | 'importSmsBatch'>;
 type SettingsReader = Pick<SmsReaderModule, 'setImportSettingsAsync'>;
 type ReconcileReader = SettingsReader & Pick<SmsReaderModule, 'getPermissionsAsync' | 'getImportSettingsAsync'>;
 export type AndroidSmsBackgroundScheduler = { register(): Promise<void>; unregister(): Promise<void> };
