@@ -18,7 +18,7 @@ const maxBatchSize = 100;
 const maxBodyLength = 16_384;
 const maxSenderLength = 256;
 const maxPlatformId = 9_223_372_036_854_775_807n;
-const verifiedRuleVersions: Readonly<Record<string, number>> = {};
+const verifiedRuleVersions: Readonly<Record<string, number>> = { 'hdfc.upi.credit': 1 };
 const smsCatchupCompletionPreference = 'sms.last_successful_catchup_at';
 
 export type SmsCursor = { receivedAt: number; platformId: string };

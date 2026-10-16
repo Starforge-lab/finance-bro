@@ -26,7 +26,7 @@ const weakSms = {
 const hdfcCreditSms = {
   sender: 'VM-HDFCBK-S',
   body: 'Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 123456789012)',
-  receivedAt: Date.parse('2026-10-07T10:00:00.000Z'),
+  receivedAt: Date.parse('2026-09-27T10:00:00+05:30'),
 };
 
 type HdfcCreditAccount = { id: string; institution: string; type: 'bank' | 'credit_card'; archived?: boolean };
@@ -67,6 +67,10 @@ async function addHdfcAccount(api: ReturnType<typeof createApi>) {
   await api.createAccount({ id: 'hdfc-1234', name: 'Fictional HDFC', type: 'bank', institution: 'hdfc', last4: '1234' });
 }
 
+async function addHdfcSettingsBankAccount(api: ReturnType<typeof createApi>, id = 'hdfc-settings-1234') {
+  await api.createAccount({ id, name: 'Fictional HDFC Bank', type: 'bank', institution: 'HDFC Bank', last4: '1234' });
+}
+
 function smsRow(platformId: string, raw = strongSms, receivedAt = raw.receivedAt) {
   return { ...raw, platformId, receivedAt };
 }
@@ -89,7 +93,15 @@ async function importHdfcCreditWithAccounts(accountRows: HdfcCreditAccount[]) {
     const result = await api.importSmsBatch([smsRow('80', hdfcCreditSms)], null);
     const reference = await fixture.ledger.db.select().from(smsImportRefs).where(eq(smsImportRefs.platformId, '80')).get();
     const institutions = await fixture.ledger.db.select({ institution: accounts.institution }).from(accounts).all();
-    return { reason: reference?.reason, result, institutions: institutions.map((account) => account.institution) };
+    return {
+      status: reference?.status ?? null,
+      reason: reference?.reason ?? null,
+      ruleId: reference?.ruleId ?? null,
+      ruleVersion: reference?.ruleVersion ?? null,
+      transactionId: reference?.transactionId ?? null,
+      result,
+      institutions: institutions.map((account) => account.institution),
+    };
   } finally { fixture.sqlite.close(); }
 }
 
@@ -219,33 +231,310 @@ describe('Android SMS ingestion storage seam', () => {
   });
 
   it('resolves HDFC credit suffixes only to one active HDFC bank account', async () => {
-    const scenarios: Array<{ name: string; accounts: HdfcCreditAccount[]; reason: string }> = [
-      { name: 'canonical institution', accounts: [{ id: 'canonical', institution: 'hdfc', type: 'bank' }], reason: 'unverified_rule' },
-      { name: 'Settings institution alias', accounts: [{ id: 'alias', institution: 'HDFC Bank', type: 'bank' }], reason: 'unverified_rule' },
-      { name: 'case and whitespace normalization', accounts: [{ id: 'normalized', institution: '  hDfC   BaNk  ', type: 'bank' }], reason: 'unverified_rule' },
+    const scenarios: Array<{
+      name: string;
+      accounts: HdfcCreditAccount[];
+      status: 'saved' | 'review';
+      reason: string | null;
+    }> = [
+      { name: 'canonical institution', accounts: [{ id: 'canonical', institution: 'hdfc', type: 'bank' }], status: 'saved', reason: null },
+      { name: 'Settings institution alias', accounts: [{ id: 'alias', institution: 'HDFC Bank', type: 'bank' }], status: 'saved', reason: null },
+      { name: 'case and whitespace normalization', accounts: [{ id: 'normalized', institution: '  hDfC   BaNk  ', type: 'bank' }], status: 'saved', reason: null },
       { name: 'two aliased banks are ambiguous', accounts: [
         { id: 'canonical-bank', institution: 'hdfc', type: 'bank' },
         { id: 'alias-bank', institution: 'HDFC Bank', type: 'bank' },
-      ], reason: 'unknown_account' },
-      { name: 'card-only match stays unresolved', accounts: [{ id: 'card-only', institution: 'HDFC Bank', type: 'credit_card' }], reason: 'unknown_account' },
+      ], status: 'review', reason: 'unknown_account' },
+      { name: 'card-only match stays unresolved', accounts: [{ id: 'card-only', institution: 'HDFC Bank', type: 'credit_card' }], status: 'review', reason: 'unknown_account' },
       { name: 'bank wins over same-suffix card', accounts: [
         { id: 'bank-and-card-bank', institution: 'HDFC Bank', type: 'bank' },
         { id: 'bank-and-card-card', institution: 'hdfc', type: 'credit_card' },
-      ], reason: 'unverified_rule' },
-      { name: 'archived account is excluded', accounts: [{ id: 'archived', institution: 'hdfc', type: 'bank', archived: true }], reason: 'unknown_account' },
-      { name: 'unknown institution is not guessed by suffix', accounts: [{ id: 'unknown-bank', institution: 'HDFC Financial', type: 'bank' }], reason: 'unknown_account' },
+      ], status: 'saved', reason: null },
+      { name: 'archived account is excluded', accounts: [{ id: 'archived', institution: 'hdfc', type: 'bank', archived: true }], status: 'review', reason: 'unknown_account' },
+      { name: 'unknown institution is not guessed by suffix', accounts: [{ id: 'unknown-bank', institution: 'HDFC Financial', type: 'bank' }], status: 'review', reason: 'unknown_account' },
     ];
-    const actual: string[] = [];
 
     for (const scenario of scenarios) {
       const imported = await importHdfcCreditWithAccounts(scenario.accounts);
-      actual.push(imported.reason ?? 'missing_reference');
-      assert.equal(imported.result.review, 1, scenario.name);
-      assert.equal(imported.result.inserted, 0, scenario.name);
+      assert.equal(imported.status, scenario.status, scenario.name);
+      assert.equal(imported.reason, scenario.reason, scenario.name);
+      assert.equal(imported.result.review, scenario.status === 'saved' ? 0 : 1, scenario.name);
+      assert.equal(imported.result.inserted, scenario.status === 'saved' ? 1 : 0, scenario.name);
       assert.deepEqual(imported.institutions, scenario.accounts.map((account) => account.institution), scenario.name);
+      if (scenario.status === 'saved') {
+        assert.equal(imported.ruleId, 'hdfc.upi.credit', scenario.name);
+        assert.equal(imported.ruleVersion, 1, scenario.name);
+        assert.ok(imported.transactionId, scenario.name);
+      }
     }
+  });
 
-    assert.deepEqual(actual, scenarios.map((scenario) => scenario.reason), scenarios.map((scenario) => scenario.name).join(', '));
+  it('auto-saves an HDFC credit with the verified rule and exact transaction fields', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcSettingsBankAccount(api);
+      const row = smsRow('300', hdfcCreditSms);
+
+      const result = await api.importSmsBatch([row], null);
+
+      assert.deepEqual(result, {
+        cursor: { receivedAt: row.receivedAt, platformId: row.platformId },
+        inserted: 1,
+        duplicate: 0,
+        review: 0,
+        ignored: 0,
+      });
+      const referenceId = smsReferenceId(fixture.sqlite, row.platformId, row.receivedAt);
+      const reference = await fixture.ledger.db.select().from(smsImportRefs)
+        .where(eq(smsImportRefs.referenceId, referenceId)).get();
+      assert.equal(reference?.status, 'saved');
+      assert.equal(reference?.reason, null);
+      assert.equal(reference?.ruleId, 'hdfc.upi.credit');
+      assert.equal(reference?.ruleVersion, 1);
+      assert.equal(reference?.transactionId, 'sms:' + referenceId);
+
+      const transactionId = 'sms:' + referenceId;
+      const persisted = await fixture.ledger.db.select().from(transactions)
+        .where(eq(transactions.id, transactionId)).get();
+      const transaction = await api.getTransaction(transactionId);
+      assert.ok(persisted);
+      assert.equal(transaction?.amountPaise, 25075);
+      assert.equal(transaction?.direction, 'credit');
+      assert.equal(transaction?.kind, 'income');
+      assert.equal(transaction?.status, 'posted');
+      assert.equal(transaction?.accountId, 'hdfc-settings-1234');
+      assert.equal(transaction?.occurredAt.getTime(), Date.parse('2026-09-27T10:00:00+05:30'));
+      assert.equal(transaction?.source, 'sms');
+      assert.equal(transaction?.userEdited, false);
+      assert.equal(persisted?.upiRef, '123456789012');
+      assert.equal(persisted?.smsRefId, 'android-sms:' + referenceId);
+      assert.equal(persisted?.ruleId, 'hdfc.upi.credit');
+      assert.equal(persisted?.ruleVersion, 1);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('keeps an HDFC UPI credit idempotent on source replay and a second row', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcSettingsBankAccount(api);
+      const firstRow = smsRow('310', hdfcCreditSms);
+      const first = await api.importSmsBatch([firstRow], null);
+      const firstReferenceId = smsReferenceId(fixture.sqlite, firstRow.platformId, firstRow.receivedAt);
+
+      const replay = await api.importSmsBatch([firstRow], first.cursor, { replayAfter: null });
+      assert.equal(replay.duplicate, 1);
+      assert.equal(replay.inserted, 0);
+      assert.equal(replay.review, 0);
+      const repeatedRow = smsRow('311', hdfcCreditSms);
+      const repeated = await api.importSmsBatch([repeatedRow], replay.cursor);
+
+      assert.equal(first.inserted, 1);
+      assert.equal(repeated.duplicate, 1);
+      assert.equal(repeated.inserted, 0);
+      const firstReference = await fixture.ledger.db.select().from(smsImportRefs)
+        .where(eq(smsImportRefs.referenceId, firstReferenceId)).get();
+      const repeatedReference = await fixture.ledger.db.select().from(smsImportRefs)
+        .where(eq(smsImportRefs.platformId, repeatedRow.platformId)).get();
+      assert.equal(firstReference?.status, 'saved');
+      assert.equal(repeatedReference?.status, 'duplicate');
+      assert.equal(repeatedReference?.transactionId, 'sms:' + firstReferenceId);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+      assert.equal((await fixture.ledger.db.select().from(smsImportRefs).all()).length, 2);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('does not overwrite an edited HDFC credit when the same event reappears', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcSettingsBankAccount(api);
+      const first = await api.importSmsBatch([smsRow('320', hdfcCreditSms)], null);
+      const referenceId = smsReferenceId(fixture.sqlite, '320', hdfcCreditSms.receivedAt);
+      const transactionId = 'sms:' + referenceId;
+      assert.equal(first.inserted, 1);
+      assert.equal(await api.editTransaction(transactionId, {
+        amountPaise: 25123,
+        accountId: null,
+        note: 'Fictional user correction',
+      }), true);
+
+      const repeated = await api.importSmsBatch([smsRow('321', hdfcCreditSms)], first.cursor);
+      const transaction = await api.getTransaction(transactionId);
+      const reference = await fixture.ledger.db.select().from(smsImportRefs)
+        .where(eq(smsImportRefs.platformId, '321')).get();
+
+      assert.equal(repeated.duplicate, 1);
+      assert.equal(reference?.status, 'duplicate');
+      assert.equal(reference?.transactionId, transactionId);
+      assert.equal(transaction?.amountPaise, 25123);
+      assert.equal(transaction?.accountId, null);
+      assert.equal(transaction?.note, 'Fictional user correction');
+      assert.equal(transaction?.userEdited, true);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('does not resurrect a deleted HDFC credit when the same event reappears', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcSettingsBankAccount(api);
+      const first = await api.importSmsBatch([smsRow('330', hdfcCreditSms)], null);
+      const referenceId = smsReferenceId(fixture.sqlite, '330', hdfcCreditSms.receivedAt);
+      const transactionId = 'sms:' + referenceId;
+      const deletedAt = new Date(Date.parse('2026-10-01T10:00:00Z'));
+      assert.equal(first.inserted, 1);
+      assert.equal(await fixture.ledger.softDeleteTransaction(transactionId, deletedAt), true);
+
+      const repeated = await api.importSmsBatch([smsRow('331', hdfcCreditSms)], first.cursor);
+      const transaction = await fixture.ledger.db.select().from(transactions)
+        .where(eq(transactions.id, transactionId)).get();
+      const reference = await fixture.ledger.db.select().from(smsImportRefs)
+        .where(eq(smsImportRefs.platformId, '331')).get();
+
+      assert.equal(repeated.duplicate, 1);
+      assert.equal(reference?.status, 'duplicate');
+      assert.equal(reference?.transactionId, transactionId);
+      assert.equal(transaction?.deletedAt?.getTime(), deletedAt.getTime());
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('links a prior HDFC credit paste to the SMS import once', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcSettingsBankAccount(api);
+      const prepared = await api.preparePaste(hdfcCreditSms);
+      if (prepared.kind !== 'needs-review') throw new Error('Fictional HDFC credit must parse for paste');
+      assert.equal(await api.saveReviewedPaste(prepared, { accountId: 'hdfc-settings-1234' }), 'inserted');
+
+      const imported = await api.importSmsBatch([smsRow('340', hdfcCreditSms)], null);
+      const reference = await fixture.ledger.db.select().from(smsImportRefs)
+        .where(eq(smsImportRefs.platformId, '340')).get();
+      const paste = await api.getTransaction(prepared.identity.id);
+
+      assert.equal(imported.duplicate, 1);
+      assert.equal(imported.inserted, 0);
+      assert.equal(reference?.status, 'duplicate');
+      assert.equal(reference?.transactionId, prepared.identity.id);
+      assert.equal(paste?.source, 'paste');
+      assert.equal(paste?.userEdited, true);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('keeps a prior HDFC auto-import when the matching paste arrives later', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcSettingsBankAccount(api);
+      const imported = await api.importSmsBatch([smsRow('350', hdfcCreditSms)], null);
+      const referenceId = smsReferenceId(fixture.sqlite, '350', hdfcCreditSms.receivedAt);
+      const prepared = await api.preparePaste(hdfcCreditSms);
+      if (prepared.kind !== 'needs-review') throw new Error('Fictional HDFC credit must parse for paste');
+
+      assert.equal(imported.inserted, 1);
+      assert.equal(await api.saveReviewedPaste(prepared, { accountId: 'hdfc-settings-1234' }), 'duplicate');
+      const reference = await fixture.ledger.db.select().from(smsImportRefs)
+        .where(eq(smsImportRefs.referenceId, referenceId)).get();
+      const transaction = await api.getTransaction('sms:' + referenceId);
+
+      assert.equal(reference?.status, 'saved');
+      assert.equal(reference?.transactionId, 'sms:' + referenceId);
+      assert.equal(transaction?.source, 'sms');
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('keeps inconsistent and ambiguous HDFC UPI overlaps in review', async () => {
+    for (const scenario of [
+      { name: 'changed amount with a reused reference', ids: ['overlap-mismatch'], amount: 25075, reason: 'inconsistent_evidence' },
+      { name: 'multiple rows with the same reference', ids: ['overlap-ambiguous-one', 'overlap-ambiguous-two'], amount: 25075, reason: 'ambiguous_evidence' },
+    ] as const) {
+      const fixture = openTestLedger();
+      try {
+        const api = createApi(fixture);
+        await api.migrateLedger();
+        await addHdfcSettingsBankAccount(api);
+        const prepared = await api.preparePaste(hdfcCreditSms);
+        if (prepared.kind !== 'needs-review' || !prepared.candidate) throw new Error('Fictional HDFC credit must parse');
+        for (const id of scenario.ids) {
+          await fixture.ledger.upsertImportedTransaction({
+            id,
+            amountPaise: scenario.amount,
+            direction: prepared.candidate.direction,
+            kind: prepared.candidate.kind,
+            status: prepared.candidate.status,
+            accountId: 'hdfc-settings-1234',
+            counterparty: prepared.candidate.counterparty,
+            merchantId: null,
+            categoryId: null,
+            occurredAt: new Date(prepared.candidate.occurredAt),
+            note: null,
+            source: 'sms',
+            smsRefId: 'android-sms:' + id,
+            upiRef: prepared.candidate.upiRef,
+            dedupeKey: prepared.identity.dedupeKey,
+            bodyHash: 'f'.repeat(64),
+            ruleId: prepared.ruleId,
+            ruleVersion: prepared.ruleVersion,
+            linkedTxnId: null,
+            excludeFromStats: false,
+          });
+        }
+
+        const changed = scenario.name === 'changed amount with a reused reference'
+          ? { ...hdfcCreditSms, body: hdfcCreditSms.body.replace('250.75', '251.75') }
+          : hdfcCreditSms;
+        const imported = await api.importSmsBatch([smsRow('360', changed)], null);
+        const reference = await fixture.ledger.db.select().from(smsImportRefs)
+          .where(eq(smsImportRefs.platformId, '360')).get();
+
+        assert.equal(imported.review, 1, scenario.name);
+        assert.equal(imported.inserted, 0, scenario.name);
+        assert.equal(reference?.status, 'review', scenario.name);
+        assert.equal(reference?.reason, scenario.reason, scenario.name);
+        assert.equal(reference?.transactionId, null, scenario.name);
+        assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, scenario.ids.length, scenario.name);
+      } finally { fixture.sqlite.close(); }
+    }
+  });
+
+  it('keeps unsupported or unsafe HDFC credit candidates in review', async () => {
+    const fixture = openTestLedger();
+    try {
+      const api = createApi(fixture);
+      await api.migrateLedger();
+      await addHdfcSettingsBankAccount(api);
+      const unsupported = {
+        ...hdfcCreditSms,
+        body: hdfcCreditSms.body.replace(' (UPI 123456789012)', ''),
+      };
+      const unsafeAmount = {
+        ...hdfcCreditSms,
+        body: hdfcCreditSms.body.replace('Rs.250.75', 'Rs.0.00'),
+      };
+
+      const result = await api.importSmsBatch([
+        smsRow('370', unsupported),
+        smsRow('371', unsafeAmount, hdfcCreditSms.receivedAt + 1_000),
+      ], null);
+      const references = await fixture.ledger.db.select().from(smsImportRefs).all();
+      references.sort((left, right) => Number(left.platformId) - Number(right.platformId));
+
+      assert.equal(result.review, 2);
+      assert.equal(result.inserted, 0);
+      assert.deepEqual(references.map((reference) => reference.reason), ['weak_identity', 'unknown_format']);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 0);
+    } finally { fixture.sqlite.close(); }
   });
 
   it('keeps unreadable string content in body-free review and advances the cursor', async () => {
