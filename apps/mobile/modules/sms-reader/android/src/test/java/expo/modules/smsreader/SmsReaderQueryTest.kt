@@ -29,6 +29,29 @@ class SmsReaderQueryTest {
   }
 
   @Test
+  fun newestFirstDefaultsToAscendingAndSelectsDescendingOrder() {
+    val ascending = parseQuery(options())
+    assertEquals(false, field(ascending, "newestFirst"))
+
+    val newestFirst = parseQuery(options(newestFirst = true))
+    assertEquals(true, field(newestFirst, "newestFirst"))
+    assertEquals("${Telephony.Sms.DATE} ASC, ${BaseColumns._ID} ASC", smsInboxSortOrder(false))
+    assertEquals("${Telephony.Sms.DATE} DESC, ${BaseColumns._ID} DESC", smsInboxSortOrder(true))
+  }
+
+  @Test
+  fun rejectsInvalidNewestFirstValuesAndCombiningItWithACursor() {
+    listOf(
+      options(newestFirst = null),
+      options(newestFirst = "true"),
+      options(newestFirst = 1L),
+      options(newestFirst = true, after = cursor(START, "1"))
+    ).forEach { invalid ->
+      assertThrows(IllegalArgumentException::class.java) { parseQuery(invalid) }
+    }
+  }
+
+  @Test
   fun acceptsCanonicalPlatformIdsBeyondJavaScriptSafeInteger() {
     val query = parseQuery(options(after = cursor(END, "9007199254740993")))
     val after = field(query, "after")!!
@@ -48,6 +71,16 @@ class SmsReaderQueryTest {
 
     assertTrue(isAfter(END, 9_007_199_254_740_993L, END, 9_007_199_254_740_992L))
     assertFalse(isAfter(END, 9_007_199_254_740_992L, END, 9_007_199_254_740_993L))
+  }
+
+  @Test
+  fun ordersNewestFirstStrictlyByDescendingDateAndNumericPlatformId() {
+    assertTrue(isBefore(END, 2L, END, 10L))
+    assertFalse(isBefore(END, 10L, END, 2L))
+    assertFalse(isBefore(END, 10L, END, 10L))
+    assertTrue(isBefore(START, Long.MAX_VALUE, END, 1L))
+    assertFalse(isBefore(END, 1L, START, Long.MAX_VALUE))
+    assertTrue(isBefore(END, 9_007_199_254_740_992L, END, 9_007_199_254_740_993L))
   }
 
   @Test
@@ -200,13 +233,15 @@ class SmsReaderQueryTest {
     start: Any? = START,
     end: Any? = END,
     limit: Any? = 1L,
-    after: Any? = null
-  ): Map<String, Any?> = mapOf(
-    "startDateMs" to start,
-    "endDateMs" to end,
-    "limit" to limit,
-    "after" to after
-  )
+    after: Any? = null,
+    newestFirst: Any? = Omitted
+  ): Map<String, Any?> = buildMap {
+    put("startDateMs", start)
+    put("endDateMs", end)
+    put("limit", limit)
+    put("after", after)
+    if (newestFirst !== Omitted) put("newestFirst", newestFirst)
+  }
 
   private fun cursor(dateMs: Any?, id: Any?): Map<String, Any?> = mapOf("dateMs" to dateMs, "id" to id)
 
@@ -219,10 +254,15 @@ class SmsReaderQueryTest {
   private fun isAfter(date: Long, id: Long, otherDate: Long, otherId: Long): Boolean =
     isAfterMethod.invoke(null, newCursor(date, id), newCursor(otherDate, otherId)) as Boolean
 
+  private fun isBefore(date: Long, id: Long, otherDate: Long, otherId: Long): Boolean =
+    isBeforeMethod.invoke(null, newCursor(date, id), newCursor(otherDate, otherId)) as Boolean
+
   private fun newCursor(date: Long, id: Long): Any = cursorConstructor.newInstance(date, id)
 
   private fun field(instance: Any, name: String): Any? =
     instance.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(instance)
+
+  private object Omitted
 
   private data class Row(
     val id: Long = 42L,
@@ -287,6 +327,9 @@ class SmsReaderQueryTest {
     private val parseMethod = parserClass.getDeclaredMethod("parseQuery", Map::class.java).apply { isAccessible = true }
     private val isAfterMethod = parserClass.declaredMethods.single {
       it.name == "isAfter" && it.parameterCount == 2
+    }.apply { isAccessible = true }
+    private val isBeforeMethod = parserClass.declaredMethods.single {
+      it.name == "isBefore" && it.parameterCount == 2
     }.apply { isAccessible = true }
     private val cursorClass = Class.forName("expo.modules.smsreader.InboxCursor")
     private val cursorConstructor = cursorClass.declaredConstructors.single {

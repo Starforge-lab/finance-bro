@@ -22,6 +22,7 @@ export type SmsInboxQuery = {
   endDateMs: number;
   after?: SmsInboxCursor;
   limit: number;
+  newestFirst?: boolean;
 };
 
 export type SmsInboxQueryResult = {

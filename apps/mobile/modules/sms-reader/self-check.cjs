@@ -101,6 +101,9 @@ assert.match(workSource, /if \(!isEligible\(context\)\) return finish\(SmsWakeOu
 assert.doesNotMatch(workSource, /Class\.forName|BackgroundTaskScheduler|HeadlessJsTaskService/);
 assert.match(moduleSource, /AsyncFunction\("getImportSettingsAsync"\)/);
 assert.match(moduleSource, /AsyncFunction\("getElapsedRealtimeAsync"\)/);
+assert.match(moduleSource, /newestFirst: Boolean/);
+assert.match(moduleSource, /smsInboxSortOrder\(query\.newestFirst\)/);
+assert.match(moduleSource, /rowCursor\.isBefore\(previous\)/);
 assert.match(moduleSource, /AsyncFunction\("setImportSettingsAsync"\)/);
 assert.match(moduleSource, /registerTask\(SMS_WAKE_TASK_NAME, SmsCatchupWakeTaskConsumer::class\.java/);
 assert.ok(moduleSource.indexOf('SmsCatchupWakeWork.cancel') < moduleSource.indexOf('taskManager.unregisterTask'),
@@ -108,6 +111,7 @@ assert.ok(moduleSource.indexOf('SmsCatchupWakeWork.cancel') < moduleSource.index
 assert.match(typesSource, /previewEndDateMs\?: number/);
 assert.match(typesSource, /registerWakeTaskAsync\(\): Promise<void>/);
 assert.match(typesSource, /lastMultipartCount: number/);
+assert.match(typesSource, /newestFirst\?: boolean/);
 assert.match(typesSource, /lastOutcome\?: 'success' \| 'failed' \| 'deferred' \| null/);
 assert.match(metadataSource, /"lastMultipartCount" to 0/);
 assert.match(metadataSource, /"lastAttemptAtMs"/);

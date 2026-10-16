@@ -29,7 +29,8 @@ private data class InboxQuery(
   val startDateMs: Long,
   val endDateMs: Long,
   val after: InboxCursor?,
-  val limit: Int
+  val limit: Int,
+  val newestFirst: Boolean
 )
 
 class SmsReaderModule : Module() {
@@ -121,6 +122,13 @@ private fun parseQuery(options: Map<String, Any?>): InboxQuery {
   val limitValue = options.safeInteger("limit")
   require(limitValue in 1L..MAX_BATCH_SIZE.toLong()) { "SMS query limit must be from 1 to 100" }
 
+  val newestFirst = if (options.containsKey("newestFirst")) {
+    options["newestFirst"] as? Boolean
+      ?: throw IllegalArgumentException("newestFirst must be a boolean")
+  } else {
+    false
+  }
+
   val after = when (val value = options["after"]) {
     null -> null
     is Map<*, *> -> {
@@ -135,8 +143,9 @@ private fun parseQuery(options: Map<String, Any?>): InboxQuery {
     }
     else -> throw IllegalArgumentException("SMS cursor must be an object")
   }
+  require(!newestFirst || after == null) { "newestFirst cannot be combined with an after cursor" }
 
-  return InboxQuery(startDateMs, endDateMs, after, limitValue.toInt())
+  return InboxQuery(startDateMs, endDateMs, after, limitValue.toInt(), newestFirst)
 }
 
 private fun Map<*, *>.safeInteger(name: String): Long {
@@ -175,7 +184,7 @@ private fun queryInbox(context: Context, query: InboxQuery): Map<String, Any?> {
     projection,
     selection,
     selectionArgs,
-    "$dateColumn ASC, $idColumn ASC"
+    smsInboxSortOrder(query.newestFirst)
   ) ?: throw IllegalStateException("SMS inbox provider did not return a cursor")
 
   cursor.use {
@@ -191,7 +200,10 @@ private fun queryInbox(context: Context, query: InboxQuery): Map<String, Any?> {
       }
       val rowCursor = cursor.toInboxCursor(idIndex, dateIndex)
       require(rowCursor.dateMs in query.startDateMs..query.endDateMs) { "SMS provider returned a date outside the requested range" }
-      require(previousCursor == null || rowCursor.isAfter(previousCursor!!)) {
+      val isInOrder = previousCursor?.let { previous ->
+        if (query.newestFirst) rowCursor.isBefore(previous) else rowCursor.isAfter(previous)
+      } ?: true
+      require(isInOrder) {
         "SMS provider returned rows outside the requested cursor order"
       }
       previousCursor = rowCursor
@@ -205,7 +217,15 @@ private fun queryInbox(context: Context, query: InboxQuery): Map<String, Any?> {
     }
   }
 
-  return mapOf("messages" to messages, "next" to lastCursor?.takeIf { hasMore }?.toMap())
+  return mapOf(
+    "messages" to messages,
+    "next" to if (query.newestFirst) null else lastCursor?.takeIf { hasMore }?.toMap()
+  )
+}
+
+internal fun smsInboxSortOrder(newestFirst: Boolean): String {
+  val direction = if (newestFirst) "DESC" else "ASC"
+  return "${Telephony.Sms.DATE} $direction, ${BaseColumns._ID} $direction"
 }
 
 private fun readInboxMessage(context: Context, id: Long): Map<String, Any?>? {
@@ -279,5 +299,8 @@ private fun Cursor.toInboxCursor(idIndex: Int, dateIndex: Int): InboxCursor {
 
 private fun InboxCursor.isAfter(other: InboxCursor): Boolean =
   dateMs > other.dateMs || (dateMs == other.dateMs && id > other.id)
+
+private fun InboxCursor.isBefore(other: InboxCursor): Boolean =
+  dateMs < other.dateMs || (dateMs == other.dateMs && id < other.id)
 
 private fun Cursor.getStringOrNull(index: Int): String? = if (isNull(index)) null else getString(index)
