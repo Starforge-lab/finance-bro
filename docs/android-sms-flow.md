@@ -5,6 +5,12 @@ private Android QA run has exercised the flow with fictional source rows and
 isolated storage; that bounded evidence is not Android SMS 2.0 release
 acceptance.
 
+The [2026-10-17 acceptance record](android-sms-acceptance-20261017.md) adds
+separately consented real-provider preview/disposable-ingestion checks, the
+initial Settings consent/permission flow, revoked-permission recovery and a
+device-reproduced consent-status fix. It does not close live-delivery or release
+gates.
+
 ## Consent and preview
 
 Normal Android builds declare READ_SMS and RECEIVE_SMS. Neither declaration nor

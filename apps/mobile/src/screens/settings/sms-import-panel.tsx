@@ -317,12 +317,16 @@ export function SmsImportPanel({
         throw new Error('consent_range_changed');
       }
       if (!isCurrent()) return;
+      await refresh(isCurrent);
+      if (!isCurrent()) return;
       await runEnabledAndroidSmsCatchup(reader, ledger, preview.startDateMs, preview.endDateMs);
       if (!isCurrent()) return;
       setPreview(null);
       await refresh(isCurrent);
     } catch (error) {
       if (!isCurrent() || isAbortError(error)) return;
+      await refresh(isCurrent);
+      if (!isCurrent()) return;
       if (error instanceof AndroidSmsCatchupError) setFailure(`${error.message} Retry the preview, or use paste.`);
       else if (error instanceof Error && error.message === 'consent_range_changed') setFailure('SMS consent changed. Preview again before importing.');
       else if (error instanceof Error && error.message === 'permission_revoked') setFailure('SMS permission is no longer available. Import is unchanged; grant permission and preview again.');
