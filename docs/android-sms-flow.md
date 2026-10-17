@@ -271,10 +271,9 @@ scheduler backlog. This proves the production runner's bounded storage and
 replay path from an absent process into a fresh headless runtime. It does not
 prove naturally timed task delivery, SMS receiver or multipart delivery, real
 inbox access, permission or consent lifecycle, or behavior after device reboot.
-The installed APK also predates the current native capture-health API, so its
-counters and visible status flow still need a matching native rebuild and device
-check. Cleanup
-completed: the QA task was unregistered, its manifest and unique database were
+That installed APK predates the capture-health API; the separate matching
+verification appears below. Cleanup completed: the QA task was unregistered,
+its manifest and unique database were
 removed, and no scheduled job remained.
 
 ## Capture-health device verification
