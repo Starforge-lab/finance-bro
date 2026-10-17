@@ -164,6 +164,8 @@ describe('Android SMS foreground catch-up coordinator', () => {
       const reader = {
         async getPermissionsAsync() { return permissions; },
         async getImportSettingsAsync() { return { enabled, startDateMs: start }; },
+        async beginCaptureAttemptAsync() { return enabled ? 1 : null; },
+        async finishCaptureAttemptAsync() {},
         async queryInboxAsync() {
           queries += 1;
           enabled = false;

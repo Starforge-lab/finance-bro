@@ -57,9 +57,10 @@ policy.
 `DataLayer.getSmsImportHealth()` is read-only. It returns the last successful
 catch-up time, the current pending-review count, and the non-posted-alert subset
 of that count. It reads no inbox rows and does not request permissions or load or
-create a fingerprint key. Catch-up failures and unavailable outcomes are not
-stored as history; callers can report the current operation result, but this API
-does not fabricate durable failed-operation or unavailable counts.
+create a fingerprint key. This SQLite API does not count failed capture runs.
+The Android reader separately persists body-free capture outcomes in its
+existing native preferences; Settings keeps those recorded-check counts separate
+from the non-posted payment-alert review count. See [capture health](android-sms-flow.md).
 
 `catchUpAndroidSms` is the framework-free foreground coordinator for part of
 #44. Its caller supplies the native reader, the shared data layer, an explicit
@@ -304,11 +305,12 @@ or background execution.
 - #43's selection/recovery path now has isolated Android UI evidence with a
   fictional reader: an old selection showed fallback without redirecting or
   saving, a new selection confirmed, and a corrected transaction was saved.
-  Failed/unavailable operation-count semantics and presentation,
-  protected-key unavailability/loss lifecycle proof, and full native
+  Persistent failed/unavailable capture reporting is implemented in source but
+  awaits the matching native rebuild/device check. Protected-key
+  unavailability/loss lifecycle proof and full native
   cross-source regression evidence remain open. The storage health API reports
-  persisted pending reviews and the non-posted-alert subset; it does not retain
-  failed/unavailable operation history. The missing-key creation guard is
+  persisted pending reviews and the non-posted-alert subset; native capture
+  attempt counters are a separate status record. The missing-key creation guard is
   implemented and tested in source/platform mocks and an isolated real browser
   key-store probe; actual Android store/lifecycle proof remains incomplete.
 - #44's preview/cancel UI path was exercised with fictional rows, but positive

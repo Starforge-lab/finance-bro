@@ -30,6 +30,23 @@ export type SmsInboxQueryResult = {
   next: SmsInboxCursor | null;
 };
 
+export type SmsCaptureFailureCode =
+  | 'permission_denied'
+  | 'permission_unavailable'
+  | 'invalid_consent'
+  | 'source_unavailable'
+  | 'invalid_source_page'
+  | 'stale_cursor'
+  | 'storage_unavailable'
+  | 'key_unavailable'
+  | 'duplicate_review_required'
+  | 'invalid_clock'
+  | 'time_budget_exceeded'
+  | 'background_unavailable'
+  | 'unexpected';
+
+export type SmsCaptureOutcome = 'success' | 'failed' | 'unavailable' | 'cancelled';
+
 export type SmsWakeMetadata = {
   count: number;
   lastReceivedAtMs: number | null;
@@ -37,6 +54,10 @@ export type SmsWakeMetadata = {
   lastAttemptAtMs?: number | null;
   lastOutcome?: 'success' | 'failed' | 'deferred' | null;
   failedAttemptCount?: number;
+  captureFailedCount?: number;
+  captureUnavailableCount?: number;
+  currentFailureCode?: SmsCaptureFailureCode | null;
+  currentFailureAtMs?: number | null;
 };
 
 export type SmsImportSettings = {
@@ -60,6 +81,12 @@ export type SmsReaderModule = {
   queryInboxAsync(options: SmsInboxQuery): Promise<SmsInboxQueryResult>;
   readInboxMessageAsync(platformId: string): Promise<SmsInboxMessage | null>;
   getWakeMetadataAsync(): Promise<SmsWakeMetadata>;
+  beginCaptureAttemptAsync(): Promise<number | null>;
+  finishCaptureAttemptAsync(
+    revision: number,
+    outcome: SmsCaptureOutcome,
+    code: SmsCaptureFailureCode | null
+  ): Promise<void>;
   getElapsedRealtimeAsync(): Promise<number>;
 };
 

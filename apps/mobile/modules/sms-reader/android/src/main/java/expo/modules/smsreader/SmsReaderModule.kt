@@ -98,6 +98,26 @@ class SmsReaderModule : Module() {
       readSmsWakeMetadata(context.smsWakePreferences())
     }
 
+    AsyncFunction("beginCaptureAttemptAsync") Coroutine { ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      withContext(Dispatchers.IO) {
+        beginSmsCaptureAttempt(context.smsImportSettingsPreferences(), context.smsWakePreferences())?.toDouble()
+      }
+    }
+
+    AsyncFunction("finishCaptureAttemptAsync") Coroutine { revision: Double, outcome: String, code: String? ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      withContext(Dispatchers.IO) {
+        finishSmsCaptureAttempt(
+          context.smsImportSettingsPreferences(),
+          context.smsWakePreferences(),
+          revision,
+          outcome,
+          code
+        )
+      }
+    }
+
     AsyncFunction("getElapsedRealtimeAsync") {
       SystemClock.elapsedRealtime().toDouble()
     }

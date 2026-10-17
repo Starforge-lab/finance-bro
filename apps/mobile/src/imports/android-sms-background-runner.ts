@@ -3,6 +3,7 @@ import type { DataLayer } from '../db/service';
 import { AndroidSmsCatchupError, type AndroidSmsCatchupErrorCode } from './android-sms-catchup';
 import {
   abortAndroidSmsCatchup,
+  persistAndroidSmsCaptureFailure,
   recordAndroidSmsCatchupFailure,
   runEnabledAndroidSmsCatchup,
 } from './android-sms-flow';
@@ -32,11 +33,24 @@ export async function runAndroidSmsBackgroundTask(
 ): Promise<AndroidSmsBackgroundTaskOutcome> {
   let timedOut = false;
   let catchupJoined = false;
+  let preflightHealthStarted = false;
+  let reader: SmsReaderModule | null = null;
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   let resolveTimeout!: (outcome: AndroidSmsBackgroundTaskOutcome) => void;
   const timeout = new Promise<AndroidSmsBackgroundTaskOutcome>((resolve) => { resolveTimeout = resolve; });
-  const fail = (code: AndroidSmsCatchupErrorCode): AndroidSmsBackgroundTaskOutcome => {
-    recordAndroidSmsCatchupFailure(new AndroidSmsCatchupError(timedOut ? 'time_budget_exceeded' : code));
+  const persistPreflightFailure = async (error: unknown, onTimeout = false): Promise<void> => {
+    if (!reader || (catchupJoined && !onTimeout) || preflightHealthStarted) return;
+    preflightHealthStarted = true;
+    try {
+      await persistAndroidSmsCaptureFailure(reader, error);
+    } catch {
+      // The background timeout must remain bounded even when native health storage is unavailable.
+    }
+  };
+  const fail = async (code: AndroidSmsCatchupErrorCode): Promise<AndroidSmsBackgroundTaskOutcome> => {
+    const error = new AndroidSmsCatchupError(timedOut ? 'time_budget_exceeded' : code);
+    recordAndroidSmsCatchupFailure(error);
+    await persistPreflightFailure(error);
     return 'failed';
   };
   const assertWithinBudget = () => {
@@ -45,8 +59,10 @@ export async function runAndroidSmsBackgroundTask(
 
   const expire = () => {
     timedOut = true;
+    const error = new AndroidSmsCatchupError('time_budget_exceeded');
     if (catchupJoined) abortAndroidSmsCatchup();
-    recordAndroidSmsCatchupFailure(new AndroidSmsCatchupError('time_budget_exceeded'));
+    recordAndroidSmsCatchupFailure(error);
+    void persistPreflightFailure(error, true).catch(() => {});
     resolveTimeout('failed');
   };
   const setBudgetTimer = (budgetMs: number) => {
@@ -66,7 +82,6 @@ export async function runAndroidSmsBackgroundTask(
       return fail('time_budget_exceeded');
     }
 
-    let reader: SmsReaderModule | null;
     try {
       reader = getReader();
     } catch {
@@ -120,15 +135,21 @@ export async function runAndroidSmsBackgroundTask(
       return fail('permission_denied');
     }
 
+    let ledger: DataLayer;
     try {
-      const ledger = await getLedger();
+      ledger = await getLedger();
       assertWithinBudget();
-      catchupJoined = true;
+    } catch {
+      return fail('storage_unavailable');
+    }
+
+    catchupJoined = true;
+    try {
       await runEnabledAndroidSmsCatchup(reader, ledger, startDateMs, Date.now());
       assertWithinBudget();
       return 'success';
     } catch (error) {
-      if (timedOut) return fail('time_budget_exceeded');
+      if (timedOut) return 'failed';
       recordAndroidSmsCatchupFailure(error);
       return 'failed';
     }

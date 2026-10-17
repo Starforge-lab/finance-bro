@@ -60,5 +60,5 @@ internal fun readSmsWakeMetadata(preferences: SharedPreferences): Map<String, An
     "lastAttemptAtMs" to preferences.getLong(LAST_ATTEMPT_AT_MS, 0L).takeIf { it in 1L..MAX_SAFE_INTEGER }?.toDouble(),
     "lastOutcome" to lastOutcome,
     "failedAttemptCount" to preferences.getLong(FAILED_ATTEMPT_COUNT, 0L).coerceIn(0L, MAX_SAFE_INTEGER).toDouble()
-  )
+  ) + readSmsCaptureHealthMetadata(preferences)
 }

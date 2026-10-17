@@ -27,6 +27,28 @@ function flushTurn(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+function fakeCaptureHealth(settings: SmsImportSettings) {
+  let begins = 0;
+  let latestRevision = 0;
+  let latestFinished = false;
+  const finishes: { revision: number; outcome: string; code: string | null }[] = [];
+  return {
+    async beginCaptureAttemptAsync() {
+      if (settings.enabled !== true || settings.startDateMs === null) return null;
+      begins += 1;
+      latestRevision = begins;
+      latestFinished = false;
+      return latestRevision;
+    },
+    async finishCaptureAttemptAsync(revision: number, outcome: string, code: string | null) {
+      if (revision !== latestRevision || latestFinished) return;
+      latestFinished = true;
+      finishes.push({ revision, outcome, code });
+    },
+    healthCalls: () => ({ begins, finishes: [...finishes] }),
+  };
+}
+
 function fakeReader(
   settings: SmsImportSettings,
   permissions: SmsPermissionState,
@@ -35,7 +57,9 @@ function fakeReader(
   let settingsReads = 0;
   let permissionReads = 0;
   let queries = 0;
+  const health = fakeCaptureHealth(settings);
   const reader = {
+    ...health,
     async getImportSettingsAsync() { settingsReads += 1; return settings; },
     async getPermissionsAsync() { permissionReads += 1; return permissions; },
     async queryInboxAsync() { queries += 1; return await onQuery(); },
@@ -44,6 +68,7 @@ function fakeReader(
   return {
     reader,
     reads: () => ({ settingsReads, permissionReads, queries }),
+    healthCalls: health.healthCalls,
   };
 }
 
@@ -121,6 +146,10 @@ test('Android SMS background task gates access before storage and shares the cat
     assert.equal(await runAndroidSmsBackgroundTask('android', () => denied.reader, async () => ({} as DataLayer)), 'failed');
     t.mock.timers.tick(backgroundBudgetMs);
     assert.equal(getAndroidSmsCatchupFailure(), 'permission_denied');
+    assert.deepEqual(denied.healthCalls(), {
+      begins: 1,
+      finishes: [{ revision: 1, outcome: 'unavailable', code: 'permission_denied' }],
+    });
   });
 
   await t.test('invalid consent fails before permission, ledger, or inbox access', async () => {
@@ -212,6 +241,7 @@ test('Android SMS background task gates access before storage and shares the cat
     let permissionReads = 0;
     let ledgerReads = 0;
     const reader = {
+      ...fakeCaptureHealth({ enabled: true, startDateMs }),
       async getElapsedRealtimeAsync() { return 500_000; },
       getImportSettingsAsync() { settingsStarted.resolve(); return settingsPending.promise; },
       async getPermissionsAsync() { permissionReads += 1; return granted; },
@@ -282,6 +312,7 @@ test('Android SMS background task gates access before storage and shares the cat
     let permissionReads = 0;
     let ledgerReads = 0;
     const reader = {
+      ...fakeCaptureHealth({ enabled: true, startDateMs }),
       getImportSettingsAsync() { settingsStarted.resolve(); return settingsPending.promise; },
       async getPermissionsAsync() { permissionReads += 1; return granted; },
       async queryInboxAsync() { throw new Error('Inbox must not be queried'); },
@@ -302,6 +333,47 @@ test('Android SMS background task gates access before storage and shares the cat
     assert.equal(ledgerReads, 0);
   });
 
+  await t.test('returns at the deadline when preflight health persistence hangs and prevents late work', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    clearAndroidSmsCatchupFailure();
+    const settingsPending = deferred<SmsImportSettings>();
+    const settingsStarted = deferred<void>();
+    const healthFinishPending = deferred<void>();
+    let healthBegins = 0;
+    let healthFinishes = 0;
+    let permissionReads = 0;
+    let ledgerReads = 0;
+    const reader = {
+      async beginCaptureAttemptAsync() { healthBegins += 1; return 1; },
+      finishCaptureAttemptAsync() { healthFinishes += 1; return healthFinishPending.promise; },
+      getImportSettingsAsync() { settingsStarted.resolve(); return settingsPending.promise; },
+      async getPermissionsAsync() { permissionReads += 1; return granted; },
+      async queryInboxAsync() { throw new Error('Inbox must not be queried'); },
+      async getElapsedRealtimeAsync() { return 0; },
+    } as unknown as SmsReaderModule;
+
+    const task = runAndroidSmsBackgroundTask('android', () => reader, async () => {
+      ledgerReads += 1;
+      return {} as DataLayer;
+    });
+    await settingsStarted.promise;
+    t.mock.timers.tick(backgroundBudgetMs);
+    assert.equal(await task, 'failed');
+    await flushTurn();
+    assert.equal(healthBegins, 1);
+    assert.equal(healthFinishes, 1);
+    assert.equal(permissionReads, 0);
+    assert.equal(ledgerReads, 0);
+
+    settingsPending.resolve({ enabled: true, startDateMs });
+    healthFinishPending.resolve();
+    await flushTurn();
+    assert.equal(healthBegins, 1);
+    assert.equal(healthFinishes, 1);
+    assert.equal(permissionReads, 0);
+    assert.equal(ledgerReads, 0);
+  });
+
   await t.test('budget expiry during ledger open blocks late catch-up startup', async (t) => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     clearAndroidSmsCatchupFailure();
@@ -309,6 +381,7 @@ test('Android SMS background task gates access before storage and shares the cat
     const ledgerStarted = deferred<void>();
     let queries = 0;
     const reader = {
+      ...fakeCaptureHealth({ enabled: true, startDateMs }),
       async getImportSettingsAsync() { return { enabled: true, startDateMs }; },
       async getPermissionsAsync() { return granted; },
       async queryInboxAsync() { queries += 1; return { messages: [], next: null }; },
@@ -349,6 +422,10 @@ test('Android SMS background task gates access before storage and shares the cat
     await flushTurn();
     assert.equal(storage.calls().batchWrites, 0);
     assert.equal(getAndroidSmsCatchupFailure(), 'time_budget_exceeded');
+    assert.deepEqual(source.healthCalls(), {
+      begins: 2,
+      finishes: [{ revision: 2, outcome: 'failed', code: 'time_budget_exceeded' }],
+    });
   });
 
   await t.test('returns a static failure code and writes no log when source errors contain message text', async () => {

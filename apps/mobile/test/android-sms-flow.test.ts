@@ -6,6 +6,7 @@ import {
   AndroidSmsBackgroundUnavailableError,
   createAndroidSmsOriginalReader,
   createAndroidSmsOperationGeneration,
+  abortAndroidSmsCatchup,
   getAndroidSmsCatchupFailure,
   reconcileAndroidSmsImportSettings,
   runEnabledAndroidSmsCatchup,
@@ -168,7 +169,12 @@ test('Android SMS adapters keep the source mapping exact and catch-up failures b
   });
 
   await t.test('publishes a static error code when the native query includes message text', async () => {
+    const finishes: { revision: number; outcome: string; code: string | null }[] = [];
     const reader = {
+      beginCaptureAttemptAsync: async () => 1,
+      finishCaptureAttemptAsync: async (revision: number, outcome: string, code: string | null) => {
+        finishes.push({ revision, outcome, code });
+      },
       getPermissionsAsync: async () => ({ readSms: true, receiveSms: true, granted: true }),
       getImportSettingsAsync: async () => ({ enabled: true, startDateMs: 1_700_000_000_000 }),
       queryInboxAsync: async () => { throw new Error('INR 450.00 secret body'); },
@@ -185,5 +191,150 @@ test('Android SMS adapters keep the source mapping exact and catch-up failures b
         !error.message.includes('secret body'),
     );
     assert.equal(getAndroidSmsCatchupFailure(), 'source_unavailable');
+    assert.deepEqual(finishes, [{ revision: 1, outcome: 'unavailable', code: 'source_unavailable' }]);
+  });
+
+  await t.test('shares one durable attempt and keeps a prior failure until successful completion', async () => {
+    let releaseQuery!: (value: { messages: []; next: null }) => void;
+    let markQueryStarted!: () => void;
+    const queryStarted = new Promise<void>((resolve) => { markQueryStarted = resolve; });
+    const queryPending = new Promise<{ messages: []; next: null }>((resolve) => { releaseQuery = resolve; });
+    let beginCalls = 0;
+    const finishes: { revision: number; outcome: string; code: string | null }[] = [];
+    const reader = {
+      beginCaptureAttemptAsync: async () => { beginCalls += 1; return 7; },
+      finishCaptureAttemptAsync: async (revision: number, outcome: string, code: string | null) => {
+        finishes.push({ revision, outcome, code });
+      },
+      getPermissionsAsync: async () => ({ readSms: true, receiveSms: true, granted: true }),
+      getImportSettingsAsync: async () => ({ enabled: true, startDateMs: 1_700_000_000_000 }),
+      queryInboxAsync: async () => { markQueryStarted(); return await queryPending; },
+    };
+    const storage = {
+      getSmsImportCursor: async () => null,
+      getSmsReplayCheckpoint: async () => null,
+      importSmsBatch: async (_messages: unknown, cursor: null, options: { catchupCompletedAt?: () => number }) => {
+        options.catchupCompletedAt?.();
+        return { cursor, inserted: 0, duplicate: 0, review: 0, ignored: 0 };
+      },
+    };
+
+    recordAndroidSmsCatchupFailure(new AndroidSmsCatchupError('key_unavailable'));
+    const first = runEnabledAndroidSmsCatchup(reader, storage, 1_700_000_000_000, Date.now());
+    const joined = runEnabledAndroidSmsCatchup(reader, storage, 1_700_000_000_000, Date.now());
+    assert.equal(first, joined);
+    await queryStarted;
+    assert.equal(beginCalls, 1);
+    assert.deepEqual(finishes, []);
+    assert.equal(getAndroidSmsCatchupFailure(), 'key_unavailable');
+
+    releaseQuery({ messages: [], next: null });
+    await Promise.all([first, joined]);
+    assert.deepEqual(finishes, [{ revision: 7, outcome: 'success', code: null }]);
+    assert.equal(getAndroidSmsCatchupFailure(), null);
+  });
+
+  await t.test('finishes cancellation without erasing a previous failure', async () => {
+    let markQueryStarted!: () => void;
+    const queryStarted = new Promise<void>((resolve) => { markQueryStarted = resolve; });
+    let releaseQuery!: (value: { messages: []; next: null }) => void;
+    const queryPending = new Promise<{ messages: []; next: null }>((resolve) => { releaseQuery = resolve; });
+    const finishes: { revision: number; outcome: string; code: string | null }[] = [];
+    const reader = {
+      beginCaptureAttemptAsync: async () => 8,
+      finishCaptureAttemptAsync: async (revision: number, outcome: string, code: string | null) => {
+        finishes.push({ revision, outcome, code });
+      },
+      getPermissionsAsync: async () => ({ readSms: true, receiveSms: true, granted: true }),
+      getImportSettingsAsync: async () => ({ enabled: true, startDateMs: 1_700_000_000_000 }),
+      queryInboxAsync: async () => { markQueryStarted(); return await queryPending; },
+    };
+    const storage = {
+      getSmsImportCursor: async () => null,
+      getSmsReplayCheckpoint: async () => null,
+      importSmsBatch: async () => { throw new Error('Cancellation must prevent financial writes'); },
+    };
+
+    recordAndroidSmsCatchupFailure(new AndroidSmsCatchupError('key_unavailable'));
+    const catchup = runEnabledAndroidSmsCatchup(reader, storage, 1_700_000_000_000, Date.now());
+    await queryStarted;
+    abortAndroidSmsCatchup();
+    releaseQuery({ messages: [], next: null });
+    await assert.rejects(catchup, (error: unknown) =>
+      typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError');
+    assert.deepEqual(finishes, [{ revision: 8, outcome: 'cancelled', code: null }]);
+    assert.equal(getAndroidSmsCatchupFailure(), 'key_unavailable');
+  });
+
+  await t.test('does not report success when durable success metadata cannot be written', async () => {
+    const finishes: string[] = [];
+    const reader = {
+      beginCaptureAttemptAsync: async () => 9,
+      finishCaptureAttemptAsync: async (_revision: number, outcome: string) => {
+        finishes.push(outcome);
+        throw new Error('native metadata unavailable');
+      },
+      getPermissionsAsync: async () => ({ readSms: true, receiveSms: true, granted: true }),
+      getImportSettingsAsync: async () => ({ enabled: true, startDateMs: 1_700_000_000_000 }),
+      queryInboxAsync: async () => ({ messages: [], next: null }),
+    };
+    const storage = {
+      getSmsImportCursor: async () => null,
+      getSmsReplayCheckpoint: async () => null,
+      importSmsBatch: async (_messages: unknown, cursor: null, options: { catchupCompletedAt?: () => number }) => {
+        options.catchupCompletedAt?.();
+        return { cursor, inserted: 0, duplicate: 0, review: 0, ignored: 0 };
+      },
+    };
+
+    await assert.rejects(
+      runEnabledAndroidSmsCatchup(reader, storage, 1_700_000_000_000, Date.now()),
+      (error: unknown) => error instanceof AndroidSmsCatchupError && error.code === 'storage_unavailable',
+    );
+    assert.deepEqual(finishes, ['success']);
+    assert.equal(getAndroidSmsCatchupFailure(), 'storage_unavailable');
+  });
+
+  await t.test('does not clear a failure when a late native success write returns after cancellation', async () => {
+    let markFinishStarted!: () => void;
+    const finishStarted = new Promise<void>((resolve) => { markFinishStarted = resolve; });
+    let releaseFinish!: () => void;
+    const finishPending = new Promise<void>((resolve) => { releaseFinish = resolve; });
+    const finishes: string[] = [];
+    let batchWrites = 0;
+    let writesAtFinish = 0;
+    const reader = {
+      beginCaptureAttemptAsync: async () => 10,
+      async finishCaptureAttemptAsync(_revision: number, outcome: string) {
+        finishes.push(outcome);
+        writesAtFinish = batchWrites;
+        markFinishStarted();
+        await finishPending;
+      },
+      getPermissionsAsync: async () => ({ readSms: true, receiveSms: true, granted: true }),
+      getImportSettingsAsync: async () => ({ enabled: true, startDateMs: 1_700_000_000_000 }),
+      queryInboxAsync: async () => ({ messages: [], next: null }),
+    };
+    const storage = {
+      getSmsImportCursor: async () => null,
+      getSmsReplayCheckpoint: async () => null,
+      importSmsBatch: async (_messages: unknown, cursor: null, options: { catchupCompletedAt?: () => number }) => {
+        batchWrites += 1;
+        options.catchupCompletedAt?.();
+        return { cursor, inserted: 0, duplicate: 0, review: 0, ignored: 0 };
+      },
+    };
+
+    recordAndroidSmsCatchupFailure(new AndroidSmsCatchupError('key_unavailable'));
+    const catchup = runEnabledAndroidSmsCatchup(reader, storage, 1_700_000_000_000, Date.now());
+    await finishStarted;
+    abortAndroidSmsCatchup();
+    releaseFinish();
+    await assert.rejects(catchup, (error: unknown) =>
+      typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError');
+    assert.deepEqual(finishes, ['success']);
+    assert.ok(writesAtFinish > 0);
+    assert.equal(batchWrites, writesAtFinish);
+    assert.equal(getAndroidSmsCatchupFailure(), 'key_unavailable');
   });
 });

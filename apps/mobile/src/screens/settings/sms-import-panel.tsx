@@ -29,7 +29,7 @@ import {
   type AndroidSmsReviewSelection,
 } from '@/imports/android-sms-flow';
 import { androidSmsBackgroundScheduler } from '@/imports/android-sms-background-task';
-import { getSmsReader, type SmsImportSettings, type SmsPermissionState, type SmsReaderModule } from '../../../modules/sms-reader';
+import { getSmsReader, type SmsImportSettings, type SmsPermissionState, type SmsReaderModule, type SmsWakeMetadata } from '../../../modules/sms-reader';
 
 const ninetyDaysMs = 90 * 24 * 60 * 60 * 1_000;
 
@@ -124,6 +124,7 @@ export function SmsImportPanel({
   const [settings, setSettings] = useState<SmsImportSettings | null>(null);
   const [permission, setPermission] = useState<SmsPermissionState | null>(null);
   const [health, setHealth] = useState<SmsImportHealth | null>(null);
+  const [captureHealth, setCaptureHealth] = useState<SmsWakeMetadata | null>(null);
   const [rows, setRows] = useState<SmsReviewRow[]>([]);
   const [nextPage, setNextPage] = useState<SmsReviewPage['nextCursor']>();
   const [loading, setLoading] = useState(true);
@@ -152,7 +153,9 @@ export function SmsImportPanel({
       ]);
       let nextSettings: SmsImportSettings | null = null;
       let nextPermission: SmsPermissionState | null = null;
+      let nextCaptureHealth: SmsWakeMetadata | null = null;
       let nativeStatusFailed = false;
+      let captureStatusFailed = false;
       if (reader) {
         try {
           [nextSettings, nextPermission] = await Promise.all([
@@ -162,14 +165,24 @@ export function SmsImportPanel({
         } catch {
           nativeStatusFailed = true;
         }
+        try {
+          nextCaptureHealth = await reader.getWakeMetadataAsync();
+          captureStatusFailed = nextCaptureHealth.captureFailedCount === undefined ||
+            nextCaptureHealth.captureUnavailableCount === undefined;
+        } catch {
+          captureStatusFailed = true;
+        }
       }
       if (!current()) return;
       setSettings(nextSettings);
       setPermission(nextPermission);
       setHealth(nextHealth);
+      setCaptureHealth(nextCaptureHealth);
       setRows(page.rows);
       setNextPage(page.nextCursor);
-      setStatusFailure(nativeStatusFailed ? 'Couldn’t check Android consent or permission. Pending reviews are still available; retry status or use paste.' : '');
+      setStatusFailure(nativeStatusFailed
+        ? 'Couldn’t check Android consent or permission. Pending reviews are still available; retry status or use paste.'
+        : captureStatusFailed ? 'Couldn’t read capture history. Retry status or use paste.' : '');
     } catch {
       if (current()) setStatusFailure('Couldn’t load SMS import status. Try again.');
     } finally {
@@ -183,7 +196,7 @@ export function SmsImportPanel({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh(() => current);
     return () => { current = false; };
-  }, [refresh, version]);
+  }, [refresh, version, catchupFailure]);
 
   useEffect(() => () => {
     operation.current.next();
@@ -415,6 +428,9 @@ export function SmsImportPanel({
     ...(dark ? {} : { boxShadow: Shadow.card }),
   }];
   const active = settings?.enabled === true;
+  const visibleCatchupFailure = catchupFailure ?? captureHealth?.currentFailureCode ?? null;
+  const failedCaptureCount = captureHealth?.captureFailedCount;
+  const unavailableCaptureCount = captureHealth?.captureUnavailableCount;
 
   return (
     <View style={styles.section}>
@@ -438,6 +454,13 @@ export function SmsImportPanel({
               ? 'No successful catch-up yet'
               : `Last catch-up ${indiaDate(new Date(health.lastSuccessfulCatchupAt))}`} · {health.pendingReviewCount} to review
           </ThemedText> : null}
+          {health && health.nonPostedReviewCount > 0 ? <ThemedText style={[Type.note, { color: colors.textSecondary }]}>
+            {health.nonPostedReviewCount} failed payment {health.nonPostedReviewCount === 1 ? 'alert' : 'alerts'} in review
+          </ThemedText> : null}
+          {failedCaptureCount !== undefined && unavailableCaptureCount !== undefined &&
+            (failedCaptureCount > 0 || unavailableCaptureCount > 0) ? <ThemedText style={[Type.note, { color: colors.textSecondary }]}>
+              Recorded checks: {failedCaptureCount} failed · {unavailableCaptureCount} unavailable
+            </ThemedText> : null}
           {preview ? <View style={[styles.preview, { backgroundColor: colors.background, borderColor: colors.rule }]}>
             <ThemedText style={Type.rowTitle}>{preview.count} {preview.count === 1 ? 'message' : 'messages'} found</ThemedText>
             <ThemedText style={[Type.note, { color: colors.textSecondary }]}>
@@ -445,7 +468,7 @@ export function SmsImportPanel({
             </ThemedText>
           </View> : null}
           {visibleFailure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.text }]}>{visibleFailure}</ThemedText> : null}
-          {catchupFailure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.text }]}>{catchupFailureCopy(catchupFailure)}</ThemedText> : null}
+          {visibleCatchupFailure ? <ThemedText accessibilityRole="alert" style={[Type.note, { color: colors.text }]}>{catchupFailureCopy(visibleCatchupFailure)}</ThemedText> : null}
           {active ? <View style={styles.actions}>
             {preview ? <LedgerButton label={action === 'catchup' ? 'Importing…' : 'Confirm and catch up'} primary disabled={action !== null || loading} onPress={() => void confirmAndCatchup()} /> : null}
             <LedgerButton label={action === 'preview' ? 'Counting…' : 'Preview messages'} disabled={action !== null || loading || !settings} onPress={() => void beginPreview()} />
@@ -460,7 +483,7 @@ export function SmsImportPanel({
           {active ? <ThemedText style={[Type.note, { color: colors.textMuted }]}>
             Android controls background timing; checks may take 15 minutes or longer. Opening the app also catches up. Turning import off stops future checks.
           </ThemedText> : null}
-          {!settings || !health ? <LedgerButton label={loading ? 'Loading status…' : 'Retry status'} disabled={loading || action !== null} onPress={() => { setLoading(true); void refresh(); }} /> : null}
+          {!settings || !health || statusFailure ? <LedgerButton label={loading ? 'Loading status…' : 'Retry status'} disabled={loading || action !== null} onPress={() => { setLoading(true); void refresh(); }} /> : null}
         </> : <>
           <ThemedText style={[Type.note, { color: colors.textSecondary }]}>
             SMS import is unavailable in this app build. You can still add entries or paste a bank message from Home.

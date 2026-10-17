@@ -9,7 +9,8 @@ import {
   type AndroidSmsReader,
 } from './android-sms-catchup';
 
-type CatchupReader = Pick<SmsReaderModule, 'getPermissionsAsync' | 'getImportSettingsAsync' | 'queryInboxAsync'>;
+type CaptureHealthReader = Pick<SmsReaderModule, 'beginCaptureAttemptAsync' | 'finishCaptureAttemptAsync'>;
+type CatchupReader = Pick<SmsReaderModule, 'getPermissionsAsync' | 'getImportSettingsAsync' | 'queryInboxAsync'> & CaptureHealthReader;
 type CatchupStorage = Pick<DataLayer, 'getSmsImportCursor' | 'getSmsReplayCheckpoint' | 'importSmsBatch'>;
 type SettingsReader = Pick<SmsReaderModule, 'setImportSettingsAsync'>;
 type ReconcileReader = SettingsReader & Pick<SmsReaderModule, 'getPermissionsAsync' | 'getImportSettingsAsync'>;
@@ -157,6 +158,17 @@ export function createAndroidSmsOriginalReader(
 
 let activeCatchup: { controller: AbortController; promise: Promise<AndroidSmsCatchupResult> } | undefined;
 export type AndroidSmsCatchupFailure = AndroidSmsCatchupErrorCode | 'background_unavailable' | 'unexpected';
+type CaptureFailureCode = AndroidSmsCatchupFailure;
+
+const unavailableCaptureFailures = new Set<CaptureFailureCode>([
+  'permission_denied',
+  'permission_unavailable',
+  'invalid_consent',
+  'source_unavailable',
+  'key_unavailable',
+  'duplicate_review_required',
+  'background_unavailable',
+]);
 
 let lastFailure: AndroidSmsCatchupFailure | null = null;
 const failureListeners = new Set<() => void>();
@@ -187,6 +199,34 @@ export function recordAndroidSmsCatchupFailure(error: unknown): void {
     : error instanceof AndroidSmsCatchupError ? error.code : 'unexpected');
 }
 
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError';
+}
+
+function captureFailure(error: unknown): { outcome: 'failed' | 'unavailable' | 'cancelled'; code: CaptureFailureCode | null } {
+  if (isAbortError(error)) return { outcome: 'cancelled', code: null };
+  const code: CaptureFailureCode = error instanceof AndroidSmsBackgroundUnavailableError
+    ? 'background_unavailable'
+    : error instanceof AndroidSmsCatchupError ? error.code : 'unexpected';
+  return { outcome: unavailableCaptureFailures.has(code) ? 'unavailable' : 'failed', code };
+}
+
+/** Persist a body-free failure for an opted-in attempt that fails before catch-up starts. */
+export async function persistAndroidSmsCaptureFailure(
+  reader: CaptureHealthReader,
+  error: unknown,
+): Promise<void> {
+  if (isAbortError(error)) return;
+  const failure = captureFailure(error);
+  try {
+    const revision = await reader.beginCaptureAttemptAsync();
+    if (revision === null) return;
+    await reader.finishCaptureAttemptAsync(revision, failure.outcome, failure.code);
+  } catch {
+    // Health is best effort for preflight failures; the caller still reports the static failure.
+  }
+}
+
 export function abortAndroidSmsCatchup(): void {
   activeCatchup?.controller.abort();
 }
@@ -200,6 +240,8 @@ export function runEnabledAndroidSmsCatchup(
   if (activeCatchup) return activeCatchup.promise;
 
   const controller = new AbortController();
+  let revision: number | null = null;
+  let finishStarted = false;
   const guardedReader: AndroidSmsReader = {
     async getPermissionsAsync() {
       const [permissions, settings] = await Promise.all([
@@ -213,19 +255,55 @@ export function runEnabledAndroidSmsCatchup(
     },
     queryInboxAsync: (options) => reader.queryInboxAsync(options),
   };
-  updateFailure(null);
-  const promise = catchUpAndroidSms({
-    reader: guardedReader,
-    storage,
-    startDateMs,
-    endDateMs,
-    signal: controller.signal,
-    clock: Date.now,
-  }).catch((error: unknown) => {
-    recordAndroidSmsCatchupFailure(error);
-    throw error;
+  const promise = Promise.resolve().then(async () => {
+    try {
+      try {
+        revision = await reader.beginCaptureAttemptAsync();
+      } catch {
+        throw new AndroidSmsCatchupError('storage_unavailable');
+      }
+      if (revision === null) throw new AndroidSmsCatchupError('invalid_consent');
+
+      const result = await catchUpAndroidSms({
+        reader: guardedReader,
+        storage,
+        startDateMs,
+        endDateMs,
+        signal: controller.signal,
+        clock: Date.now,
+      });
+      if (controller.signal.aborted) {
+        const error = new Error('The operation was aborted.');
+        error.name = 'AbortError';
+        throw error;
+      }
+      finishStarted = true;
+      try {
+        await reader.finishCaptureAttemptAsync(revision, 'success', null);
+      } catch {
+        throw new AndroidSmsCatchupError('storage_unavailable');
+      }
+      if (controller.signal.aborted) {
+        const error = new Error('The operation was aborted.');
+        error.name = 'AbortError';
+        throw error;
+      }
+      updateFailure(null);
+      return result;
+    } catch (error) {
+      recordAndroidSmsCatchupFailure(error);
+      if (revision !== null && !finishStarted) {
+        finishStarted = true;
+        const failure = captureFailure(error);
+        try {
+          await reader.finishCaptureAttemptAsync(revision, failure.outcome, failure.code);
+        } catch {
+          // Preserve the catch-up error; a failed health write must not turn it into success.
+        }
+      }
+      throw error;
+    }
   });
-  void promise.then(() => updateFailure(null), () => {});
   activeCatchup = { controller, promise };
   void promise.finally(() => {
     if (activeCatchup?.promise === promise) activeCatchup = undefined;

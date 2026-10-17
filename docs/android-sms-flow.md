@@ -81,8 +81,8 @@ JS and reports a failed WorkManager result after the retry budget; this storage
 failure can fail an already-appended pass. Opening the app or a later SMS wake can
 recover. For ordinary JS failure or retry exhaustion, a work item finishes so a
 queued wake can proceed, while the stored outcome remains `failed`. This status is
-limited native capture-health groundwork, not detailed JS failure reporting or
-proof of a successful import.
+the receiver worker's retry status, not proof of a successful import or the
+separate capture-check counters below.
 Registration failure attempts to turn import off and remove both tasks and queued
 work, and reports a body-free error. Disable persists off before unregistering;
 the receiver gate and worker gate prevent inbox access if queued work races with
@@ -203,3 +203,38 @@ remained in memory and were discarded; only counts, timings and assertion
 booleans left the device. No ledger writes or permission requests occurred,
 and native import consent stayed off. This verifies the bounded provider API
 on this device, not 10k/50k history performance, capture delivery or battery cost.
+
+## Persistent capture health
+
+The native reader adds consent-gated `beginCaptureAttemptAsync` and
+`finishCaptureAttemptAsync` methods in the existing wake preferences. The
+body-free status contains safe counters, a monotonic revision, an allowlisted
+failure code and its timestamp. It contains no message identifiers or contents.
+A current, unfinished revision can record one failed or unavailable outcome.
+Stale and duplicate finishes are
+ignored so an older callback cannot replace a newer result. These are recorded
+latest-attempt outcomes, not message counts, lost-transaction counts or a complete
+history of interrupted/superseded checks. The receiver worker's existing
+`failedAttemptCount` remains a distinct retry metric.
+
+Unavailable outcomes are permission denied/unavailable, invalid saved consent,
+source/key unavailable, required duplicate review and unavailable background
+scheduling. Invalid pages, stale cursors, storage/clock problems, exhausted time
+budgets and unexpected errors are failed outcomes. Native validation enforces the
+code/category pairing; arbitrary exception text is rejected. Counts saturate at
+the JavaScript safe-integer limit; revisions never wrap.
+
+Joining callers share the active catch-up promise and health attempt. Beginning
+or cancelling a check and turning imports off preserve the last failure; only
+completed success clears it. Native writes check persisted enabled consent, and
+disabled imports do not create checks. A failure before the reader/preferences
+are accessible cannot be durably recorded there; the caller still reports its
+static error when available. A timeout stops financial work without waiting for
+a potentially hung status write.
+
+Settings reads this record after restart and shows recorded failed/unavailable
+checks separately from failed-payment alerts in review. The SQLite successful
+catch-up timestamp remains the record of committed, exhausted source work.
+Metadata-read failure offers retry and paste recovery. This addition requires a
+matching native rebuild; its Kotlin/device and visible-flow acceptance remain
+unverified until recorded separately.
