@@ -1,4 +1,5 @@
 import { hasAmount } from './extract/amount';
+import { VPA } from './extract/upi';
 import type { Classification, NormalisedSms } from './types';
 
 const TXN_VERB =
@@ -6,6 +7,11 @@ const TXN_VERB =
 /** Verbs that only appear when money actually moved. Used to tell real alerts from OTPs/promos that mention a txn. */
 const MONEY_MOVED = /\b(?:debited|credited|spent|withdrawn|deducted|refunded|reversed)\b/i;
 export const FAILED = /\b(?:failed|declined|unsuccessful|could not be processed|not processed)\b/i;
+const ALL_VPAS = new RegExp(VPA.source, 'gi');
+
+export function hasFailureWording(text: string): boolean {
+  return FAILED.test(text.replace(ALL_VPAS, ' '));
+}
 
 const FUTURE_VERB = /\bwill be (?:auto[- ]?)?(?:debited|deducted|charged|credited|reversed|refunded)\b/i;
 const FUTURE_VERB_ALL = new RegExp(FUTURE_VERB.source, 'gi');
@@ -31,7 +37,7 @@ export function classify(sms: NormalisedSms): Classification {
   if (OTP.test(text) && !moneyMoved) return 'otp';
   if (senderInfo.dltSuffix === 'P') return 'promo';
   if (REQUEST.test(text)) return 'request';
-  if (amount && FAILED.test(text)) return 'transaction';
+  if (amount && hasFailureWording(text)) return 'transaction';
   if ((FUTURE_VERB.test(text) || REMINDER.test(text)) && !moneyMoved) return 'reminder';
   if (PROMO.test(text) && !moneyMoved) return 'promo';
   if (amount && TXN_VERB.test(presentTense)) return 'transaction';
