@@ -309,10 +309,13 @@ or background execution.
 - #43's selection/recovery path now has isolated Android UI evidence with a
   fictional reader: an old selection showed fallback without redirecting or
   saving, a new selection confirmed, and a corrected transaction was saved.
-  Persistent failed/unavailable capture reporting is implemented in source but
-  awaits the matching native rebuild/device check. Protected-key
-  unavailability/loss lifecycle proof and full native
-  cross-source regression evidence remain open. The storage health API reports
+  Persistent failed/unavailable capture status and counts were verified on
+  isolated Android build `74bbc4b`, including persistence across a fresh
+  JavaScript runtime and a bounded zero-message preview/cancel/enable/disable
+  interaction; see [the Android flow evidence](android-sms-flow.md). This does
+  not establish the real permission lifecycle or full live capture flow.
+  Protected-key unavailability/loss lifecycle proof and full native cross-source
+  regression evidence remain open. The storage health API reports
   persisted pending reviews and the non-posted-alert subset; native capture
   attempt counters are a separate status record. The missing-key creation guard is
   implemented and tested in source/platform mocks and an isolated real browser
