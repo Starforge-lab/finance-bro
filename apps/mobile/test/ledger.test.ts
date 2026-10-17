@@ -165,7 +165,7 @@ describe('ledger', () => {
       const replay = await preparePastedSms({ ...sms, receivedAt: sms.receivedAt + 86_400_000 }, testFingerprinter);
       assert.equal(await saveReviewedPaste(fixture.ledger, replay, {}), 'duplicate');
       const alternateAlert = await preparePastedSms({ ...sms, sender: 'AD-ICICIB-S', body: sms.body.replace('450.00', '450') }, testFingerprinter);
-      assert.equal(await saveReviewedPaste(fixture.ledger, alternateAlert, {}), 'duplicate');
+      await assert.rejects(saveReviewedPaste(fixture.ledger, alternateAlert, {}), /conflicting details; review it/);
       assert.equal((await findTransaction(fixture.ledger, prepared.identity.id))?.amountPaise, 47000);
       await fixture.ledger.editTransaction(prepared.identity.id, { amountPaise: 49000 });
       assert.equal(await saveReviewedPaste(fixture.ledger, replay, {}), 'duplicate');

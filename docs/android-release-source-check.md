@@ -14,7 +14,7 @@ The check starts from a clean checkout, uses the pinned pnpm version and frozen 
 
 `ANDROID_RELEASE_SOURCE_CHECK=1` enables a guarded config plugin that removes release signing from the generated Gradle configuration. Development signing and normal production configuration are unchanged. Unexpected native template contents fail the check; no signing key, EAS account, signing secret or publication is involved.
 
-The standard Ubuntu 24.04 runner uses Node 22, Java 17 and Gradle's ARM64 release variant with two workers. Current package pins include Expo 58.0.7 and React Native 0.88.0-rc.4. The generated Gradle wrapper and Android toolchain inputs remain authoritative; inspect the run's recorded versions and resolved release dependencies when reviewing the result.
+The standard Ubuntu 24.04 runner uses Node 22, Java 17 and Gradle's ARM64 release variant with two workers. Current package pins include Expo 58.0.8 and React Native 0.88.0-rc.4. The generated Gradle wrapper and Android toolchain inputs remain authoritative; inspect the run's recorded versions and resolved release dependencies when reviewing the result.
 
 The job retains build/dependency metadata for one day. It does not upload an APK. Generated Android/iOS projects remain outside Git.
 
@@ -25,6 +25,20 @@ The first hosted source build at `8086cbfff2509f4fff004d3e5e2f8d38fa21338f` fail
 The corrected source build passed at `b3f94cd7ff316a4ea518af217a1ef30d42ae7228` in [run 38151771333](https://github.com/Starforge-lab/finance-bro/actions/runs/38151771333). It generated the expected ARM64 unsigned release APK and uploaded a 107,353-byte report recording Node 22.23.3, pnpm 12.9.1, Java 17.0.20.1 and Gradle 9.4.1. Report SHA-256: `5de54cf5133ab551e46da61348711e93d83352e49651372940e0ce3daf28f162`. The dependency section ends normally below the configured cap; no truncation marker was present.
 
 The resolved `releaseRuntimeClasspath` report contains no `com.google.android.gms`, `com.google.mlkit`, Firebase, Play Billing or licensing coordinates searched during the preliminary audit. Expo development-launcher 58.0.12 declares Google code-scanner and ML Kit dependencies as `debugOnly`; the release report supports their exclusion from this resolved configuration. This is not packaged-APK inspection or a complete transitive license audit. Keep #27 open until all acceptance criteria have evidence.
+
+The frozen SDK/SMS candidate at `066b788eda519e339b77fbae747aa4e2e85e3af4`
+also passed the production unsigned ARM64 source-build check in
+[run 38945344874](https://github.com/Starforge-lab/finance-bro/actions/runs/38945344874).
+Its 113,507-byte report records production variant, probe disabled, unsigned APK
+generation, Node 22.23.3, pnpm 12.9.1, Java 17.0.20.1 and Gradle 9.4.1.
+Report SHA-256:
+`4d85251f5d8d5207583ea1b9cdf38b5b133b1e6063940ef44f8132b0bcae4757`.
+The dependency report ends normally without a truncation marker. Searches for
+Google Play services, ML Kit, Firebase, Play Billing and vending coordinates
+returned no matches. This refreshes clean-build evidence for the frozen SMS
+candidate; packaged-artifact inspection, transitive license/provenance review
+and intended-installer SMS permission behavior remain unverified. Gradle reports
+deprecated features incompatible with Gradle 10; the tested wrapper remains 9.4.1.
 
 Forcing Expo modules to build from source does not prove that every transitive native library or tool was source-built or freely licensed. The [current F-Droid inclusion policy](https://f-droid.org/en/docs/Inclusion_Policy/) permits some trusted FLOSS binary sources and requires dependency, toolchain and license review. Audit the resolved Gradle graph, npm packages and bundled assets separately; repository or package names alone are insufficient.
 

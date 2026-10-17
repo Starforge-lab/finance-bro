@@ -11,7 +11,7 @@
 - apps/mobile is the shared Expo app. src/app contains routes; screen bodies belong in src/screens, shared UI in src/components, and visual tokens in src/constants/theme.ts.
 - packages/sms-parser is deterministic TypeScript consumed as source. Keep it independent of Expo, React Native, storage, network and wall-clock time; pass timestamps explicitly.
 - packages/config contains shared TypeScript configuration. Preserve the existing pnpm workspace rather than adding a second app or package manager.
-- Connected manual-first screens use the shared local SQLite ledger; Android/web CSV destinations are connected. Native SMS capture, iOS App Intents, receipt OCR and connected email remain future work. Ask before adding a backend, accounts, retention policies or new import providers.
+- Connected manual-first screens use the shared local SQLite ledger; Android/web CSV destinations are connected. Android SMS consent, capture and review exist in source but are not release-verified. Before changing SMS capture or ingestion, read docs/android-sms-flow.md and docs/android-sms-ingestion.md for the implementation and exact-revision device evidence. iOS imports, receipt OCR and connected email remain later work. Ask before adding a backend, accounts, retention policies or new import providers.
 - Validate imported money as safe integer paise before accepting it; send invalid or ambiguous inputs to review. Formatting belongs at the UI edge. Future imports must preserve user corrections and avoid duplicate transactions. Read CLAUDE.md before changing matching, import or storage behavior; follow PRODUCT.md's privacy/recovery requirements and keep device secrets outside the pure parser.
 
 ## Changes and dependencies

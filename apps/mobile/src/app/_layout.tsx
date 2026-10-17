@@ -7,11 +7,22 @@ import { useFonts } from 'expo-font';
 import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect, useState } from 'react';
+import { AppState, Platform } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
 import AppTabs from '@/components/app-tabs';
 import { getLedger, type ThemePreference } from '@/db';
 import { AppearanceProvider, useColorScheme } from '@/hooks/appearance';
+import {
+  AndroidSmsBackgroundUnavailableError,
+  runEnabledAndroidSmsCatchup,
+  abortAndroidSmsCatchup,
+  recordAndroidSmsCatchupFailure,
+  persistAndroidSmsCaptureFailure,
+} from '@/imports/android-sms-flow';
+import { AndroidSmsCatchupError } from '@/imports/android-sms-catchup';
+import { reconcileAndroidSmsBackgroundTask } from '@/imports/android-sms-background-task';
+import { getSmsReader, type SmsPermissionState, type SmsReaderModule } from '../../modules/sms-reader';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -36,6 +47,77 @@ export default function RootLayout() {
   useEffect(() => {
     if (ready) SplashScreen.hideAsync();
   }, [ready]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    let active = true;
+    let foregroundGeneration = 0;
+    const isForeground = (generation: number) => active &&
+      generation === foregroundGeneration && AppState.currentState === 'active';
+    const catchUp = async () => {
+      const generation = foregroundGeneration;
+      let reader: SmsReaderModule | null = null;
+      let captureJoined = false;
+      const reportPreflightFailure = async (error: unknown) => {
+        if (!isForeground(generation)) return;
+        recordAndroidSmsCatchupFailure(error);
+        if (reader && !captureJoined) await persistAndroidSmsCaptureFailure(reader, error).catch(() => {});
+      };
+      try {
+        reader = getSmsReader();
+        if (!reader) return;
+        let backgroundUnavailable: AndroidSmsBackgroundUnavailableError | null = null;
+        try {
+          await reconcileAndroidSmsBackgroundTask(reader);
+        } catch (error) {
+          if (error instanceof AndroidSmsBackgroundUnavailableError) backgroundUnavailable = error;
+          if (isForeground(generation)) recordAndroidSmsCatchupFailure(error);
+        }
+        if (!isForeground(generation)) return;
+        const settings = await reader.getImportSettingsAsync();
+        if (!isForeground(generation) || settings.enabled !== true) return;
+        if (settings.startDateMs === null || !Number.isSafeInteger(settings.startDateMs) ||
+            settings.startDateMs <= 0 || settings.startDateMs > Date.now()) {
+          await reportPreflightFailure(new AndroidSmsCatchupError('invalid_consent'));
+          return;
+        }
+        let permissions: SmsPermissionState;
+        try {
+          permissions = await reader.getPermissionsAsync();
+        } catch {
+          await reportPreflightFailure(new AndroidSmsCatchupError('permission_unavailable'));
+          return;
+        }
+        if (!isForeground(generation)) return;
+        if (permissions.granted !== true || permissions.readSms !== true || permissions.receiveSms !== true) {
+          await reportPreflightFailure(new AndroidSmsCatchupError('permission_denied'));
+          return;
+        }
+        const ledger = await getLedger();
+        if (!isForeground(generation)) return;
+        captureJoined = true;
+        await runEnabledAndroidSmsCatchup(reader, ledger, settings.startDateMs, Date.now());
+        if (isForeground(generation) && backgroundUnavailable) {
+          recordAndroidSmsCatchupFailure(backgroundUnavailable);
+          await persistAndroidSmsCaptureFailure(reader, backgroundUnavailable).catch(() => {});
+        }
+      } catch (error) {
+        await reportPreflightFailure(error);
+      }
+    };
+    if (AppState.currentState === 'active') void catchUp();
+    const subscription = AppState.addEventListener('change', (state) => {
+      foregroundGeneration += 1;
+      if (state === 'active') void catchUp();
+      else abortAndroidSmsCatchup();
+    });
+    return () => {
+      active = false;
+      foregroundGeneration += 1;
+      subscription.remove();
+      abortAndroidSmsCatchup();
+    };
+  }, []);
 
   if (!ready) return null;
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useRootNavigationState, useRouter } from 'expo-router';
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Crypto from 'expo-crypto';
@@ -17,6 +18,9 @@ import { useTheme } from '@/hooks/use-theme';
 import { indiaDate } from '@/utils/display';
 import { saveCsv } from '@/exports/save-csv';
 import { ExportCleanupError } from '@/exports/save-csv-write';
+import { SmsImportPanel } from './sms-import-panel';
+import type { AndroidSmsReviewSelection } from '@/imports/android-sms-flow';
+import { PasteForm } from '@/screens/home/paste-form';
 
 type Account = Awaited<ReturnType<DataLayer['listAccounts']>>[number];
 type Category = Awaited<ReturnType<DataLayer['listCategories']>>[number];
@@ -40,10 +44,16 @@ const costLabels: Record<typeof costTypes[number], string> = { flexible: 'Change
 
 export default function SettingsScreen() {
   const theme = useTheme();
+  const router = useRouter();
+  const navigationState = useRootNavigationState();
   const { preference: themePreference, setPreference: setThemePreference } = useThemePreference();
   const dark = theme.background === Colors.dark.background;
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [ledgerForSms, setLedgerForSms] = useState<DataLayer | null>(null);
+  const [smsReviewSession, setSmsReviewSession] = useState<{ ledger: DataLayer; review: AndroidSmsReviewSelection } | null>(null);
+  const [smsPasteOpen, setSmsPasteOpen] = useState(false);
+  const smsEntryOpen = Boolean(smsReviewSession || smsPasteOpen);
   const [entryCount, setEntryCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -61,6 +71,11 @@ export default function SettingsScreen() {
   const [confirmRemoveDemo, setConfirmRemoveDemo] = useState(false);
   const operationGuard = useRef(false);
 
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !navigationState?.key) return;
+    router.setParams({ _entryOpen: smsEntryOpen ? '1' : '0' });
+  }, [navigationState?.key, router, smsEntryOpen]);
+
   const refresh = useCallback(async (isCurrent: () => boolean = () => true) => {
     try {
       const ledger = await getLedger();
@@ -70,6 +85,7 @@ export default function SettingsScreen() {
         ledger.listTransactions(),
       ]);
       if (!isCurrent()) return;
+      setLedgerForSms(ledger);
       setAccounts(nextAccounts);
       setCategories(nextCategories);
       setEntryCount(entries.length);
@@ -261,7 +277,14 @@ export default function SettingsScreen() {
 
   return (
     <ThemedView style={styles.fill}>
-      <SafeAreaView edges={['top']} style={styles.fill}>
+      {smsReviewSession || (smsPasteOpen && ledgerForSms) ? (
+        <PasteForm
+          ledger={smsReviewSession?.ledger ?? ledgerForSms!}
+          {...(smsReviewSession ? { smsReview: smsReviewSession.review } : {})}
+          onSaved={() => { setSmsReviewSession(null); setSmsPasteOpen(false); }}
+          onCancel={() => { setSmsReviewSession(null); setSmsPasteOpen(false); }}
+        />
+      ) : <SafeAreaView edges={['top']} style={styles.fill}>
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
           <ThemedText style={Type.screenTitle}>Settings</ThemedText>
 
@@ -422,6 +445,14 @@ export default function SettingsScreen() {
             </SettingsGroup>
           </View>
 
+          {Platform.OS === 'android' && ledgerForSms ? <View style={styles.section}>
+            <SmsImportPanel
+              ledger={ledgerForSms}
+              onReview={(review) => setSmsReviewSession({ ledger: ledgerForSms, review })}
+              onPaste={() => setSmsPasteOpen(true)}
+            />
+          </View> : null}
+
           <View style={styles.section}>
             <SectionHeading title="Your data" theme={theme} />
             <SettingsGroup theme={theme}>
@@ -466,7 +497,7 @@ export default function SettingsScreen() {
             </SettingsGroup>
           </View> : null}
         </ScrollView>
-      </SafeAreaView>
+      </SafeAreaView>}
     </ThemedView>
   );
 }
