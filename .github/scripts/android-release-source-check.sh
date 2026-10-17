@@ -56,6 +56,27 @@ if [[ ! -s "$release_apk" ]]; then
   exit 1
 fi
 
+apkanalyzer_bin="$(command -v apkanalyzer || true)"
+if [[ -z "$apkanalyzer_bin" ]]; then
+  sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+  if [[ -n "$sdk_root" ]]; then
+    for candidate in \
+      "$sdk_root/cmdline-tools/latest/bin/apkanalyzer" \
+      "$sdk_root"/cmdline-tools/*/bin/apkanalyzer \
+      "$sdk_root/tools/bin/apkanalyzer"; do
+      if [[ -x "$candidate" && ! -d "$candidate" ]]; then
+        apkanalyzer_bin="$candidate"
+      fi
+    done
+  fi
+fi
+if [[ -z "$apkanalyzer_bin" || ! -x "$apkanalyzer_bin" ]]; then
+  echo "Android SDK apkanalyzer is required for packaged release inspection." >&2
+  exit 1
+fi
+
+apk_audit_report="$(node "$repo_root/.github/scripts/android-apk-audit.cjs" "$apkanalyzer_bin" "$release_apk")"
+
 git_status="$(git -C "$repo_root" status --porcelain -- apps/mobile/android apps/mobile/ios)"
 if [[ -n "$git_status" ]]; then
   echo "Generated native projects are not ignored; refusing to leave them in Git status:" >&2
@@ -64,7 +85,7 @@ if [[ -n "$git_status" ]]; then
 fi
 
 {
-  printf 'schema=1\n'
+  printf 'schema=2\n'
   printf 'git_sha=%s\n' "${GITHUB_SHA:-local}"
   printf 'git_ref=%s\n' "${GITHUB_REF_NAME:-local}"
   printf 'architecture=arm64-v8a\n'
@@ -79,6 +100,8 @@ fi
   (cd "$repo_root/apps/mobile/android" && ./gradlew --version --console=plain) | sed -n '1,10p'
   printf '\n=== releaseRuntimeClasspath (first 2000 lines / 512 KiB) ===\n'
   awk 'NR <= 2000 && bytes < 524288 { print; bytes += length($0) + 1 } NR == 2001 || bytes >= 524288 { print "[dependency report truncated at configured limit]"; exit }' "$dependency_report"
+  printf '\n=== packaged APK audit (metadata and bounded paths only) ===\n'
+  printf '%s\n' "$apk_audit_report"
 } > "$report"
 
 if [[ "$(wc -c < "$report")" -gt 550000 ]]; then

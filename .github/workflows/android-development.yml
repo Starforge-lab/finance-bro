@@ -16,6 +16,8 @@ on:
     paths:
       - .github/workflows/android-development.yml
       - .github/scripts/android-release-source-check.sh
+      - .github/scripts/android-apk-audit.cjs
+      - .github/scripts/android-apk-audit.test.cjs
       - apps/mobile/app.config.ts
       - apps/mobile/package.json
       - apps/mobile/plugins/withUnsignedAndroidRelease.cjs
@@ -51,6 +53,8 @@ jobs:
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
           echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
       - run: pnpm install --frozen-lockfile
+      - name: Test packaged APK audit parsers
+        run: node --test .github/scripts/android-apk-audit.test.cjs
       - run: pnpm --dir apps/mobile exec expo prebuild --platform android --no-install
       - name: Build ARM64 development client
         working-directory: apps/mobile/android
@@ -109,8 +113,8 @@ jobs:
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
           echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
       - run: pnpm install --frozen-lockfile
-      - name: Check release-only signing override
-        run: node --test apps/mobile/test/with-unsigned-android-release.test.cjs
+      - name: Test unsigned build safeguards and APK audit
+        run: node --test apps/mobile/test/with-unsigned-android-release.test.cjs .github/scripts/android-apk-audit.test.cjs
       - name: Build release from source and capture bounded metadata
         run: bash .github/scripts/android-release-source-check.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
