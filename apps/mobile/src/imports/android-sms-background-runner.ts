@@ -75,6 +75,12 @@ export async function runAndroidSmsBackgroundTask(
     if (platform !== 'android') return 'success';
     if (taskError !== null) {
       recordAndroidSmsCatchupFailure(taskError);
+      try {
+        reader = getReader();
+      } catch {
+        return 'failed';
+      }
+      if (reader) await persistPreflightFailure(taskError);
       return 'failed';
     }
     if (timing && (!Number.isSafeInteger(timing.deadlineElapsedRealtimeMs) ||

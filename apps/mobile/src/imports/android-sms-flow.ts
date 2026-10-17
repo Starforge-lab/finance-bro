@@ -12,11 +12,12 @@ import {
 type CaptureHealthReader = Pick<SmsReaderModule, 'beginCaptureAttemptAsync' | 'finishCaptureAttemptAsync'>;
 type CatchupReader = Pick<SmsReaderModule, 'getPermissionsAsync' | 'getImportSettingsAsync' | 'queryInboxAsync'> & CaptureHealthReader;
 type CatchupStorage = Pick<DataLayer, 'getSmsImportCursor' | 'getSmsReplayCheckpoint' | 'importSmsBatch'>;
-type SettingsReader = Pick<SmsReaderModule, 'setImportSettingsAsync'>;
+type SettingsReader = Pick<SmsReaderModule, 'setImportSettingsAsync'> & CaptureHealthReader;
 type ReconcileReader = SettingsReader & Pick<SmsReaderModule, 'getPermissionsAsync' | 'getImportSettingsAsync'>;
 export type AndroidSmsBackgroundScheduler = { register(): Promise<void>; unregister(): Promise<void> };
 
 let settingsWriteQueue = Promise.resolve();
+const registrationFailureHealthBudgetMs = 1_000;
 
 export class AndroidSmsBackgroundUnavailableError extends Error {
   constructor(readonly reason: 'registration' | 'registration_rollback' | 'unregistration') {
@@ -39,12 +40,21 @@ async function registerAndroidSmsTaskOrDisable(
   try {
     await scheduler.register();
   } catch {
+    try { await scheduler.unregister(); } catch {}
+    let healthTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        persistAndroidSmsCaptureFailure(reader, new AndroidSmsBackgroundUnavailableError('registration')),
+        new Promise<void>((resolve) => {
+          healthTimer = setTimeout(resolve, registrationFailureHealthBudgetMs);
+        }),
+      ]);
+    } finally {
+      if (healthTimer !== undefined) clearTimeout(healthTimer);
+    }
     let disabled = false;
     try {
       disabled = (await reader.setImportSettingsAsync({ enabled: false })).enabled === false;
-    } catch {}
-    try {
-      await scheduler.unregister();
     } catch {}
     throw new AndroidSmsBackgroundUnavailableError(disabled ? 'registration' : 'registration_rollback');
   }
@@ -193,21 +203,24 @@ export function subscribeAndroidSmsCatchupFailure(listener: () => void): () => v
 }
 
 export function recordAndroidSmsCatchupFailure(error: unknown): void {
-  if (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError') return;
-  updateFailure(error instanceof AndroidSmsBackgroundUnavailableError
-    ? 'background_unavailable'
-    : error instanceof AndroidSmsCatchupError ? error.code : 'unexpected');
+  const code = captureFailureCode(error);
+  if (code !== null) updateFailure(code);
 }
 
 function isAbortError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError';
 }
 
-function captureFailure(error: unknown): { outcome: 'failed' | 'unavailable' | 'cancelled'; code: CaptureFailureCode | null } {
-  if (isAbortError(error)) return { outcome: 'cancelled', code: null };
-  const code: CaptureFailureCode = error instanceof AndroidSmsBackgroundUnavailableError
+function captureFailureCode(error: unknown): CaptureFailureCode | null {
+  if (isAbortError(error)) return null;
+  return error instanceof AndroidSmsBackgroundUnavailableError
     ? 'background_unavailable'
     : error instanceof AndroidSmsCatchupError ? error.code : 'unexpected';
+}
+
+function captureFailure(error: unknown): { outcome: 'failed' | 'unavailable' | 'cancelled'; code: CaptureFailureCode | null } {
+  const code = captureFailureCode(error);
+  if (code === null) return { outcome: 'cancelled', code: null };
   return { outcome: unavailableCaptureFailures.has(code) ? 'unavailable' : 'failed', code };
 }
 

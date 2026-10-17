@@ -121,6 +121,37 @@ test('Android SMS background task gates access before storage and shares the cat
     assert.deepEqual({ readerCalls, ledgerCalls }, { readerCalls: 0, ledgerCalls: 0 });
   });
 
+  await t.test('persists a framework callback failure with static code using only the reader factory', async () => {
+    clearAndroidSmsCatchupFailure();
+    const source = fakeReader({ enabled: true, startDateMs }, granted);
+    let readerCalls = 0;
+    let ledgerCalls = 0;
+    assert.equal(await runAndroidSmsBackgroundTask('android', () => {
+      readerCalls += 1;
+      return source.reader;
+    }, async () => {
+      ledgerCalls += 1;
+      return {} as DataLayer;
+    }, new Error('private callback detail')), 'failed');
+    assert.equal(readerCalls, 1);
+    assert.equal(ledgerCalls, 0);
+    assert.deepEqual(source.reads(), { settingsReads: 0, permissionReads: 0, queries: 0 });
+    assert.deepEqual(source.healthCalls(), {
+      begins: 1,
+      finishes: [{ revision: 1, outcome: 'failed', code: 'unexpected' }],
+    });
+    assert.equal(getAndroidSmsCatchupFailure(), 'unexpected');
+
+    clearAndroidSmsCatchupFailure();
+    let failedReaderCalls = 0;
+    assert.equal(await runAndroidSmsBackgroundTask('android', () => {
+      failedReaderCalls += 1;
+      throw new Error('reader bridge unavailable');
+    }, async () => { throw new Error('Ledger must not open'); }, new Error('framework failure')), 'failed');
+    assert.equal(failedReaderCalls, 1);
+    assert.equal(getAndroidSmsCatchupFailure(), 'unexpected');
+  });
+
   await t.test('disabled consent succeeds without checking permissions, opening storage, or querying', async () => {
     clearAndroidSmsCatchupFailure();
     const source = fakeReader({ enabled: false, startDateMs }, { readSms: false, receiveSms: false, granted: false });

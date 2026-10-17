@@ -15,6 +15,11 @@ import {
   shouldAbortAndroidSmsPreviewOnHide,
 } from '../src/imports/android-sms-flow';
 
+const noCaptureHealth = {
+  async beginCaptureAttemptAsync() { return null; },
+  async finishCaptureAttemptAsync() {},
+};
+
 test('Android SMS adapters keep the source mapping exact and catch-up failures body-free', async (t) => {
   await t.test('invalidates older UI operations as soon as a newer operation starts', () => {
     const operations = createAndroidSmsOperationGeneration();
@@ -42,6 +47,7 @@ test('Android SMS adapters keep the source mapping exact and catch-up failures b
     let enabled = false;
     let startDateMs: number | null = null;
     const reader = {
+      ...noCaptureHealth,
       async setImportSettingsAsync(update: { enabled: boolean; startDateMs?: number }) {
         writes.push(update.enabled);
         if (update.enabled) {
@@ -77,7 +83,16 @@ test('Android SMS adapters keep the source mapping exact and catch-up failures b
   await t.test('rolls a failed background registration back to off and removes a partial task', async () => {
     const events: string[] = [];
     let enabled = false;
+    let persistedFailureCode: string | null = null;
     const reader = {
+      async beginCaptureAttemptAsync() {
+        events.push(`capture-begin:${enabled}`);
+        return enabled ? 1 : null;
+      },
+      async finishCaptureAttemptAsync(_revision: number, outcome: string, code: string | null) {
+        events.push(`capture-finish:${enabled}:${outcome}:${code}`);
+        persistedFailureCode = code;
+      },
       async setImportSettingsAsync(update: { enabled: boolean }) {
         events.push(update.enabled ? 'setting:true' : 'setting:false');
         enabled = update.enabled;
@@ -97,15 +112,127 @@ test('Android SMS adapters keep the source mapping exact and catch-up failures b
       (error: unknown) => error instanceof AndroidSmsBackgroundUnavailableError &&
         error.reason === 'registration' && !error.message.includes('secret SMS content'),
     );
-    assert.deepEqual(events, ['setting:true', 'register', 'setting:false', 'unregister']);
+    assert.deepEqual(events, [
+      'setting:true',
+      'register',
+      'unregister',
+      'capture-begin:true',
+      'capture-finish:true:unavailable:background_unavailable',
+      'setting:false',
+    ]);
     assert.equal(enabled, false);
+    assert.equal(persistedFailureCode, 'background_unavailable');
     recordAndroidSmsCatchupFailure(new AndroidSmsBackgroundUnavailableError('registration'));
     assert.equal(getAndroidSmsCatchupFailure(), 'background_unavailable');
+  });
+
+  await t.test('registration rollback completes if durable failure metadata cannot be written', async () => {
+    const events: string[] = [];
+    let enabled = false;
+    const reader = {
+      async beginCaptureAttemptAsync() { events.push(`capture-begin:${enabled}`); return enabled ? 1 : null; },
+      async finishCaptureAttemptAsync() {
+        events.push(`capture-finish:${enabled}`);
+        throw new Error('native health write failed');
+      },
+      async setImportSettingsAsync(update: { enabled: boolean }) {
+        enabled = update.enabled;
+        events.push(update.enabled ? 'setting:true' : 'setting:false');
+        return { enabled, startDateMs: 1_700_000_000_000 };
+      },
+    };
+    const scheduler = {
+      async register() { events.push('register'); throw new Error('worker registration failed'); },
+      async unregister() { events.push('unregister'); },
+    };
+
+    await assert.rejects(
+      setAndroidSmsImportSettings(reader, { enabled: true, startDateMs: 1_700_000_000_000 }, scheduler),
+      AndroidSmsBackgroundUnavailableError,
+    );
+    assert.deepEqual(events, [
+      'setting:true',
+      'register',
+      'unregister',
+      'capture-begin:true',
+      'capture-finish:true',
+      'setting:false',
+    ]);
+    assert.equal(enabled, false);
+  });
+
+  await t.test('registration rollback and queued settings proceed when capture health hangs', async (t) => {
+    for (const hangingStage of ['begin', 'finish'] as const) {
+      await t.test(`bounds a hanging ${hangingStage} call`, async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout'] });
+        const events: string[] = [];
+        let enabled = false;
+        let markHealthStarted!: () => void;
+        const healthStarted = new Promise<void>((resolve) => { markHealthStarted = resolve; });
+        let markFinishStarted!: () => void;
+        const finishStarted = new Promise<void>((resolve) => { markFinishStarted = resolve; });
+        let markFinishReturned!: () => void;
+        const finishReturned = new Promise<void>((resolve) => { markFinishReturned = resolve; });
+        let releaseBegin!: (revision: number) => void;
+        let releaseFinish!: () => void;
+        const reader = {
+          async beginCaptureAttemptAsync() {
+            events.push(`capture-begin:${enabled}`);
+            if (hangingStage === 'begin') {
+              markHealthStarted();
+              return await new Promise<number>((resolve) => { releaseBegin = resolve; });
+            }
+            return 1;
+          },
+          async finishCaptureAttemptAsync() {
+            events.push(`capture-finish:${enabled}`);
+            markFinishStarted();
+            if (hangingStage === 'finish') {
+              markHealthStarted();
+              await new Promise<void>((resolve) => { releaseFinish = resolve; });
+            }
+            markFinishReturned();
+          },
+          async setImportSettingsAsync(update: { enabled: boolean }) {
+            enabled = update.enabled;
+            events.push(update.enabled ? 'setting:true' : 'setting:false');
+            return { enabled, startDateMs: 1_700_000_000_000 };
+          },
+        };
+        const scheduler = {
+          async register() { events.push('register'); throw new Error('worker registration failed'); },
+          async unregister() { events.push('unregister'); },
+        };
+
+        const enabling = setAndroidSmsImportSettings(
+          reader, { enabled: true, startDateMs: 1_700_000_000_000 }, scheduler,
+        );
+        const disabling = setAndroidSmsImportSettings(reader, { enabled: false }, scheduler);
+        await healthStarted;
+        t.mock.timers.tick(1_000);
+        await assert.rejects(enabling, AndroidSmsBackgroundUnavailableError);
+        await disabling;
+        assert.equal(enabled, false);
+        assert.ok(events.indexOf('unregister') < events.indexOf('capture-begin:true'));
+        assert.deepEqual(events.slice(-2), ['setting:false', 'unregister']);
+
+        if (hangingStage === 'begin') {
+          releaseBegin(1);
+          await finishStarted;
+          assert.equal(events.at(-1), 'capture-finish:false');
+        } else {
+          releaseFinish();
+          await finishReturned;
+          assert.equal(events.at(-1), 'unregister');
+        }
+      });
+    }
   });
 
   await t.test('persists off before asking the scheduler to unregister', async () => {
     const events: string[] = [];
     const reader = {
+      ...noCaptureHealth,
       async setImportSettingsAsync(update: { enabled: boolean }) {
         events.push(update.enabled ? 'setting:true' : 'setting:false');
         return { enabled: update.enabled, startDateMs: 1_700_000_000_000 };
@@ -124,6 +251,13 @@ test('Android SMS adapters keep the source mapping exact and catch-up failures b
     const events: string[] = [];
     let settings = { enabled: false, startDateMs: null as number | null };
     const reader = {
+      async beginCaptureAttemptAsync() {
+        events.push(`capture-begin:${settings.enabled}`);
+        return settings.enabled ? 1 : null;
+      },
+      async finishCaptureAttemptAsync(_revision: number, outcome: string, code: string | null) {
+        events.push(`capture-finish:${settings.enabled}:${outcome}:${code}`);
+      },
       async getImportSettingsAsync() {
         events.push('read-settings');
         return settings;
@@ -149,6 +283,24 @@ test('Android SMS adapters keep the source mapping exact and catch-up failures b
     settings = { enabled: true, startDateMs: 1_700_000_000_000 };
     await reconcileAndroidSmsImportSettings(reader, scheduler);
     assert.deepEqual(events, ['read-settings', 'read-permissions', 'register']);
+    events.length = 0;
+    const failingScheduler = {
+      async register() { events.push('register'); throw new Error('worker registration failed'); },
+      async unregister() { events.push('unregister'); },
+    };
+    await assert.rejects(
+      reconcileAndroidSmsImportSettings(reader, failingScheduler),
+      AndroidSmsBackgroundUnavailableError,
+    );
+    assert.deepEqual(events, [
+      'read-settings',
+      'read-permissions',
+      'register',
+      'unregister',
+      'capture-begin:true',
+      'capture-finish:true:unavailable:background_unavailable',
+      'setting:false',
+    ]);
   });
 
   await t.test('maps only the canonical fields used by SMS review', async () => {
