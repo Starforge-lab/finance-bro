@@ -111,7 +111,7 @@ function parseFileList(output) {
     nativeSharedLibraries: nativeLibraries,
     assets: files.filter((path) => path.startsWith('/assets/')),
     rawResources: files.filter((path) => path.startsWith('/res/raw/')),
-    licenseNoticeCandidates: files.filter((path) => /(?:^|\/)(?:licenses?|licences?|notices?|copying|third[-_. ]?party)(?:$|[._-])/i.test(path)),
+    licenseNoticeCandidates: files.filter((path) => /(?:^|\/)(?:licenses?|licences?|notices?|copying|third[-_. ]?party)(?:$|[./_-])/i.test(path)),
   };
   for (const [category, entries] of Object.entries(inventories)) {
     if (entries.length > MAX_CATEGORY_PATHS) fail(`APK ${category} inventory exceeded its path limit.`);

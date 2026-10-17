@@ -135,3 +135,8 @@ test('fails closed when a path inventory or rendered report exceeds its cap', ()
     /report limit/,
   );
 });
+
+test('includes files inside nested license directories', () => {
+  const inventory = parseFileList(`${validFileList()}\n/META-INF/licenses/MIT.txt`);
+  assert.ok(inventory.licenseNoticeCandidates.includes('/META-INF/licenses/MIT.txt'));
+});
