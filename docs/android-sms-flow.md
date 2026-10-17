@@ -244,9 +244,8 @@ recovery from a stalled native preferences operation.
 Settings reads this record after restart and shows recorded failed/unavailable
 checks separately from failed-payment alerts in review. The SQLite successful
 catch-up timestamp remains the record of committed, exhausted source work.
-Metadata-read failure offers retry and paste recovery. This addition requires a
-matching native rebuild; its Kotlin/device and visible-flow acceptance remain
-unverified until recorded separately.
+Metadata-read failure offers retry and paste recovery. The bounded native API
+and status-count display were later verified on device as recorded below.
 
 ## Cold headless catch-up evidence
 
@@ -277,3 +276,54 @@ counters and visible status flow still need a matching native rebuild and device
 check. Cleanup
 completed: the QA task was unregistered, its manifest and unique database were
 removed, and no scheduled job remained.
+
+## Capture-health device verification
+
+On 2026-10-17, native capture-health run `mvbxhk6g-vvfdgclu` passed on a
+Motorola Edge 60 Pro running Android 17. It reported source `74bbc4b` and used
+the isolated APK from workflow
+[`39003901576`](https://github.com/Starforge-lab/finance-bro/actions/runs/39003901576),
+with SHA-256
+`7d8f421b22588169afdb03350db4a5b331f6eae4763375dcb0c5c62584861904`. Native
+and JVM assertions passed. The same head's normal development APK
+[`39003898201`](https://github.com/Starforge-lab/finance-bro/actions/runs/39003898201),
+CI and CodeQL checks also passed.
+
+Native consent started off, was temporarily enabled only for health API checks,
+and ended off. The run did not register a background task, query the inbox, or
+request a platform permission. Starting from zero failed/unavailable counts, it
+recorded one of each with current static code `permission_denied`. It verified
+that success does not increase outcome counts,
+cancellation preserves a failure, stale and duplicate finishes are ignored, and
+disabled consent makes begin return null and ignores finish. A second, fresh
+JavaScript runtime read the same failure code and counters while consent remained
+off.
+
+The current Settings status panel, mirrored byte-for-byte in the private QA
+build, showed `Recorded checks: 1 failed · 1 unavailable`, the recovery copy
+“SMS permission is unavailable. Grant it, then preview again. Manual entry and
+paste still work.”, and `Import is off`. The `permission_denied` value was
+written through the health API; this was not a test of Android permission
+revocation or grant behavior. A separate Settings preview inspection showed
+zero messages and retained the October 17, 2026 start date; this does not prove
+the initial 90-day preview.
+
+The current Settings panel also completed a bounded preview/cancel and
+confirm/disable sequence. Preview followed by `Cancel preview` left import off
+and the preview dismissed. A fresh read-only database contained two
+transactions and four references; its key was preserved and its report recorded
+no raw body. A second preview of the preserved October 17 zero-message window,
+followed by `Turn on and import`, turned import on, displayed the October 17
+last-catch-up date and cleared the injected failure. Turning import off restored
+native consent off. Post-disable wake metadata/XML still showed one failed and
+one unavailable outcome, no current failure code, and zero app-owned scheduled
+jobs. No new transaction was saved in this sequence. The status panel was visually
+checked in dark and light themes; Auto was restored afterward. This does not
+establish TalkBack, large-text or reduced-motion acceptance.
+
+This verifies the bounded zero-message preview/cancel/confirm/disable path, the
+native health API's persistence across a fresh JavaScript runtime, and the
+displayed status counts. It does not establish initial 90-day history, live
+inbox access, Android permission revocation/grant, background delivery, a new
+financial save, or reboot behavior. Full capture acceptance remains open beyond
+this bounded UI sequence.
