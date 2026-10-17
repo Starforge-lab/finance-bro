@@ -299,8 +299,12 @@ permission assertions were simulated; no system inbox was read. This does not
 prove process restart, selected-review lock duration, live delivery, real opt-in
 or background execution.
 
-- Full Android concurrent manual/import saves and process-restart behavior
-  remain required before this native storage path is ready to merge.
+- Full Android concurrent manual/import saves and reboot behavior remain
+  required before this native storage path is ready to merge. The 2026-10-17
+  cold headless run proves Android started a new app process and JavaScript
+  runtime for the production runner, which saved and replayed fictional data;
+  it does not establish natural scheduling or device-reboot behavior. See
+  [the Android flow evidence](android-sms-flow.md).
 - #46 must establish the eligible rule corpus before any automatic saving claim.
 - #43's selection/recovery path now has isolated Android UI evidence with a
   fictional reader: an old selection showed fallback without redirecting or

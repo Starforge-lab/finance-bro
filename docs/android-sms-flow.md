@@ -232,9 +232,48 @@ are accessible cannot be durably recorded there; the caller still reports its
 static error when available. A timeout stops financial work without waiting for
 a potentially hung status write.
 
+If background-task registration fails, the app attempts to unregister the task
+before writing the body-free failure status, then attempts to persist consent
+off. The health write has a one-second JavaScript wait bound so a promise that
+never settles does not hold the settings queue indefinitely. This timeout does
+not cancel native work: if a native module call or preferences monitor is blocked
+at the platform level, the later consent-off write may also remain pending. The
+guarantee is the early unregister attempt and bounded JavaScript health wait, not
+recovery from a stalled native preferences operation.
+
 Settings reads this record after restart and shows recorded failed/unavailable
 checks separately from failed-payment alerts in review. The SQLite successful
 catch-up timestamp remains the record of committed, exhausted source work.
 Metadata-read failure offers retry and paste recovery. This addition requires a
 matching native rebuild; its Kotlin/device and visible-flow acceptance remain
 unverified until recorded separately.
+
+## Cold headless catch-up evidence
+
+On 2026-10-17, isolated run `mvbvwlmq-uk6h6j6c` exercised the production
+background runner in a fresh headless JavaScript runtime, not the foreground
+app. It used the isolated APK from workflow
+[`38942149039`](https://github.com/Starforge-lab/finance-bro/actions/runs/38942149039),
+and reported source `5e0986f` for the isolated APK and JavaScript runner. The app
+process was absent before the callback; Android started a new process with a
+fresh headless JavaScript runtime. Before it began, the run's private database
+had one seeded account, zero transactions and references, and no import cursor
+or replay checkpoint. The runner saved one fictional HDFC
+credit for 25,075 paise, then replayed it without adding a duplicate: the final
+database held one transaction and one reference. Foreign-key checks, catch-up
+health recording, checkpoint clearing, and unchanged private and production key
+slots passed. The run used a fictional inbox without requesting permission or
+writing consent; native consent remained off before and after. Its body-free
+report and native log contain no SMS contents.
+
+The run was initiated manually with Android's `jobscheduler run --satisfied` at
+2026-10-17 04:32:20 UTC; Android ran the callback at about 04:40 UTC after a
+scheduler backlog. This proves the production runner's bounded storage and
+replay path from an absent process into a fresh headless runtime. It does not
+prove naturally timed task delivery, SMS receiver or multipart delivery, real
+inbox access, permission or consent lifecycle, or behavior after device reboot.
+The installed APK also predates the current native capture-health API, so its
+counters and visible status flow still need a matching native rebuild and device
+check. Cleanup
+completed: the QA task was unregistered, its manifest and unique database were
+removed, and no scheduled job remained.
