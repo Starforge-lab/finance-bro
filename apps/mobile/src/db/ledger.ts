@@ -379,6 +379,11 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
       return db.update(accounts).set({ archived: true }).where(eq(accounts.id, id))
         .returning({ id: accounts.id }).all().then((rows) => rows.length > 0);
     },
+    async restoreAccount(id: string): Promise<boolean> {
+      assertId(id);
+      return db.update(accounts).set({ archived: false }).where(eq(accounts.id, id))
+        .returning({ id: accounts.id }).all().then((rows) => rows.length > 0);
+    },
     async createCategory(input: NewCategory): Promise<void> {
       assertValidCategory(input);
       await db.insert(categories).values({
@@ -578,13 +583,7 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
       await assertTransactionSemantics(input);
       const createdAt = now();
       return db.insert(transactions).values({
-        // Parser status changes must not bypass an identical source's corrections or tombstone.
-        id: input.dedupeKey?.startsWith('upi:') ? sql`coalesce((
-          select ${transactions.id} from ${transactions}
-          where ${transactions.source} = 'paste' and ${transactions.bodyHash} = ${input.bodyHash}
-            and ${transactions.dedupeKey} like 'upi:%'
-          limit 1
-        ), ${input.id})` : input.id,
+        id: input.id,
         amountPaise: input.amountPaise,
         direction: input.direction,
         kind: input.kind,

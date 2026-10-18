@@ -19,6 +19,7 @@ import { indiaDate } from '@/utils/display';
 import { saveCsv } from '@/exports/save-csv';
 import { ExportCleanupError } from '@/exports/save-csv-write';
 import { SmsImportPanel } from './sms-import-panel';
+import { FinanceSetupPanel } from './finance-setup-panel';
 import type { AndroidSmsReviewSelection } from '@/imports/android-sms-flow';
 import { PasteForm } from '@/screens/home/paste-form';
 
@@ -134,20 +135,20 @@ export default function SettingsScreen() {
     }
   }, [refresh]);
 
-  const archiveAccount = useCallback(async (id: string) => {
+  const archiveAccount = useCallback(async (id: string, restore = false) => {
     if (operationGuard.current) return;
     operationGuard.current = true;
     setPending(`archive:${id}`);
     setNotice(null);
     try {
       const ledger = await getLedger();
-      if (!await ledger.archiveAccount(id)) throw new Error('Account unavailable');
+      if (!await (restore ? ledger.restoreAccount(id) : ledger.archiveAccount(id))) throw new Error('Account unavailable');
       setConfirmArchive(null);
       setExpandedAccount(null);
-      setNotice({ text: 'Account archived. Existing entries keep their account link.' });
+      setNotice({ text: restore ? 'Account restored. Reconcile its balance in your spending plan.' : 'Account archived. Existing entries and card liabilities remain linked.' });
       await refresh();
     } catch {
-      setNotice({ text: 'Could not archive this account. Your entries are unchanged; try again.', error: true });
+      setNotice({ text: 'Could not update this account. Your entries are unchanged; try again.', error: true });
     } finally {
       setPending(null);
       operationGuard.current = false;
@@ -371,6 +372,7 @@ export default function SettingsScreen() {
                     onAskArchive={() => {}}
                     onCancelArchive={() => {}}
                     onArchive={() => {}}
+                    onRestore={() => { void archiveAccount(account.id, true); }}
                   />
                 ))}
                 <ThemedText style={[Type.note, styles.archivedNote]}>Past entries keep their account link. Archived accounts are hidden from new entries.</ThemedText>
@@ -381,6 +383,7 @@ export default function SettingsScreen() {
             </SettingsGroup>
           </View>
 
+          {ledgerForSms ? <FinanceSetupPanel ledger={ledgerForSms} version={version} /> : null}
           <View style={styles.section}>
             <SectionHeading title="Ledger" theme={theme} />
             <SettingsGroup theme={theme}>
@@ -563,9 +566,9 @@ function GroupAction({ children, theme, last = false }: { children: ReactNode; t
   return <View style={[styles.groupAction, !last && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.rule }]}>{children}</View>;
 }
 
-function AccountRow({ account, theme, archived = false, expanded, editing, confirmingArchive, pending, disabled = false, last = false, onToggle, onEdit, onCancelEdit, onSave, onAskArchive, onCancelArchive, onArchive }: {
+function AccountRow({ account, theme, archived = false, expanded, editing, confirmingArchive, pending, disabled = false, last = false, onToggle, onEdit, onCancelEdit, onSave, onAskArchive, onCancelArchive, onArchive, onRestore }: {
   account: Account; theme: Theme; archived?: boolean; expanded: boolean; editing: boolean; confirmingArchive: boolean; pending: boolean; disabled?: boolean; last?: boolean;
-  onToggle: () => void; onEdit: () => void; onCancelEdit: () => void; onSave: (fields: AccountFields) => Promise<string | null>; onAskArchive: () => void; onCancelArchive: () => void; onArchive: () => void;
+  onToggle: () => void; onEdit: () => void; onCancelEdit: () => void; onSave: (fields: AccountFields) => Promise<string | null>; onAskArchive: () => void; onCancelArchive: () => void; onArchive: () => void; onRestore?: () => void;
 }) {
   const info = [accountLabels[account.type], account.institution, account.last4 ? `•••• ${account.last4}` : null].filter(Boolean).join(' · ');
   return <View>
@@ -587,6 +590,7 @@ function AccountRow({ account, theme, archived = false, expanded, editing, confi
     </Pressable>
     {expanded && !editing && !confirmingArchive ? <View style={styles.rowActions}>
       <LedgerButton label="Edit" icon="edit" disabled={disabled} onPress={onEdit} />
+      {archived && onRestore ? <LedgerButton label={`Restore ${account.name}`} disabled={disabled} onPress={onRestore} /> : null}
       {!archived ? <DestructiveButton label="Archive" disabled={disabled} theme={theme} onPress={onAskArchive} /> : null}
     </View> : null}
     {confirmingArchive ? <View style={styles.inlinePanel}>

@@ -127,7 +127,7 @@ describe('Android SMS ingestion storage seam', () => {
       assert.equal((fixture.sqlite.prepare('SELECT value FROM preferences WHERE key = ?').get('theme') as { value: string }).value, 'dark');
       assert.equal((fixture.sqlite.prepare('SELECT is_fixed FROM categories WHERE id = ?').get('old-category') as { is_fixed: number }).is_fixed, 1);
       assert.equal(await api.getSmsImportCursor(), null);
-      assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 9);
+      assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, ledgerMigrations.journal.entries.length);
       for (const [table, name] of [
         ['transactions', 'transactions_dedupe_key_idx'],
         ['sms_import_refs', 'sms_import_refs_dedupe_key_idx'],
@@ -196,7 +196,7 @@ describe('Android SMS ingestion storage seam', () => {
       assert.deepEqual(fixture.sqlite.prepare(`SELECT * FROM transactions WHERE id IN ('migration-edited','migration-deleted') ORDER BY id`).all().map((row) => ({ ...row })),
         oldTransactions.map((row) => ({ ...row })));
       assert.deepEqual(fixture.sqlite.prepare('PRAGMA foreign_key_check').all(), []);
-      assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 9);
+      assert.equal((fixture.sqlite.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, ledgerMigrations.journal.entries.length);
       const replay = await api.importSmsBatch([source], null);
       assert.equal(replay.duplicate, 1);
       assert.equal(smsReferenceId(fixture.sqlite, source.platformId, source.receivedAt), 'legacy:71');

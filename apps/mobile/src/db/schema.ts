@@ -212,3 +212,32 @@ export const preferences = sqliteTable('preferences', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
 });
+
+export const accountBalanceCheckpoints = sqliteTable('account_balance_checkpoints', {
+  accountId: text('account_id').primaryKey().references(() => accounts.id, { onDelete: 'cascade' }),
+  accountType: text('account_type', { enum: accountTypes }).notNull(),
+  balancePaise: integer('balance_paise').notNull(),
+  asOf: integer('as_of', { mode: 'timestamp_ms' }).notNull(),
+  confirmedAt: integer('confirmed_at', { mode: 'timestamp_ms' }).notNull(),
+  reconciliationDeltaPaise: integer('reconciliation_delta_paise'),
+}, (table) => [
+  check('balance_checkpoint_type_check', sql`${table.accountType} in ('bank', 'credit_card', 'wallet', 'upi_lite', 'cash')`),
+  check('balance_checkpoint_money_check', sql`typeof(${table.balancePaise}) = 'integer' and ${table.balancePaise} between -9007199254740991 and 9007199254740991`),
+  check('balance_checkpoint_delta_check', sql`${table.reconciliationDeltaPaise} is null or (typeof(${table.reconciliationDeltaPaise}) = 'integer' and ${table.reconciliationDeltaPaise} between -9007199254740991 and 9007199254740991)`),
+  check('balance_checkpoint_date_check', sql`typeof(${table.asOf}) = 'integer' and ${table.asOf} between -8640000000000000 and 8640000000000000 and typeof(${table.confirmedAt}) = 'integer' and ${table.confirmedAt} between ${table.asOf} and 8640000000000000`),
+]);
+
+export const recurringSchedules = sqliteTable('recurring_schedules', {
+  id: text('id').primaryKey(),
+  label: text('label').notNull(),
+  amountPaise: integer('amount_paise').notNull(),
+  dayOfMonth: integer('day_of_month').notNull(),
+  kind: text('kind', { enum: ['bill', 'card_payment'] }).notNull(),
+  paused: integer('paused', { mode: 'boolean' }).notNull().default(false),
+}, (table) => [
+  check('recurring_schedules_label_check', sql`length(trim(${table.label})) > 0`),
+  check('recurring_schedules_amount_check', sql`typeof(${table.amountPaise}) = 'integer' and ${table.amountPaise} between 1 and 9007199254740991`),
+  check('recurring_schedules_day_check', sql`typeof(${table.dayOfMonth}) = 'integer' and ${table.dayOfMonth} between 1 and 31`),
+  check('recurring_schedules_kind_check', sql`${table.kind} in ('bill', 'card_payment')`),
+  check('recurring_schedules_paused_check', sql`typeof(${table.paused}) = 'integer' and ${table.paused} in (0, 1)`),
+]);

@@ -2,6 +2,9 @@ import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { createLedger, type LedgerMigrations, type LedgerSQLiteClient, type LedgerSQLiteTransactionRunner } from './ledger';
 import { smsImportRefs, transactions } from './schema';
 import { createPlanning } from './planning';
+import { createReconciliation } from './reconciliation';
+import { createPersonalFinance } from './personal-finance';
+import { getFinanceQueue } from './finance-transaction';
 import { createPreferences } from './preferences';
 import { createLedgerQueries } from './queries';
 import { createLedgerCsvExporter } from '../exports/csv';
@@ -126,10 +129,15 @@ export function createDataLayer(
     return result;
   }
 
-  return {
+  const finance = {
+    ...createReconciliation(client, migrations, runSmsTransaction),
+    ...createPersonalFinance(client, migrations, runSmsTransaction),
+  };
+  const api = {
     ...manualLedger,
     ...queries,
     ...planning,
+    ...finance,
     ...createPreferences(db),
     ...createLedgerCsvExporter(db),
     ...smsIngestion,
@@ -174,6 +182,16 @@ export function createDataLayer(
       });
     },
   };
+  if (runSmsTransaction) return api;
+  const queue = getFinanceQueue(client);
+  return new Proxy(api, {
+    get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver);
+      // Finance methods already enter this same queue before opening a transaction.
+      if (typeof value !== 'function' || Object.hasOwn(finance, key)) return value;
+      return (...args: unknown[]) => queue(async () => Reflect.apply(value, target, args));
+    },
+  });
 }
 
 export type DataLayer = ReturnType<typeof createDataLayer>;

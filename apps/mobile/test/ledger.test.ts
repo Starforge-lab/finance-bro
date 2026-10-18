@@ -354,6 +354,28 @@ describe('ledger', () => {
     fixture.sqlite.close();
   });
 
+  it('restores an archived account without changing its identity or transactions', async () => {
+    const fixture = openLedger(':memory:');
+    try {
+      await fixture.ledger.migrateLedger();
+      await fixture.ledger.createAccount({ id: 'card', name: 'Fictional card', type: 'credit_card' });
+      await fixture.ledger.createTransaction(transaction('card-purchase', { accountId: 'card' }));
+      const original = await findTransaction(fixture.ledger, 'card-purchase');
+      await fixture.ledger.archiveAccount('card');
+      assert.deepEqual(await fixture.ledger.listAccounts(), []);
+      await assert.rejects(fixture.ledger.restoreAccount(' '), TypeError);
+      assert.equal(await fixture.ledger.restoreAccount('missing'), false);
+      assert.equal(await fixture.ledger.restoreAccount('card'), true);
+      const [restored] = await fixture.ledger.listAccounts();
+      assert.equal(restored.id, 'card');
+      assert.equal(restored.name, 'Fictional card');
+      assert.equal(restored.archived, false);
+      assert.deepEqual(await findTransaction(fixture.ledger, 'card-purchase'), original);
+    } finally {
+      fixture.sqlite.close();
+    }
+  });
+
   it('validates manual/import/review writes and keeps account/category setup safe', async () => {
     const fixture = openLedger(':memory:');
     try {

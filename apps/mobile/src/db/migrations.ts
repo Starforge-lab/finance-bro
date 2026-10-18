@@ -8,6 +8,7 @@ import categoryFixed from '../../drizzle/0005_category_fixed.sql';
 import preferences from '../../drizzle/0006_preferences.sql';
 import smsIngestion from '../../drizzle/0007_certain_thunderbolt_ross.sql';
 import smsSourceIdentity from '../../drizzle/0008_sms_source_identity.sql';
+import balancePlanning from '../../drizzle/0009_sparkling_toro.sql';
 import type { LedgerMigrations } from './ledger';
 
 export const ledgerMigrations: LedgerMigrations = {
@@ -22,5 +23,6 @@ export const ledgerMigrations: LedgerMigrations = {
     m0006: preferences,
     m0007: smsIngestion,
     m0008: smsSourceIdentity,
+    m0009: balancePlanning,
   },
 };
