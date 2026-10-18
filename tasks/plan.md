@@ -13,7 +13,7 @@ the full parent issues.
 - [x] Verify combined changes, fictional browser flows and independent review.
 - [x] Run isolated Android storage checks and cold-restart persistence; remove
       the fictional ledger and temporary harness entry point.
-- [ ] Publish a draft PR with actual check results and remaining device gates.
+- [x] Publish draft PR #97 with actual check results and remaining device gates.
 
 Unattended assumptions are documented in docs/personal-automation-plan.md.
 No new provider, native dependency, cloud service or personal record is added.
