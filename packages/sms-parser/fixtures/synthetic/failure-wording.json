@@ -1,0 +1,61 @@
+{
+  "note": "Entirely fictional regression cases for issue #93. Identifier tokens are not bank-declared payment failures. These cases do not verify new bank formats for automatic saving.",
+  "cases": [
+    {
+      "name": "failure word in UPI local part is not failed status",
+      "sender": "VM-HDFCBK-S",
+      "body": "INR 12.34 debited from A/c XX1234 to merchant.failed@examplebank (UPI Ref No 123456789012)",
+      "receivedAt": "2026-10-01T10:00:00+05:30",
+      "expected": { "kind": "transaction", "ruleId": "generic.keyword", "confidence": "medium", "txn": { "amountPaise": 1234, "status": "posted", "vpa": "merchant.failed@examplebank" } }
+    },
+    {
+      "name": "failure word in UPI handle is not failed status",
+      "sender": "AD-ICICIB-S",
+      "body": "INR 12.34 credited to A/c XX1234 from payer@declined (UPI Ref No 123456789012)",
+      "receivedAt": "2026-10-01T10:00:00+05:30",
+      "expected": { "kind": "transaction", "ruleId": "generic.keyword", "confidence": "medium", "txn": { "amountPaise": 1234, "status": "posted", "vpa": "payer@declined" } }
+    },
+    {
+      "name": "multiple mixed-case VPAs do not manufacture failure wording",
+      "sender": "VM-HDFCBK-S",
+      "body": "INR 12.34 debited from A/c XX1234 from payer@Unsuccessful to Merchant.Declined@examplebank (UPI Ref No 123456789012)",
+      "receivedAt": "2026-10-01T10:00:00+05:30",
+      "expected": { "kind": "transaction", "ruleId": "generic.keyword", "confidence": "medium", "txn": { "amountPaise": 1234, "status": "posted" } }
+    },
+    {
+      "name": "explicit failed wording survives identifier exclusion",
+      "sender": "VM-HDFCBK-S",
+      "body": "UPI payment of INR 12.34 debited from A/c XX1234 to merchant.failed@examplebank failed. Amount will be reversed.",
+      "receivedAt": "2026-10-01T10:00:00+05:30",
+      "expected": { "kind": "transaction", "ruleId": "generic.keyword", "txn": { "amountPaise": 1234, "status": "failed", "kind": "expense" } }
+    },
+    {
+      "name": "explicit declined wording after two VPAs remains failed",
+      "sender": "VM-HDFCBK-S",
+      "body": "INR 12.34 debited from A/c XX1234 from payer@failed to merchant@unsuccessful; transaction declined.",
+      "receivedAt": "2026-10-01T10:00:00+05:30",
+      "expected": { "kind": "transaction", "ruleId": "generic.keyword", "txn": { "amountPaise": 1234, "status": "failed" } }
+    },
+    {
+      "name": "future debit with failure word in VPA stays a reminder",
+      "sender": "VM-HDFCBK-S",
+      "body": "INR 12.34 will be debited from A/c XX1234 to merchant.failed@examplebank tomorrow.",
+      "receivedAt": "2026-10-01T10:00:00+05:30",
+      "expected": { "kind": "ignored", "reason": "reminder" }
+    },
+    {
+      "name": "unsupported HDFC shape with a failure word remains reviewed and posted",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! INR 12.34 credited to HDFC Bank A/c XX1234 on 01-10-26 from VPA merchant.failed@examplebank (UPI 12345678xxxx)",
+      "receivedAt": "2026-10-01T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": "hdfc.upi.credit", "txn": { "amountPaise": 1234, "status": "posted", "upiRef": null } }
+    },
+    {
+      "name": "HDFC lookalike with VPA marker and explicit failure remains failed",
+      "sender": "VM-HDFCBK-S",
+      "body": "Credit Alert! INR 12.34 credited to HDFC Bank A/c XX1234 on 01-10-26 from VPA merchant.failed@examplebank (UPI 123456789012). Transaction could not be processed.",
+      "receivedAt": "2026-10-01T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": "hdfc.upi.credit", "txn": { "amountPaise": 1234, "status": "failed" } }
+    }
+  ]
+}

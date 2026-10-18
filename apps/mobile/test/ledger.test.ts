@@ -115,6 +115,78 @@ describe('ledger', () => {
 
   after(() => removeTemporaryFile(directory, filename));
 
+  it('prepares VPA failure words as posted while preserving explicit failures for review', async () => {
+    for (const [suffix, status] of [['', 'posted'], ['. Transaction failed.', 'failed']] as const) {
+      const raw = {
+        sender: 'VM-HDFCBK-S',
+        body: `Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA failed@examplebank (UPI 567890123456)${suffix}`,
+        receivedAt: Date.parse('2026-09-27T10:00:00+05:30'),
+      };
+      const prepared = await preparePastedSms(raw, testFingerprinter);
+      assert.equal(prepared.kind, 'needs-review');
+      if (prepared.kind !== 'needs-review') throw new Error('Expected review');
+      assert.equal(prepared.candidate?.status, status);
+      assert.equal(prepared.ruleId, 'hdfc.upi.credit');
+      assert.equal(prepared.ruleVersion, 2);
+      assert.equal(JSON.stringify(prepared).includes(raw.body), false);
+    }
+  });
+
+  it('keeps corrected and deleted legacy paste identities protected after a parser status change', async () => {
+    const fixture = openLedger(':memory:');
+    try {
+      await fixture.ledger.migrateLedger();
+      const raw = {
+        sender: 'VM-HDFCBK-S',
+        body: 'INR 250.75 credited to A/c XX1234 from VPA failed@examplebank (UPI Ref No 567890123456)',
+        receivedAt: Date.parse('2026-09-27T10:00:00+05:30'),
+      };
+      const prepared = await preparePastedSms(raw, testFingerprinter);
+      if (prepared.kind !== 'needs-review' || !prepared.candidate) throw new Error('Expected review candidate');
+      assert.equal(prepared.candidate.upiRef, '567890123456');
+      const legacyDedupeKey = `upi:${await testFingerprinter.fingerprint(JSON.stringify(['upi', '567890123456', 'credit', 'failed', 'income']))}`;
+      const legacy = {
+        ...prepared,
+        candidate: { ...prepared.candidate, status: 'failed' as const },
+        ruleVersion: 3,
+        identity: { ...prepared.identity, id: `paste:${legacyDedupeKey}`, dedupeKey: legacyDedupeKey },
+      };
+      assert.notEqual(prepared.identity.id, legacy.identity.id);
+      assert.equal(await saveReviewedPaste(fixture.ledger, legacy, { status: 'posted', amountPaise: 25100 }), 'inserted');
+      assert.deepEqual(await Promise.all([
+        saveReviewedPaste(fixture.ledger, prepared),
+        saveReviewedPaste(fixture.ledger, prepared),
+      ]), ['duplicate', 'duplicate']);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+      assert.equal((await findTransaction(fixture.ledger, legacy.identity.id))?.amountPaise, 25100);
+      await fixture.ledger.softDeleteTransaction(legacy.identity.id);
+      assert.equal(await saveReviewedPaste(fixture.ledger, prepared), 'duplicate');
+      assert.ok((await findTransaction(fixture.ledger, legacy.identity.id))?.deletedAt);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+    } finally {
+      fixture.sqlite.close();
+    }
+  });
+
+  it('keeps distinct failed and posted source alerts with the same UPI reference separate', async () => {
+    const fixture = openLedger(':memory:');
+    try {
+      await fixture.ledger.migrateLedger();
+      for (const suffix of ['. Transaction failed.', '']) {
+        const prepared = await preparePastedSms({
+          sender: 'VM-HDFCBK-S',
+          body: `INR 12.34 debited from A/c XX1234 to merchant@examplebank (UPI Ref No 567890123456)${suffix}`,
+          receivedAt: Date.parse('2026-09-27T10:00:00+05:30'),
+        }, testFingerprinter);
+        assert.equal(await saveReviewedPaste(fixture.ledger, prepared), 'inserted');
+      }
+      const rows = await fixture.ledger.db.select().from(transactions).all();
+      assert.deepEqual(rows.map((row) => row.status).sort(), ['failed', 'posted']);
+    } finally {
+      fixture.sqlite.close();
+    }
+  });
+
   it('upgrades the original ledger without losing corrections or tombstones', async () => {
     const fixture = openLedger(':memory:');
     try {
