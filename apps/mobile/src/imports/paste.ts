@@ -74,7 +74,7 @@ export async function saveReviewedPaste(
     if (!(separatePaymentAt instanceof Date) || !Number.isFinite(separatePaymentAt.getTime()) || separatePaymentAt.getTime() % 1_000 !== 0) {
       throw new TypeError('Separate payment time must be a valid whole second');
     }
-    const existing = await ledger.findPasteCollision(prepared.identity.id);
+    const existing = await ledger.findPasteCollision(prepared.identity.id, prepared.identity.dedupeKey);
     if (!existing) throw new TypeError('A separate payment requires a matching paste collision');
     if (Math.floor(existing.occurredAt.getTime() / 1_000) === Math.floor(separatePaymentAt.getTime() / 1_000)) {
       throw new RangeError('Choose a different actual time; payments in the same second must be entered manually');
