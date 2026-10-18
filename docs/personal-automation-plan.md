@@ -113,7 +113,7 @@ Reuse these issues and existing modules rather than creating a parallel roadmap.
   restore must not replace the working ledger. Reuse #42's crypto feasibility
   work; do not invent a cryptographic format or call CSV a backup.
 - No release-readiness claim until the applicable gates pass at the actual
-  revision. Code-owner review and the separate F-Droid distribution gates remain.
+  revision. Independent review and the separate F-Droid distribution gates remain.
 
 ## Inputs still needed before dependent implementation
 
