@@ -6,6 +6,7 @@ import { rmSync, rmdirSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { createDataLayer } from '../src/db/service';
+import { preparePastedSms, saveReviewedPaste } from '../src/imports/paste';
 import type { LedgerSQLiteClient, LedgerSQLiteTransactionRunner } from '../src/db/ledger';
 import { FingerprintKeyUnavailableError } from '../src/imports/fingerprint';
 import type { FingerprintKeyPolicy, FingerprintKeyProvider, Fingerprinter } from '../src/imports/fingerprint';
@@ -91,6 +92,87 @@ function totalChanges(sqlite: DatabaseSync): number {
 }
 
 describe('selected Android SMS review confirmation', () => {
+  for (const deleted of [false, true]) {
+    it(`preserves a legacy paste after parser status changes during SMS review (deleted=${deleted})`, async () => {
+      const row = { ...strongSms, platformId: '72', body: strongSms.body.replace('fictional@axisbank', 'merchant.failed@examplebank') };
+      const test = await fixture([row]);
+      try {
+        const expected = await ready(test.api, row);
+        const prepared = expected.preparation;
+        if (!prepared.candidate?.upiRef) throw new Error('Expected a reference-based candidate');
+        const legacyKey = `upi:${await test.key.fingerprint(JSON.stringify(['upi', prepared.candidate.upiRef, 'debit', 'failed', 'expense']))}`;
+        const legacy = {
+          ...prepared,
+          candidate: { ...prepared.candidate, status: 'failed' as const },
+          ruleVersion: 3,
+          identity: { ...prepared.identity, id: `paste:${legacyKey}`, dedupeKey: legacyKey },
+        };
+        assert.equal(await saveReviewedPaste(test.ledger, legacy, { status: 'posted', amountPaise: 12_345 }), 'inserted');
+        if (deleted) await test.ledger.softDeleteTransaction(legacy.identity.id);
+
+        assert.deepEqual(await confirm(test.api, expected.referenceId, expected, async () => ({ ...row })), {
+          kind: 'duplicate', referenceId: expected.referenceId, platformId: row.platformId, transactionId: legacy.identity.id,
+        });
+        const stored = test.sqlite.prepare('SELECT amount_paise, deleted_at FROM transactions WHERE id = ?').get(legacy.identity.id) as { amount_paise: number; deleted_at: number | null };
+        assert.equal(stored.amount_paise, 12_345);
+        assert.equal(stored.deleted_at !== null, deleted);
+        assert.equal((test.sqlite.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 1);
+      } finally { test.sqlite.close(); }
+    });
+  }
+
+  it('recognises an existing legacy paste during SMS catch-up after parser status changes', async () => {
+    const row = { ...strongSms, platformId: '72', body: strongSms.body.replace('fictional@axisbank', 'merchant.failed@examplebank') };
+    const test = await fixture([]);
+    try {
+      const prepared = await preparePastedSms(row, test.key);
+      if (prepared.kind !== 'needs-review' || !prepared.candidate?.upiRef) throw new Error('Expected a reference-based candidate');
+      const legacyKey = `upi:${await test.key.fingerprint(JSON.stringify(['upi', prepared.candidate.upiRef, 'debit', 'failed', 'expense']))}`;
+      const legacy = {
+        ...prepared,
+        candidate: { ...prepared.candidate, status: 'failed' as const },
+        ruleVersion: 3,
+        identity: { ...prepared.identity, id: `paste:${legacyKey}`, dedupeKey: legacyKey },
+      };
+      await saveReviewedPaste(test.ledger, legacy, { status: 'posted', amountPaise: 12_345 });
+      await test.ledger.softDeleteTransaction(legacy.identity.id);
+      const result = await test.api.importSmsBatch([row], null);
+      assert.equal(result.duplicate, 1);
+      assert.equal(result.inserted, 0);
+      assert.equal(result.review, 0);
+      assert.ok((test.sqlite.prepare('SELECT deleted_at FROM transactions WHERE id = ?').get(legacy.identity.id) as { deleted_at: number | null }).deleted_at);
+      assert.equal((test.sqlite.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 1);
+    } finally { test.sqlite.close(); }
+  });
+
+  it('preserves a corrected and deleted legacy SMS when the same source is pasted after a parser update', async () => {
+    const row = { ...strongSms, platformId: '72', body: strongSms.body.replace('fictional@axisbank', 'merchant.failed@examplebank') };
+    const test = await fixture([]);
+    try {
+      const prepared = await preparePastedSms(row, test.key);
+      if (prepared.kind !== 'needs-review' || !prepared.candidate?.upiRef) throw new Error('Expected a reference-based candidate');
+      const legacyKey = `upi:${await test.key.fingerprint(JSON.stringify(['upi', prepared.candidate.upiRef, 'debit', 'failed', 'expense']))}`;
+      const legacy = {
+        ...prepared,
+        candidate: { ...prepared.candidate, status: 'failed' as const },
+        ruleVersion: 3,
+        identity: { ...prepared.identity, id: `paste:${legacyKey}`, dedupeKey: legacyKey },
+      };
+      await saveReviewedPaste(test.ledger, legacy, { status: 'posted', amountPaise: 12_345 });
+      // Seed a prior-version reviewed SMS without relying on the current parser's identity.
+      test.sqlite.prepare("UPDATE transactions SET id = ?, source = 'sms', sms_ref_id = ? WHERE id = ?")
+        .run('sms:fictional-legacy', 'android-sms:fictional-legacy', legacy.identity.id);
+      assert.equal(await saveReviewedPaste(test.ledger, prepared), 'duplicate');
+      await test.ledger.softDeleteTransaction('sms:fictional-legacy');
+      assert.equal(await saveReviewedPaste(test.ledger, prepared), 'duplicate');
+      const stored = test.sqlite.prepare('SELECT amount_paise, deleted_at FROM transactions WHERE id = ?')
+        .get('sms:fictional-legacy') as { amount_paise: number; deleted_at: number | null };
+      assert.equal(stored.amount_paise, 12_345);
+      assert.ok(stored.deleted_at);
+      assert.equal((test.sqlite.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 1);
+    } finally { test.sqlite.close(); }
+  });
+
   it('keeps the SQLite writer available while the source and fingerprint preflight are pending', async () => {
     const temp = temporaryFile();
     const importFixture = openTestLedger(temp.filename);

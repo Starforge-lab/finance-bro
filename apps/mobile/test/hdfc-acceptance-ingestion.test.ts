@@ -14,7 +14,7 @@ import { ledgerMigrations, openTestLedger } from './helpers/ledger';
 
 type ExpectedIngestion =
   | { disposition: 'saved' | 'ignored' }
-  | { disposition: 'review' };
+  | { disposition: 'review'; reason?: string; candidateStatus?: 'posted' | 'failed' };
 
 const reviewReasons = new Set<string>([
   'unknown_format', 'non_posted', 'unsafe_amount', 'unknown_account', 'weak_identity', 'unverified_rule',
@@ -41,7 +41,7 @@ type HdfcAcceptanceCase = {
 type HdfcAcceptanceCorpus = {
   corpus: 'hdfc-credit-v1';
   ruleId: 'hdfc.upi.credit';
-  ruleVersion: 1;
+  ruleVersion: 2;
   cases: HdfcAcceptanceCase[];
 };
 
@@ -66,7 +66,7 @@ describe('frozen HDFC v1 acceptance corpus through SMS ingestion', () => {
   it('keeps the frozen corpus and human-labelled ingestion dispositions consistent', () => {
     assert.equal(acceptanceCorpus.corpus, 'hdfc-credit-v1');
     assert.equal(acceptanceCorpus.ruleId, 'hdfc.upi.credit');
-    assert.equal(acceptanceCorpus.ruleVersion, 1);
+    assert.equal(acceptanceCorpus.ruleVersion, 2);
     assert.equal(acceptanceCorpus.cases.length, 53);
     assert.equal(acceptanceCorpus.cases.filter((entry) => entry.label === 'hdfc-high').length, 6);
     assert.equal(acceptanceCorpus.cases.filter((entry) => entry.label === 'not-hdfc-high').length, 47);
@@ -173,6 +173,12 @@ describe('frozen HDFC v1 acceptance corpus through SMS ingestion', () => {
           assert.equal(refRows[0]?.status, 'review', acceptanceCase.name);
           const actualReason = refRows[0]?.reason;
           assert.ok(typeof actualReason === 'string' && reviewReasons.has(actualReason), `${acceptanceCase.name}: review has an allowed reason`);
+          if (acceptanceCase.expectedIngestion.reason) assert.equal(actualReason, acceptanceCase.expectedIngestion.reason);
+          if (acceptanceCase.expectedIngestion.candidateStatus) {
+            assert.equal(parsed.kind, 'review');
+            if (parsed.kind !== 'review') throw new Error('Expected a review candidate');
+            assert.equal(parsed.candidate?.status, acceptanceCase.expectedIngestion.candidateStatus);
+          }
           assert.equal(refRows[0]?.transactionId, null, acceptanceCase.name);
         } else {
           assert.equal(acceptanceCase.expectedIngestion.disposition, 'ignored', acceptanceCase.name);

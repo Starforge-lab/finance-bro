@@ -1,4 +1,4 @@
-import { and, eq, isNull, notExists, sql } from 'drizzle-orm';
+import { and, eq, isNull, like, notExists, or, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/sqlite-proxy';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import {
@@ -612,7 +612,10 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
       const bodyHash = input.bodyHash;
       if (!dedupeKey || !bodyHash) throw new TypeError('A reviewed paste requires keyed source identity');
       const overlaps = await db.select().from(transactions)
-        .where(eq(transactions.dedupeKey, dedupeKey)).all();
+        .where(dedupeKey.startsWith('upi:') ? or(
+          eq(transactions.dedupeKey, dedupeKey),
+          and(eq(transactions.bodyHash, bodyHash), like(transactions.dedupeKey, 'upi:%')),
+        ) : eq(transactions.dedupeKey, dedupeKey)).all();
       if (overlaps.length > 0) {
         if (dedupeKey.startsWith('upi:')) {
           const existing = overlaps[0]!;
@@ -631,7 +634,13 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
       }
       const createdAt = now();
       return db.insert(transactions).values({
-        id: input.id,
+        // Parser status changes must not bypass an identical source's corrections or tombstone.
+        id: input.dedupeKey?.startsWith('upi:') ? sql`coalesce((
+          select ${transactions.id} from ${transactions}
+          where ${transactions.source} = 'paste' and ${transactions.bodyHash} = ${input.bodyHash}
+            and ${transactions.dedupeKey} like 'upi:%'
+          limit 1
+        ), ${input.id})` : input.id,
         amountPaise: input.amountPaise,
         direction: input.direction,
         kind: input.kind,

@@ -1,4 +1,4 @@
-import { and, asc, count, eq, gt, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, count, eq, gt, isNull, like, or, sql } from 'drizzle-orm';
 import { parseSms, type ParsedTxn, type RawSms } from '@finance-bro/sms-parser';
 import {
   createLedger,
@@ -19,7 +19,7 @@ const maxSmsReplayWindowMs = 90 * 24 * 60 * 60 * 1_000;
 const maxBodyLength = 16_384;
 const maxSenderLength = 256;
 const maxPlatformId = 9_223_372_036_854_775_807n;
-const verifiedRuleVersions: Readonly<Record<string, number>> = { 'hdfc.upi.credit': 1 };
+const verifiedRuleVersions: Readonly<Record<string, number>> = { 'hdfc.upi.credit': 2 };
 const smsCatchupCompletionPreference = 'sms.last_successful_catchup_at';
 const smsReplayCheckpointPreference = 'sms.replay_checkpoint';
 
@@ -1064,7 +1064,10 @@ export function createSmsIngestion(
           }
 
           const overlaps = await ledger.db.select().from(transactions)
-            .where(eq(transactions.dedupeKey, reviewed.dedupeKey)).all();
+            .where(isWeak ? eq(transactions.dedupeKey, reviewed.dedupeKey) : or(
+              eq(transactions.dedupeKey, reviewed.dedupeKey),
+              and(eq(transactions.bodyHash, reviewed.bodyHash), like(transactions.dedupeKey, 'upi:%')),
+            )).all();
           if (isWeak) {
             if (overlaps.length > 0 && !checkedOptions.separatePayment) {
               result = unavailable('ambiguous_overlap');
@@ -1349,7 +1352,10 @@ export function createSmsIngestion(
             const strongIdentity = preparation.identity.dedupeKey.startsWith('upi:');
             if (strongIdentity) {
               const matches = await ledger.db.select().from(transactions)
-                .where(eq(transactions.dedupeKey, preparation.identity.dedupeKey)).all();
+                .where(or(
+                  eq(transactions.dedupeKey, preparation.identity.dedupeKey),
+                  and(eq(transactions.bodyHash, preparation.identity.bodyHash), like(transactions.dedupeKey, 'upi:%')),
+                )).all();
               if (matches.length > 0) {
                 const coherent = matches.length === 1 && candidate !== null && candidate.status === 'posted' &&
                   Number.isSafeInteger(candidate.amountPaise) && candidate.amountPaise > 0 &&

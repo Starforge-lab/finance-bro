@@ -1,4 +1,4 @@
-import { FAILED } from '../classify';
+import { hasFailureWording } from '../classify';
 import { extractLast4 } from '../extract/account';
 import { extractBalance, extractTxnAmount } from '../extract/amount';
 import { detectChannel, detectDirection, extractCounterparty } from '../extract/details';
@@ -17,14 +17,14 @@ const REVERSAL = /\brevers(?:ed|al)\b/i;
  */
 export const genericRule: Rule = {
   id: 'generic.keyword',
-  version: 3,
+  version: 4,
   match(sms) {
     const { text, senderInfo, receivedAt } = sms;
     const amountPaise = extractTxnAmount(text);
     const direction = detectDirection(text);
     if (amountPaise === null || direction === null) return null;
 
-    const failed = FAILED.test(text);
+    const failed = hasFailureWording(text);
     const channel = detectChannel(text);
     const accountLast4 = extractLast4(text);
     const vpa = extractVpa(text);

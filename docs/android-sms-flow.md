@@ -11,6 +11,35 @@ initial Settings consent/permission flow, revoked-permission recovery and a
 device-reproduced consent-status fix. It does not close live-delivery or release
 gates.
 
+## Parser upgrade compatibility — 2026-10-18
+
+The failure-wording fix for #93 advances `hdfc.upi.credit` to version 2 and
+`generic.keyword` to version 4. Failure words inside recognised VPAs no longer
+mark candidates as failed; explicit failure wording still does. The HDFC
+identifier variants remain in review. The frozen 53-case HDFC corpus retains
+six accepted, 39 review and eight ignored dispositions; its VPA-marker case now
+has a posted candidate and `weak_identity` review reason, not `non_posted`.
+The automatic-save allowlist advances to HDFC version 2 only after revalidating
+that corpus. No additional institution or message format is enabled.
+
+Reference-based duplicate checks also match an identical keyed source body
+across parser identity changes. Catch-up, selected-SMS review approval and paste
+save preserve existing corrections and tombstones across paste/SMS paths.
+Multiple conflicting matches remain in review; no-reference separate-payment
+handling and genuinely different failed/posted source messages are unchanged.
+
+The combined source passed typecheck/lint, 277 mobile/data tests and 142 parser
+tests, including four legacy cross-source regressions and the unchanged corpus
+dispositions. Independent review passed 127 focused mobile tests and 142 parser
+tests. These are Node/SQLite observations, not new native acceptance. The browser
+check was attempted but blocked by the browser client before localhost opened;
+no end-to-end browser or new device result is claimed for this upgrade. Native
+inputs, dependencies and migrations are unchanged. The remaining device,
+accessibility, performance and distribution gates below still apply.
+
+Frozen install, the installed-SDK dependency check, Expo Doctor (20/20),
+Android/iOS/web bundle exports and diff whitespace validation also passed.
+
 ## Consent and preview
 
 Normal Android builds declare READ_SMS and RECEIVE_SMS. Neither declaration nor

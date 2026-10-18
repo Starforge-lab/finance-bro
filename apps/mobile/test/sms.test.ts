@@ -263,7 +263,7 @@ describe('Android SMS ingestion storage seam', () => {
       assert.deepEqual(imported.institutions, scenario.accounts.map((account) => account.institution), scenario.name);
       if (scenario.status === 'saved') {
         assert.equal(imported.ruleId, 'hdfc.upi.credit', scenario.name);
-        assert.equal(imported.ruleVersion, 1, scenario.name);
+        assert.equal(imported.ruleVersion, 2, scenario.name);
         assert.ok(imported.transactionId, scenario.name);
       }
     }
@@ -292,7 +292,7 @@ describe('Android SMS ingestion storage seam', () => {
       assert.equal(reference?.status, 'saved');
       assert.equal(reference?.reason, null);
       assert.equal(reference?.ruleId, 'hdfc.upi.credit');
-      assert.equal(reference?.ruleVersion, 1);
+      assert.equal(reference?.ruleVersion, 2);
       assert.equal(reference?.transactionId, 'sms:' + referenceId);
 
       const transactionId = 'sms:' + referenceId;
@@ -311,7 +311,7 @@ describe('Android SMS ingestion storage seam', () => {
       assert.equal(persisted?.upiRef, '123456789012');
       assert.equal(persisted?.smsRefId, 'android-sms:' + referenceId);
       assert.equal(persisted?.ruleId, 'hdfc.upi.credit');
-      assert.equal(persisted?.ruleVersion, 1);
+      assert.equal(persisted?.ruleVersion, 2);
     } finally { fixture.sqlite.close(); }
   });
 

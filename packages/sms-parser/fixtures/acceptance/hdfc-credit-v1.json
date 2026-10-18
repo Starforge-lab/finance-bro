@@ -2,7 +2,7 @@
   "corpus": "hdfc-credit-v1",
   "note": "Independent bounded acceptance corpus for issue #46. Exactly one case is labelled user-observed for its credit body shape only; its AD-prefixed sender pairing, like every other sender pairing, is synthetic within the confirmed HDFCBK-S family. Every other body, amount, date and reference is synthetic. The observed UPI reference was masked by the user and is replaced here with a wholly fictional 12-digit value. All account digits, amounts, VPAs, references and timestamps are fictional. Per-case ingestion dispositions are independently human-labelled from message semantics and existing classifier labels; they are not generated from parser or runtime outcomes. Individual review reason codes are not frozen because diagnostics depend on the candidate and identity successfully extracted; targeted tests cover specific reason behavior.",
   "ruleId": "hdfc.upi.credit",
-  "ruleVersion": 1,
+  "ruleVersion": 2,
   "cases": [
     {
       "name": "observed posted HDFC UPI credit shape",
@@ -217,7 +217,9 @@
       "body": "Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA failed@examplebank (UPI 456019876543)",
       "receivedAt": "2026-09-27T10:00:00+05:30",
       "expectedIngestion": {
-        "disposition": "review"
+        "disposition": "review",
+        "reason": "weak_identity",
+        "candidateStatus": "posted"
       }
     },
     {
