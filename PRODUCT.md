@@ -26,6 +26,8 @@ Mobile use is primary, with Android, iOS, and web support. Suvo can test on a Mo
 
 ## Capabilities and Constraints
 
+On 2026-10-19, Suvo requested a standalone Android APK for friends by 20 October, 23:00 IST, with SMS integration as the hero feature. This preview keeps imports experimental and opt-in, puts setup/review first, and targets popular Indian bank/card/UPI alert formats without claiming universal coverage. It uses a separate preview app identity and ledger. The stable 2.0 device and release gates remain open; see [friends preview](docs/friends-preview.md).
+
 Delivery follows [the approved manual-first roadmap](docs/mvp-roadmap.md): ledger and everyday finance workflows first, with native imports validated separately.
 
 On 2026-10-17, Suvo confirmed the broader personal-use outcome: automatic tracking with one-time setup and occasional review, answering safe-to-spend until salary, spending/overspending, and upcoming payments with money reserved. The [personal automation acceptance contract](docs/personal-automation-plan.md) maps this outcome to existing capture, reconciliation, planning, insights, categorisation and recovery work. On 2026-10-18, full current credit-card outstanding was confirmed as the reserve policy. The draft implementation adds dated balance reconciliation, monthly payment schedules, private salary/reserve setup and an explained allowance; expected salary is excluded and incomplete inputs withhold the estimate. Android SMS-only 2.0 remains the immediate milestone. The broader outcome, native acceptance, transfer matching and encrypted recovery remain incomplete; private setup amounts are still needed.

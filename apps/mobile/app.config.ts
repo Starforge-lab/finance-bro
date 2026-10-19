@@ -5,6 +5,7 @@ import type { ConfigContext, ExpoConfig } from 'expo/config';
  * next to a store install on the same phone. Set per profile in eas.json.
  */
 const IS_DEV = process.env.APP_VARIANT === 'development';
+const IS_PREVIEW = process.env.APP_VARIANT === 'preview';
 const IS_SMS_PROBE = IS_DEV && process.env.ANDROID_SMS_PROBE === '1';
 const IS_SOURCE_CHECK = process.env.ANDROID_RELEASE_SOURCE_CHECK === '1';
 
@@ -17,7 +18,7 @@ const BASE_ID = 'com.rohangupta.financebro';
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
-  name: IS_SMS_PROBE ? 'finance-bro SMS probe' : IS_DEV ? 'finance-bro (dev)' : 'finance-bro',
+  name: IS_SMS_PROBE ? 'finance-bro SMS probe' : IS_PREVIEW ? 'Finance Bro Preview' : IS_DEV ? 'finance-bro (dev)' : 'finance-bro',
   slug: 'finance-bro',
   owner: 'starforge-lab',
   extra: {
@@ -28,14 +29,14 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   version: '0.1.0',
   orientation: 'portrait',
   icon: './assets/images/icon.png',
-  scheme: IS_SMS_PROBE ? 'financebrosmsqa' : 'financebro',
+  scheme: IS_SMS_PROBE ? 'financebrosmsqa' : IS_PREVIEW ? 'financebropreview' : 'financebro',
   userInterfaceStyle: 'automatic',
   ios: {
     bundleIdentifier: IS_DEV ? `${BASE_ID}.dev` : BASE_ID,
     icon: './assets/expo.icon',
   },
   android: {
-    package: IS_SMS_PROBE ? `${BASE_ID}.smsqa.dev` : IS_DEV ? `${BASE_ID}.dev` : BASE_ID,
+    package: IS_SMS_PROBE ? `${BASE_ID}.smsqa.dev` : IS_PREVIEW ? `${BASE_ID}.preview` : IS_DEV ? `${BASE_ID}.dev` : BASE_ID,
     adaptiveIcon: {
       backgroundColor: '#E6F4FE',
       foregroundImage: './assets/images/android-icon-foreground.png',

@@ -446,6 +446,9 @@ export function SmsImportPanel({
         <ThemedText style={[Type.body, { color: colors.textSecondary }]}>
           Original message text is read temporarily and never saved. Your first preview covers the last 90 days of inbox history. Permission alone does not turn import on. Manual entry and paste always work.
         </ThemedText>
+        <ThemedText style={[Type.note, { color: colors.textSecondary }]}>
+          Experimental: only verified message formats save automatically. Other bank, card and UPI alerts need your review. Missing alerts and background delays can leave totals incomplete.
+        </ThemedText>
         {reader ? <>
           <View style={[styles.statusLine, { borderTopColor: colors.rule }]}>
             <ThemedText style={Type.rowTitle}>{loading ? 'Checking status…' : settings === null ? 'Import status unavailable' : active ? 'Import is on' : 'Import is off'}</ThemedText>

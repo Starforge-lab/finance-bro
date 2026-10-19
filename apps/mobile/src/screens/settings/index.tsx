@@ -289,6 +289,14 @@ export default function SettingsScreen() {
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
           <ThemedText style={Type.screenTitle}>Settings</ThemedText>
 
+          {Platform.OS === 'android' && ledgerForSms ? <View style={styles.section}>
+            <SmsImportPanel
+              ledger={ledgerForSms}
+              onReview={(review) => setSmsReviewSession({ ledger: ledgerForSms, review })}
+              onPaste={() => setSmsPasteOpen(true)}
+            />
+          </View> : null}
+
           <View style={[styles.hero, {
             backgroundColor: theme.heroBackground,
             ...(dark ? {} : { boxShadow: Shadow.card }),
@@ -447,14 +455,6 @@ export default function SettingsScreen() {
               </View> : null}
             </SettingsGroup>
           </View>
-
-          {Platform.OS === 'android' && ledgerForSms ? <View style={styles.section}>
-            <SmsImportPanel
-              ledger={ledgerForSms}
-              onReview={(review) => setSmsReviewSession({ ledger: ledgerForSms, review })}
-              onPaste={() => setSmsPasteOpen(true)}
-            />
-          </View> : null}
 
           <View style={styles.section}>
             <SectionHeading title="Your data" theme={theme} />

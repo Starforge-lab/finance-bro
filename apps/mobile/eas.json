@@ -16,6 +16,11 @@
       "distribution": "internal",
       "android": { "buildType": "apk" }
     },
+    "friends": {
+      "extends": "preview",
+      "env": { "APP_VARIANT": "preview" },
+      "android": { "buildType": "apk" }
+    },
     "production": {
       "pnpm": "12.9.1",
       "autoIncrement": true

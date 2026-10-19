@@ -156,6 +156,12 @@ export function Home() {
             </Pressable>
           </View>
         </View>
+        {Platform.OS === 'android' ? <View style={styles.section}>
+          <ThemedText style={Type.sectionTitle} accessibilityRole="header">Track spending from SMS</ThemedText>
+          <ThemedText style={Type.body}>Preview bank messages on this phone. Confirm imports, then review anything uncertain.</ThemedText>
+          <LedgerButton label="Open SMS imports" primary onPress={() => router.push('/settings')} />
+          <ThemedText themeColor="textSecondary" style={Type.note}>Optional · message text is never saved · manual entry always works</ThemedText>
+        </View> : null}
         {summary && loaded ? <Animated.View key={`hero-${month}`} entering={fadeIn()} style={styles.hero}>
           <ThemedText style={styles.heroAmount} adjustsFontSizeToFit numberOfLines={1}>{money(summary.expensePaise)}</ThemedText>
           <ThemedText themeColor="textSecondary" style={Type.note}>
