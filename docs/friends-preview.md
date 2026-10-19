@@ -16,3 +16,9 @@ Before sharing:
 - Report the remaining live delivery, multipart, natural background/reboot/OEM, key-loss, accessibility and performance gates from [SMS acceptance](android-sms-acceptance-20261017.md). No external SMS sender is available for the current check.
 
 SMS setup and review are first in Android Settings and reachable directly from Home. Permission alone does not enable imports. Users can turn imports off and keep using manual entry. Raw message text is transient and never stored in the ledger or logs.
+
+## Coverage priorities
+
+The [NPCI ecosystem statistics](https://www.npci.org.in/product/ecosystem-statistics/upi), September 2026 selection checked on 19 October, provide a concrete interpretation of popular providers. Their first ten bank-volume rows are SBI, HDFC, Bank of Baroda, Union Bank, PNB, Canara, Kotak, Axis, Indian Bank and ICICI. Their first ten UPI application rows are PhonePe, Google Pay, Paytm, Navi, super.money, BHIM, FamApp, WhatsApp, Kotak apps and CRED.
+
+These are coverage priorities, not supported-format claims. UPI app rankings do not establish which bank SMS templates a user receives. Verify debit, credit, card and reversal formats separately with anonymised positive and negative fixtures; retain uncertain formats in review. The current automatic-save allowlist remains the verified HDFC UPI credit rule version.
