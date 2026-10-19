@@ -66,7 +66,12 @@ test('preserves max SDK caps emitted by apkanalyzer permissions and rejects unkn
     'android.permission.READ_EXTERNAL_STORAGE (maxSdkVersion=32)',
     'android.permission.WRITE_EXTERNAL_STORAGE (maxSdkVersion=32)',
   ]);
-  for (const suffix of ["' maxSdkVersion='0", "' maxSdkVersion='1000", "' unknown='32", "' maxSdkVersion='32' extra='1"]) {
+  for (const cap of [0, 1000, 2_147_483_647]) {
+    assert.deepEqual(validateMetadata({
+      ...validMetadata, permissions: `android.permission.INTERNET' maxSdkVersion='${cap}\n`,
+    }).permissions, [`android.permission.INTERNET (maxSdkVersion=${cap})`]);
+  }
+  for (const suffix of ["' maxSdkVersion='-1", "' maxSdkVersion='2147483648", "' unknown='32", "' maxSdkVersion='32' extra='1"]) {
     assert.throws(() => validateMetadata({
       ...validMetadata, permissions: `android.permission.READ_EXTERNAL_STORAGE${suffix}\n`,
     }), /Malformed manifest permissions/);
