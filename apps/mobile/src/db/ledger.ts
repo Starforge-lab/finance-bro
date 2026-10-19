@@ -582,7 +582,13 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
       await assertTransactionSemantics(input);
       const createdAt = now();
       return db.insert(transactions).values({
-        id: input.id,
+        // Parser status changes must not bypass an identical source's corrections or tombstone.
+        id: input.dedupeKey?.startsWith('upi:') ? sql`coalesce((
+          select ${transactions.id} from ${transactions}
+          where ${transactions.source} = 'paste' and ${transactions.bodyHash} = ${input.bodyHash}
+            and ${transactions.dedupeKey} like 'upi:%'
+          limit 1
+        ), ${input.id})` : input.id,
         amountPaise: input.amountPaise,
         direction: input.direction,
         kind: input.kind,
