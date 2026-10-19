@@ -63,6 +63,35 @@ function parsedAccountLast4(parsed: ParseResult): string | null {
 }
 
 describe('frozen HDFC v1 acceptance corpus through SMS ingestion', () => {
+  it('prefills the card UPI format while retaining explicit review and body-free storage', async () => {
+    const fixture = openTestLedger();
+    try {
+      const runTransaction: LedgerSQLiteTransactionRunner = (task) => fixture.client.withTransactionAsync(() => task(fixture.client));
+      const api = createDataLayer(fixture.client, ledgerMigrations, fingerprints, runTransaction);
+      await api.migrateLedger();
+      await api.createAccount({ id: 'fictional-card', name: 'Fictional HDFC card', institution: 'HDFC Bank', type: 'credit_card', last4: '1234' });
+      const source = {
+        platformId: '901', sender: 'VM-HDFCBK-S', receivedAt: Date.parse('2026-10-07T10:00:00+05:30'),
+        body: 'Txn Rs.47.35\nOn HDFC Bank Card 1234\nAt FICTIONAL STORE\nby UPI 123456789012\nOn 07-10\nNot You?\nCall 18000000000/SMS BLOCK CC 1234 to 7300000000',
+      };
+      const imported = await api.importSmsBatch([source], null);
+      assert.equal(imported.inserted, 0);
+      assert.equal(imported.review, 1);
+      const refs = await fixture.ledger.db.select().from(smsImportRefs).all();
+      assert.equal(refs[0]?.reason, 'unverified_rule');
+      assert.equal(refs[0]?.ruleId, 'hdfc.upi.card.debit');
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 0);
+      const prepared = await api.prepareSmsReview(refs[0]!.referenceId, async () => source);
+      assert.equal(prepared.kind, 'ready');
+      if (prepared.kind !== 'ready') throw new Error('Expected a transient card review candidate');
+      assert.equal(prepared.preparation.candidate?.amountPaise, 4735);
+      assert.equal(prepared.preparation.candidate?.direction, 'debit');
+      assert.equal(prepared.preparation.candidate?.accountLast4, '1234');
+      assert.equal(JSON.stringify(refs).includes(source.body), false);
+      assert.equal(JSON.stringify(prepared).includes(source.body), false);
+    } finally { fixture.sqlite.close(); }
+  });
+
   it('keeps the frozen corpus and human-labelled ingestion dispositions consistent', () => {
     assert.equal(acceptanceCorpus.corpus, 'hdfc-credit-v1');
     assert.equal(acceptanceCorpus.ruleId, 'hdfc.upi.credit');

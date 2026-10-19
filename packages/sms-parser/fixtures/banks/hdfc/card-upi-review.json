@@ -1,0 +1,96 @@
+{
+  "note": "Shape checked through a consented on-phone redaction on 2026-10-19. All amounts, merchants, card digits, references, dates and contact numbers below are fictional. Only the HDFCBK-S sender family was verified; operator prefixes are interchangeable test labels. This rule supplies a medium-confidence review candidate, never automatic-save eligibility. The body has no year, so the candidate retains SMS arrival time for explicit review.",
+  "cases": [
+    {
+      "name": "card UPI debit without a movement verb prefills review",
+      "sender": "VM-HDFCBK-S",
+      "body": "Txn Rs.47.35\nOn HDFC Bank Card 1234\nAt FICTIONAL STORE\nby UPI 123456789012\nOn 07-10\nNot You?\nCall 18000000000/SMS BLOCK CC 1234 to 7300000000",
+      "receivedAt": "2026-10-07T10:00:00+05:30",
+      "expected": { "kind": "transaction", "ruleId": "hdfc.upi.card.debit", "confidence": "medium", "txn": { "amountPaise": 4735, "direction": "debit", "kind": "expense", "status": "posted", "channel": "upi", "institution": "hdfc", "accountLast4": "1234", "counterparty": "FICTIONAL STORE", "vpa": null, "upiRef": "123456789012" } }
+    },
+    {
+      "name": "card UPI with fictional merchant address and grouped amount",
+      "sender": "AD-HDFCBK-S",
+      "body": "Txn Rs.1,234.50\nOn HDFC Bank Card 6789\nAt merchant@examplebank\nby UPI 234567890123\nOn 19-10\nNot You?\nCall 18000000000/SMS BLOCK CC 6789 to 7300000000",
+      "receivedAt": "2026-10-19T09:00:00+05:30",
+      "expected": { "kind": "transaction", "ruleId": "hdfc.upi.card.debit", "confidence": "medium", "txn": { "amountPaise": 123450, "accountLast4": "6789", "vpa": "merchant@examplebank", "counterparty": null, "upiRef": "234567890123" } }
+    },
+    {
+      "name": "promotional suffix cannot match card debit",
+      "sender": "VM-HDFCBK-P",
+      "body": "Txn Rs.47.35 On HDFC Bank Card 1234 At FICTIONAL STORE by UPI 123456789012 On 07-10 Not You? Call 18000000000/SMS BLOCK CC 1234 to 7300000000",
+      "receivedAt": "2026-10-07T10:00:00+05:30",
+      "expected": { "kind": "ignored", "reason": "promo" }
+    },
+    {
+      "name": "OTP mentioning an intended card transaction is ignored",
+      "sender": "VM-HDFCBK-S",
+      "body": "OTP 123456 for Txn Rs.47.35 on HDFC Bank Card 1234. Never share it.",
+      "receivedAt": "2026-10-07T10:00:00+05:30",
+      "expected": { "kind": "ignored", "reason": "otp" }
+    },
+    {
+      "name": "future debit does not become a payment",
+      "sender": "VM-HDFCBK-S",
+      "body": "Txn Rs.47.35 will be debited from HDFC Bank Card 1234 tomorrow.",
+      "receivedAt": "2026-10-07T10:00:00+05:30",
+      "expected": { "kind": "ignored", "reason": "reminder" }
+    },
+    {
+      "name": "collect request does not become a payment",
+      "sender": "VM-HDFCBK-S",
+      "body": "FICTIONAL STORE has requested money: Rs.47.35 for Txn on HDFC Bank Card 1234.",
+      "receivedAt": "2026-10-07T10:00:00+05:30",
+      "expected": { "kind": "ignored", "reason": "request" }
+    },
+    {
+      "name": "unverified sender cannot use the card rule",
+      "sender": "VM-ABCDEF-S",
+      "body": "Txn Rs.47.35 On HDFC Bank Card 1234 At FICTIONAL STORE by UPI 123456789012 On 07-10 Not You? Call 18000000000/SMS BLOCK CC 1234 to 7300000000",
+      "receivedAt": "2026-10-07T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": null }
+    },
+    {
+      "name": "different footer card stays unparsed",
+      "sender": "VM-HDFCBK-S",
+      "body": "Txn Rs.47.35 On HDFC Bank Card 1234 At FICTIONAL STORE by UPI 123456789012 On 07-10 Not You? Call 18000000000/SMS BLOCK CC 5678 to 7300000000",
+      "receivedAt": "2026-10-07T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": null }
+    },
+    {
+      "name": "malformed decimal stays unparsed",
+      "sender": "VM-HDFCBK-S",
+      "body": "Txn Rs.47.350 On HDFC Bank Card 1234 At FICTIONAL STORE by UPI 123456789012 On 07-10 Not You? Call 18000000000/SMS BLOCK CC 1234 to 7300000000",
+      "receivedAt": "2026-10-07T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": null }
+    },
+    {
+      "name": "zero amount stays unparsed",
+      "sender": "VM-HDFCBK-S",
+      "body": "Txn Rs.0.00 On HDFC Bank Card 1234 At FICTIONAL STORE by UPI 123456789012 On 07-10 Not You? Call 18000000000/SMS BLOCK CC 1234 to 7300000000",
+      "receivedAt": "2026-10-07T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": null }
+    },
+    {
+      "name": "unsafe money stays unparsed",
+      "sender": "VM-HDFCBK-S",
+      "body": "Txn Rs.90071992547409.92 On HDFC Bank Card 1234 At FICTIONAL STORE by UPI 123456789012 On 07-10 Not You? Call 18000000000/SMS BLOCK CC 1234 to 7300000000",
+      "receivedAt": "2026-10-07T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": null }
+    },
+    {
+      "name": "impossible body day stays unparsed",
+      "sender": "VM-HDFCBK-S",
+      "body": "Txn Rs.47.35 On HDFC Bank Card 1234 At FICTIONAL STORE by UPI 123456789012 On 30-02 Not You? Call 18000000000/SMS BLOCK CC 1234 to 7300000000",
+      "receivedAt": "2026-10-07T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": null }
+    },
+    {
+      "name": "failed template is never posted by this rule",
+      "sender": "VM-HDFCBK-S",
+      "body": "Txn Rs.47.35 On HDFC Bank Card 1234 At FICTIONAL STORE by UPI 123456789012 On 07-10 Not You? Call 18000000000/SMS BLOCK CC 1234 to 7300000000. Transaction failed.",
+      "receivedAt": "2026-10-07T10:00:00+05:30",
+      "expected": { "kind": "review", "ruleId": null }
+    }
+  ]
+}
