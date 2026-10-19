@@ -131,7 +131,7 @@ export function createPersonalFinance(client: LedgerSQLiteClient, migrations: Le
   return {
     getFinanceSetup: () => inTransaction(db => readSetup(db)),
     async saveFinanceSetup(input: PersonalFinanceSetupInput): Promise<void> {
-      const value = normalizeSetup(input);
+      const value = { ...normalizeSetup(input) };
       await inTransaction(db => storePreference(db, setupKey, value));
     },
     async createRecurringSchedule(input: NewRecurringSchedule, now = new Date()): Promise<void> {

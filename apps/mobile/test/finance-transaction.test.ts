@@ -29,6 +29,38 @@ test('overlapping forecast refreshes and Settings reads share a single SQLite tr
   } finally { f.sqlite.close(); }
 });
 
+test('snapshots finance setup before queued SQLite work', async () => {
+  const f = openTestLedger();
+  let release!: () => void;
+  try {
+    await f.ledger.migrateLedger();
+    const run = getFinanceTransactionRunner(f.client);
+    let entered!: () => void;
+    const blocked = new Promise<void>(resolve => { entered = resolve; });
+    const resume = new Promise<void>(resolve => { release = resolve; });
+    const blocker = run(async () => {
+      entered();
+      await resume;
+    });
+    await blocked;
+
+    const finance = createPersonalFinance(f.client, ledgerMigrations);
+    const input = {
+      salaryDay: 28,
+      salaryAmountPaise: 100000,
+      reservePaise: 1000,
+      commitmentsConfirmed: true,
+      accountCoverageConfirmed: true,
+    };
+    const saving = finance.saveFinanceSetup(input);
+    input.reservePaise = 5000;
+    release();
+
+    await Promise.all([blocker, saving]);
+    assert.equal((await finance.getFinanceSetup())?.reservePaise, 1000);
+  } finally { release?.(); f.sqlite.close(); }
+});
+
 test('a failed transaction rolls back and does not poison subsequent queued transactions', async () => {
   const f = openTestLedger();
   try {
