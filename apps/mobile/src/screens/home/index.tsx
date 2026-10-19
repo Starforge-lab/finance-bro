@@ -19,6 +19,7 @@ import { buildMonthPace, shiftMonth, topCategoryBars } from '@/utils/month-pace'
 import { ease, fadeIn } from '@/utils/motion';
 import { EntryForm } from './entry-form';
 import { PasteForm } from './paste-form';
+import { FinanceOverview } from './finance-overview';
 
 type Row = Awaited<ReturnType<DataLayer['listTransactions']>>[number];
 type Summary = Awaited<ReturnType<DataLayer['getMonthlySummary']>>;
@@ -161,6 +162,7 @@ export function Home() {
             spent{budgetTotal ? ` of ${money(budgetTotal)}` : ''} · <Text style={{ fontFamily: Fonts.monoBold }}>{rows.length}</Text> {rows.length === 1 ? 'entry' : 'entries'}
           </ThemedText>
         </Animated.View> : null}
+        {ledger && isCurrentMonth ? <FinanceOverview ledger={ledger} version={version} /> : null}
         {error && !loaded ? <View style={styles.section}><ThemedText accessibilityRole="alert">{error}</ThemedText><LedgerButton label="Retry" onPress={() => setRevision((value) => value + 1)} /></View> : null}
         {error && loaded ? <Pressable accessibilityRole="button" accessibilityLabel="Couldn’t refresh. Retry" onPress={() => setRevision((value) => value + 1)} style={styles.textAction}>
           <ThemedText themeColor="textSecondary" style={Type.note}>Couldn’t refresh · <ThemedText style={[Type.note, { textDecorationLine: 'underline' }]}>Retry</ThemedText></ThemedText>

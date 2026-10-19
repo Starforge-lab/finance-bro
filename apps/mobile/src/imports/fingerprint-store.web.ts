@@ -1,7 +1,9 @@
 import {
   createFingerprinter,
+  FingerprintKeyUnavailableError,
+  type FingerprintKeyPolicy,
+  type FingerprintKeyProvider,
   type FingerprintSigner,
-  type Fingerprinter,
 } from './fingerprint';
 
 const databaseName = 'finance-bro-key-store';
@@ -118,23 +120,27 @@ async function createKey(subtle: SubtleCrypto): Promise<CryptoKey> {
   );
 }
 
-async function getOrCreateKey(subtle: SubtleCrypto): Promise<CryptoKey> {
+async function getOrCreateKey(subtle: SubtleCrypto, policy: FingerprintKeyPolicy): Promise<CryptoKey> {
   const locks = (globalThis.navigator as Navigator & {
     locks?: { request<T>(name: string, callback: () => Promise<T>): Promise<T> };
   } | undefined)?.locks;
   const getUnderLock = async () => {
     const existing = await readStoredKey();
-    return existing ?? storeIfMissing(await createKey(subtle));
+    if (existing) return existing;
+    if (!policy.allowCreate) throw new FingerprintKeyUnavailableError();
+    return storeIfMissing(await createKey(subtle));
   };
   if (locks) return locks.request(lockName, getUnderLock);
 
   const existing = await readStoredKey();
-  return existing ?? storeIfMissing(await createKey(subtle));
+  if (existing) return existing;
+  if (!policy.allowCreate) throw new FingerprintKeyUnavailableError();
+  return storeIfMissing(await createKey(subtle));
 }
 
-async function loadSigner(): Promise<FingerprintSigner> {
+async function loadSigner(policy: FingerprintKeyPolicy): Promise<FingerprintSigner> {
   const subtle = webCrypto().subtle;
-  const key = await getOrCreateKey(subtle);
+  const key = await getOrCreateKey(subtle, policy);
   return async (message) => {
     const data = new Uint8Array(message.byteLength);
     data.set(message);
@@ -142,4 +148,4 @@ async function loadSigner(): Promise<FingerprintSigner> {
   };
 }
 
-export const getFingerprinter: () => Promise<Fingerprinter> = createFingerprinter(loadSigner);
+export const getFingerprinter: FingerprintKeyProvider = createFingerprinter(loadSigner);
