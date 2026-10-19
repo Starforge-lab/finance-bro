@@ -9,7 +9,7 @@ import { ledgerMigrations, openTestLedger, temporaryFile } from './helpers/ledge
 
 const now = new Date('2026-10-18T10:00:00Z');
 const checkpoint = new Date('2026-10-01T00:00:00Z');
-const setup = { salaryDay: 28, salaryAmountPaise: 100_000, reservePaise: 1000, commitmentsConfirmed: true };
+const setup = { salaryDay: 28, salaryAmountPaise: 100_000, reservePaise: 1000, commitmentsConfirmed: true, accountCoverageConfirmed: true };
 async function fixture(filename?: string) {
   const f = openTestLedger(filename);
   await f.ledger.migrateLedger();
@@ -29,18 +29,48 @@ describe('personal finance orchestration', () => {
       assert.equal((await f.finance.getPersonalFinancePlan(now)).status, 'needs-setup');
       await f.finance.saveFinanceSetup({ ...setup, commitmentsConfirmed: false });
       assert.equal((await f.finance.getPersonalFinancePlan(now)).status, 'needs-setup');
+      await f.finance.saveFinanceSetup({ ...setup, accountCoverageConfirmed: false });
+      const unconfirmedCoverage = await f.finance.getPersonalFinancePlan(now);
+      assert.equal(unconfirmedCoverage.status, 'needs-setup');
+      assert.equal(unconfirmedCoverage.safeToSpendPaise, null);
+      assert.match(unconfirmedCoverage.reason!, /accounts and cards/i);
       await f.finance.saveFinanceSetup(setup);
       await f.finance.createRecurringSchedule({ id: 'rent', label: 'Rent', amountPaise: 5000, dayOfMonth: 25, kind: 'bill' }, now);
       await f.finance.createRecurringSchedule({ id: 'card-due', label: 'Card payment', amountPaise: 8000, dayOfMonth: 26, kind: 'card_payment' }, now);
       await f.planning.createBill({ id: 'one-off', label: 'Repair', amountPaise: 2000, dueDate: '2026-10-23' });
       const plan = await f.finance.getPersonalFinancePlan(now);
       assert.equal(plan.status, 'ready');
+      assert.equal(plan.oldestBalanceCheckpointAt?.toISOString(), checkpoint.toISOString());
       assert.equal(plan.cardOutstandingPaise, 10_000);
       assert.equal(plan.billsReservedPaise, 7000);
       assert.equal(plan.safeToSpendPaise, 32_000);
       assert.equal(plan.upcoming.filter(row => row.kind === 'card_payment').length, 2);
       assert.equal(await f.finance.setPlannedObligationPaid('one-off', true), true);
       assert.equal((await f.finance.getPersonalFinancePlan(now)).safeToSpendPaise, 34_000);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('treats a saved setup without the account-coverage flag as unconfirmed', async () => {
+    const f = await fixture();
+    try {
+      const legacySetup = {
+        salaryDay: setup.salaryDay,
+        salaryAmountPaise: setup.salaryAmountPaise,
+        reservePaise: setup.reservePaise,
+        commitmentsConfirmed: true,
+      };
+      f.sqlite.prepare('INSERT INTO preferences (key, value) VALUES (?, ?)').run('finance.setup', JSON.stringify(legacySetup));
+
+      assert.deepEqual(await f.finance.getFinanceSetup(), { ...legacySetup, accountCoverageConfirmed: false });
+      await f.finance.saveFinanceSetup(legacySetup);
+      assert.deepEqual(await f.finance.getFinanceSetup(), { ...legacySetup, accountCoverageConfirmed: false });
+      const plan = await f.finance.getPersonalFinancePlan(now);
+      assert.equal(plan.status, 'needs-setup');
+      assert.equal(plan.safeToSpendPaise, null);
+      assert.match(plan.reason!, /accounts and cards/i);
+
+      await f.finance.saveFinanceSetup({ ...legacySetup, accountCoverageConfirmed: true });
+      assert.equal((await f.finance.getPersonalFinancePlan(now)).status, 'ready');
     } finally { f.sqlite.close(); }
   });
 

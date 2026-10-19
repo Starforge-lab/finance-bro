@@ -6,7 +6,7 @@ import { ThemedText } from '@/components/themed-text';
 import { Spacing, Type } from '@/constants/theme';
 import type { DataLayer } from '@/db';
 import { useTheme } from '@/hooks/use-theme';
-import { exactMoney } from '@/utils/display';
+import { exactMoney, indiaDate } from '@/utils/display';
 
 type Plan = Awaited<ReturnType<DataLayer['getPersonalFinancePlan']>>;
 
@@ -55,7 +55,9 @@ export function FinanceOverview({ ledger, version }: { ledger: DataLayer; versio
           <PlanLine label="Bills through payday reserved" value={plan.billsReservedPaise} />
           <PlanLine label="Cash reserve" value={plan.reservePaise} />
         </View> : null}
-        <ThemedText style={Type.note}>Calculated from your verified balances and recorded entries. Missing alerts or unrecorded payments can change this amount. Expected salary is excluded.</ThemedText>
+        <ThemedText style={Type.note}>{plan.oldestBalanceCheckpointAt
+          ? `Oldest tracked account checkpoint: ${indiaDate(plan.oldestBalanceCheckpointAt)}. Recorded posted movements since each account’s checkpoint are included. Missing alerts or unrecorded payments can change this estimate; expected salary is excluded.`
+          : 'No verified balance checkpoint is available. Reconcile your accounts before using this estimate.'}</ThemedText>
       </> : <ThemedText style={Type.body}>{plan.reason ?? 'Finish your spending plan and confirm each account balance.'}</ThemedText>}
       <LedgerButton label="Review plan & balances" onPress={() => router.push('/settings')} />
       {plan.upcoming.length ? <ThemedText style={Type.rowTitle}>Upcoming & overdue</ThemedText> : <ThemedText style={Type.note}>No unpaid bills recorded. Add regular payments in Settings and one-off bills in Budgets.</ThemedText>}

@@ -78,6 +78,19 @@ test('setup and complete dated account balances are required', () => {
   }
 });
 
+test('reports the oldest balance checkpoint without expiring older verified balances', () => {
+  const base = input().balances[0]!;
+  const oldest = new Date('2025-01-01T00:00:00Z');
+  const result = calculateFinancePlan(input({ balances: [
+    { ...base, lastVerifiedAt: new Date('2026-10-01T00:00:00Z') },
+    { ...base, accountId: 'older-account', lastVerifiedAt: oldest },
+  ] }));
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.oldestBalanceCheckpointAt?.toISOString(), oldest.toISOString());
+  assert.notEqual(result.safeToSpendPaise, null);
+});
+
 test('card-payment reminders require a tracked credit-card liability', () => {
   const result = calculateFinancePlan(input({ obligations: [bill({ kind: 'card_payment' })] }));
   assert.equal(result.status, 'incomplete');

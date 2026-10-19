@@ -42,6 +42,14 @@ entries or pending import reviews withhold the estimate. Recorded posted account
 movements update projections after each checkpoint, including transfers and
 entries excluded from spending totals. A verified checkpoint includes all
 activity through its timestamp; missing alerts still require reconciliation.
+Before showing an allowance, the user separately confirms that every account
+and card affecting the estimate is included; this is a user attestation, not an
+automatic completeness check. Saved setups without this confirmation remain
+incomplete until the user confirms it. Home shows the oldest tracked account
+checkpoint and explains that recorded posted movements since each account's
+checkpoint are included. Settings shows the calculated balance, last verified
+amount and date, and last reconciliation difference. Checkpoints have no
+automatic age cutoff; missing alerts still require reconciliation.
 Marking a reminder paid only clears planning state: record the payment or
 reconcile the paying account first. Generated reminders do not create expenses.
 Archived assets are excluded, while archived overdrafts and card debts remain

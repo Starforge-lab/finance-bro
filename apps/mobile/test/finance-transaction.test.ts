@@ -17,7 +17,7 @@ test('overlapping forecast refreshes and Settings reads share a single SQLite tr
     const reconciliation = createReconciliation(f.client, ledgerMigrations);
     const finance = createPersonalFinance(f.client, ledgerMigrations);
     await reconciliation.setAccountBalance({ accountId: 'bank', balancePaise: 50000, asOf: now }, now);
-    await finance.saveFinanceSetup({ salaryDay: 28, salaryAmountPaise: 100000, reservePaise: 1000, commitmentsConfirmed: true });
+    await finance.saveFinanceSetup({ salaryDay: 28, salaryAmountPaise: 100000, reservePaise: 1000, commitmentsConfirmed: true, accountCoverageConfirmed: true });
     await finance.createRecurringSchedule({ id: 'rent', label: 'Fictional rent', amountPaise: 5000, dayOfMonth: 25, kind: 'bill' }, now);
     const results = await Promise.allSettled([
       finance.getPersonalFinancePlan(now), finance.getFinanceSetup(), reconciliation.getAccountBalances(now),

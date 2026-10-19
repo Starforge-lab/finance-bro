@@ -6,7 +6,8 @@ import { getFinanceTransactionRunner } from './finance-transaction';
 import { createReconciliation } from './reconciliation';
 import { bills, preferences, recurringSchedules, smsImportRefs, transactions } from './schema';
 
-export type PersonalFinanceSetup = FinanceSetup & { commitmentsConfirmed: boolean };
+export type PersonalFinanceSetup = FinanceSetup & { commitmentsConfirmed: boolean; accountCoverageConfirmed: boolean };
+type PersonalFinanceSetupInput = Omit<PersonalFinanceSetup, 'accountCoverageConfirmed'> & { accountCoverageConfirmed?: boolean };
 export type NewRecurringSchedule = Pick<typeof recurringSchedules.$inferInsert, 'id' | 'label' | 'amountPaise' | 'dayOfMonth' | 'kind'>;
 type Schedule = typeof recurringSchedules.$inferSelect;
 type OccurrenceState = { startMonth: string; lastMaterializedMonth: string | null };
@@ -28,11 +29,22 @@ function text(value: unknown): asserts value is string {
   if (typeof value !== 'string' || !value.trim()) throw new TypeError('Expected non-empty text');
 }
 function validateSetup(value: unknown): asserts value is PersonalFinanceSetup {
-  record(value, ['salaryDay', 'salaryAmountPaise', 'reservePaise', 'commitmentsConfirmed']);
+  record(value, ['salaryDay', 'salaryAmountPaise', 'reservePaise', 'commitmentsConfirmed', 'accountCoverageConfirmed']);
   integer(value.salaryDay, 1, 31);
   integer(value.salaryAmountPaise, 1);
   integer(value.reservePaise, 0);
   if (typeof value.commitmentsConfirmed !== 'boolean') throw new TypeError('Confirm commitments explicitly');
+  if (typeof value.accountCoverageConfirmed !== 'boolean') throw new TypeError('Confirm account coverage explicitly');
+}
+function normalizeSetup(value: unknown): PersonalFinanceSetup {
+  if (value && typeof value === 'object' && !Array.isArray(value) &&
+      !Object.hasOwn(value, 'accountCoverageConfirmed') && Object.keys(value).length === 4) {
+    const legacy = { ...value, accountCoverageConfirmed: false };
+    validateSetup(legacy);
+    return legacy;
+  }
+  validateSetup(value);
+  return value;
 }
 function todayInIndia(now: Date): string {
   if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw new TypeError('Expected a valid current date');
@@ -61,9 +73,7 @@ function stateKey(id: string): string { return `finance.recurring.${encodeURICom
 async function readSetup(db: Ledger['db']): Promise<PersonalFinanceSetup | null> {
   const row = await db.select().from(preferences).where(eq(preferences.key, setupKey)).get();
   if (!row) return null;
-  const value: unknown = JSON.parse(row.value);
-  validateSetup(value);
-  return value;
+  return normalizeSetup(JSON.parse(row.value));
 }
 async function storePreference(db: Ledger['db'], key: string, value: unknown) {
   await db.insert(preferences).values({ key, value: JSON.stringify(value) })
@@ -120,9 +130,8 @@ export function createPersonalFinance(client: LedgerSQLiteClient, migrations: Le
   }
   return {
     getFinanceSetup: () => inTransaction(db => readSetup(db)),
-    async saveFinanceSetup(input: PersonalFinanceSetup): Promise<void> {
-      validateSetup(input);
-      const value = { ...input };
+    async saveFinanceSetup(input: PersonalFinanceSetupInput): Promise<void> {
+      const value = normalizeSetup(input);
       await inTransaction(db => storePreference(db, setupKey, value));
     },
     async createRecurringSchedule(input: NewRecurringSchedule, now = new Date()): Promise<void> {
@@ -189,10 +198,16 @@ export function createPersonalFinance(client: LedgerSQLiteClient, migrations: Le
           eq(smsImportRefs.status, 'review'), gt(smsImportRefs.receivedAt, cutoff.getTime()), lte(smsImportRefs.receivedAt, asOf.getTime()),
         )).get();
         const plan = calculateFinancePlan({
-          now: asOf, setup: setup?.commitmentsConfirmed ? setup : null, balances, obligations,
+          now: asOf, setup: setup?.commitmentsConfirmed && setup.accountCoverageConfirmed ? setup : null, balances, obligations,
           unassignedCount: unassigned?.total ?? 0, pendingReviewCount: pending?.total ?? 0,
         });
-        if (setup && !setup.commitmentsConfirmed) plan.reason = 'Confirm your regular bills, card obligations and other commitments before estimating safe to spend.';
+        if (setup && (!setup.commitmentsConfirmed || !setup.accountCoverageConfirmed)) {
+          const missing = [
+            !setup.commitmentsConfirmed ? 'all regular bills, card obligations and other commitments' : null,
+            !setup.accountCoverageConfirmed ? 'all accounts and cards that affect this estimate' : null,
+          ].filter((item): item is string => item !== null);
+          plan.reason = `Confirm ${missing.join(' and ')} before estimating safe to spend.`;
+        }
         if (plan.status === 'incomplete' && balances.some(balance => balance.archived && balance.calculatedPaise === null)) {
           plan.reason = `${plan.reason} Unarchive and reconcile every archived account with an unknown balance; archiving cannot remove a liability.`;
         }

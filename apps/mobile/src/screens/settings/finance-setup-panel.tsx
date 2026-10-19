@@ -26,6 +26,7 @@ export function FinanceSetupPanel({ ledger, version }: { ledger: DataLayer; vers
   const [salary, setSalary] = useState('');
   const [reserve, setReserve] = useState('');
   const [confirmed, setConfirmed] = useState(false);
+  const [accountCoverageConfirmed, setAccountCoverageConfirmed] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState<string>();
   const [balance, setBalance] = useState('');
@@ -46,6 +47,7 @@ export function FinanceSetupPanel({ ledger, version }: { ledger: DataLayer; vers
         if (!loaded) {
           setSalaryDay(setup ? String(setup.salaryDay) : ''); setSalary(setup ? amountInput(setup.salaryAmountPaise) : '');
           setReserve(setup ? amountInput(setup.reservePaise) : ''); setConfirmed(setup?.commitmentsConfirmed ?? false);
+          setAccountCoverageConfirmed(setup?.accountCoverageConfirmed ?? false);
         }
         setLoaded(true);
       }).catch(() => { if (active) setNotice('Couldn’t load your plan. Reopen Settings to retry.'); });
@@ -74,15 +76,20 @@ export function FinanceSetupPanel({ ledger, version }: { ledger: DataLayer; vers
         options={[{ value: 'no', label: 'Still setting up' }, { value: 'yes', label: 'All included' }]}
         onChange={(value) => { if (!busy) setConfirmed(value === 'yes'); }} />
       <ThemedText style={Type.note}>Choose “All included” after adding regular payments here and any one-off bills in Budgets, including anything overdue.</ThemedText>
-      <LedgerButton label="Save spending plan" disabled={busy} onPress={() => { void save(() => ledger.saveFinanceSetup({ salaryDay: Number(salaryDay), salaryAmountPaise: amount(salary), reservePaise: amount(reserve), commitmentsConfirmed: confirmed }), 'Spending plan saved on this device.'); }} />
+      <Segmented label="Have you included every account and card that affects this estimate?" value={accountCoverageConfirmed ? 'yes' : 'no'}
+        options={[{ value: 'no', label: 'Still setting up' }, { value: 'yes', label: 'All included' }]}
+        onChange={(value) => { if (!busy) setAccountCoverageConfirmed(value === 'yes'); }} />
+      <ThemedText style={Type.note}>Include each bank, cash, wallet and credit-card balance that affects your available money. Archived overdrafts and card debt still count; credit limits are not cash.</ThemedText>
+      <LedgerButton label="Save spending plan" disabled={busy} onPress={() => { void save(() => ledger.saveFinanceSetup({ salaryDay: Number(salaryDay), salaryAmountPaise: amount(salary), reservePaise: amount(reserve), commitmentsConfirmed: confirmed, accountCoverageConfirmed }), 'Spending plan saved on this device.'); }} />
       <ThemedText style={Type.rowTitle}>Verified account balances</ThemedText>
       {!balances.length ? <ThemedText style={Type.body}>Add your bank accounts and credit cards above first.</ThemedText> : null}
       {balances.map((row) => <View key={row.accountId} style={[styles.row, { borderColor: colors.rule }]}>
         <ThemedText style={Type.rowTitle}>{row.name}</ThemedText>
         <ThemedText style={Type.note}>{row.type === 'credit_card' ? 'Outstanding owed (positive); overpayment (negative)' : 'Available balance; overdraft is negative'}</ThemedText>
+        <ThemedText style={Type.note}>Calculated balance</ThemedText>
         <ThemedText style={Type.amount}>{row.calculatedPaise === null ? 'Balance needed' : exactMoney(row.calculatedPaise)}</ThemedText>
-        {row.lastVerifiedAt ? <ThemedText style={Type.note}>Verified {indiaDate(row.lastVerifiedAt)} · calculated since then</ThemedText> : null}
-        {row.reconciliationDeltaPaise !== null ? <ThemedText style={Type.note}>Last correction {exactMoney(row.reconciliationDeltaPaise)} · no income entry created</ThemedText> : null}
+        {row.lastVerifiedAt && row.lastVerifiedPaise !== null ? <ThemedText style={Type.note}>Last verified {indiaDate(row.lastVerifiedAt)}: {exactMoney(row.lastVerifiedPaise)}</ThemedText> : null}
+        {row.reconciliationDeltaPaise !== null ? <ThemedText style={Type.note}>Last reconciliation difference {exactMoney(row.reconciliationDeltaPaise)} · no income entry created</ThemedText> : null}
         {editing === row.accountId ? <>
           <PlanField label={`Current ${row.name} balance in INR`} value={balance} onChange={setBalance} disabled={busy} />
           <ThemedText style={Type.note}>Use the current amount from your bank. Entries recorded through this moment are included in this checkpoint.</ThemedText>

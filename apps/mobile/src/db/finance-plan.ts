@@ -41,6 +41,7 @@ export type FinancePlan = {
   safeToSpendPaise: number | null;
   dailyAllowancePaise: number | null;
   daysUntilSalary: number | null;
+  oldestBalanceCheckpointAt: Date | null;
   upcoming: PlannedObligation[];
   equation: string;
 };
@@ -126,11 +127,14 @@ export function calculateFinancePlan(input: ForecastInput): FinancePlan {
     const right = `${b.dueDate}:${b.id}`;
     return left < right ? -1 : left > right ? 1 : 0;
   });
+  const checkpointTimes = input.balances.flatMap((balance) => balance.lastVerifiedAt === null ? [] : [balance.lastVerifiedAt.getTime()]);
   const result: FinancePlan = {
     status: 'needs-setup', reason: 'Set your salary day, expected salary and cash reserve.',
     nextSalaryDate: null, liquidPaise: null, cardOutstandingPaise: null, billsReservedPaise: null,
     reservePaise: input.setup?.reservePaise ?? null, safeToSpendPaise: null, dailyAllowancePaise: null,
-    daysUntilSalary: null, upcoming, equation,
+    daysUntilSalary: null,
+    oldestBalanceCheckpointAt: checkpointTimes.length === 0 ? null : new Date(Math.min(...checkpointTimes)),
+    upcoming, equation,
   };
   if (input.setup === null) return result;
   const today = new Date(input.now.getTime() + 330 * 60_000).toISOString().slice(0, 10);

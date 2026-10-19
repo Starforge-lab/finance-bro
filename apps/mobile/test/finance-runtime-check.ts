@@ -38,7 +38,7 @@ export async function runFinanceRuntimeCheck(
   const api = createDataLayer(client, migrations, undefined, runner);
   await api.migrateLedger();
   check('migration preserves legacy transaction', (await api.listTransactions()).some(row => row.id === 'runtime-legacy' && row.amountPaise === 123));
-  const setup = { salaryDay: 25, salaryAmountPaise: 9_000_000, reservePaise: 500_000, commitmentsConfirmed: true };
+  const setup = { salaryDay: 25, salaryAmountPaise: 9_000_000, reservePaise: 500_000, commitmentsConfirmed: true, accountCoverageConfirmed: true };
   if (phase === 'seeded') {
     await api.saveFinanceSetup(setup);
     await api.setAccountBalance({ accountId: 'runtime-bank', balancePaise: 5_000_000, asOf: checkpoint }, now);
