@@ -11,7 +11,7 @@ export type PastePreparation =
       candidate: ParsedTxn | null;
       ruleId: string | null;
       ruleVersion: number | null;
-      identity: { id: string; dedupeKey: string; bodyHash: string };
+      identity: { id: string; dedupeKey: string; bodyHash: string; weakDedupeKey: string };
       fingerprintKeyId: string;
       duplicateReviewRequired: boolean;
       collision: { occurredAt: number; deleted: boolean } | null;
@@ -32,17 +32,20 @@ export async function preparePastedSms(raw: RawSms, fingerprinter: Fingerprinter
   if (result.kind === 'ignored') return { kind: 'ignored', reason: result.reason };
 
   const candidate = result.kind === 'transaction' ? result.txn : result.candidate;
-  const bodyHash = await keyedFingerprint(['body', raw.body], fingerprinter);
+  const [bodyHash, weakDedupeKey] = await Promise.all([
+    keyedFingerprint(['body', raw.body], fingerprinter),
+    keyedFingerprint(['sms', raw.sender.trim().toUpperCase(), raw.body], fingerprinter),
+  ]);
   const identityKey = candidate?.upiRef
     ? `upi:${await keyedFingerprint(['upi', candidate.upiRef, candidate.direction, candidate.status, candidate.kind], fingerprinter)}`
-    : `body:${await keyedFingerprint(['sms', raw.sender.trim().toUpperCase(), raw.body], fingerprinter)}`;
+    : `body:${weakDedupeKey}`;
 
   return {
     kind: 'needs-review',
     candidate,
     ruleId: result.ruleId,
     ruleVersion: result.ruleVersion,
-    identity: { id: `paste:${identityKey}`, dedupeKey: identityKey, bodyHash },
+    identity: { id: `paste:${identityKey}`, dedupeKey: identityKey, bodyHash, weakDedupeKey: `body:${weakDedupeKey}` },
     fingerprintKeyId: fingerprinter.keyId,
     duplicateReviewRequired: false,
     collision: null,
@@ -59,6 +62,8 @@ export async function saveReviewedPaste(
   if (prepared.kind !== 'needs-review') throw new TypeError('Ignored SMS cannot be saved');
   if (!/^[a-f0-9]{64}$/.test(prepared.identity.bodyHash) ||
       !/^(upi|body):[a-f0-9]{64}$/.test(prepared.identity.dedupeKey) ||
+      !/^body:[a-f0-9]{64}$/.test(prepared.identity.weakDedupeKey) ||
+      (prepared.identity.dedupeKey.startsWith('body:') && prepared.identity.dedupeKey !== prepared.identity.weakDedupeKey) ||
       prepared.identity.id !== `paste:${prepared.identity.dedupeKey}`) {
     throw new TypeError('Invalid keyed paste identity');
   }
@@ -89,7 +94,12 @@ export async function saveReviewedPaste(
       ['body-occurrence-v1', prepared.identity.dedupeKey, Math.floor(separatePaymentAt.getTime() / 1_000)],
       fingerprinter,
     );
-    identity = { id: `paste:body:${disambiguator}`, dedupeKey: `body:${disambiguator}`, bodyHash: prepared.identity.bodyHash };
+    identity = {
+      id: `paste:body:${disambiguator}`,
+      dedupeKey: `body:${disambiguator}`,
+      bodyHash: prepared.identity.bodyHash,
+      weakDedupeKey: prepared.identity.weakDedupeKey,
+    };
   }
   const candidate = prepared.candidate;
   if (!candidate) {
@@ -118,6 +128,7 @@ export async function saveReviewedPaste(
     occurredAt,
     dedupeKey: identity.dedupeKey,
     bodyHash: identity.bodyHash,
+    weakDedupeKey: identity.weakDedupeKey,
     ruleId: prepared.ruleId,
     ruleVersion: prepared.ruleVersion,
     accountId: value('accountId', null),

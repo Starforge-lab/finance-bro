@@ -746,9 +746,11 @@ function smsReviewSnapshot(referenceId: string, value: unknown): string {
     throw new TypeError('SMS parser preparation is invalid');
   }
 
-  const identity = readOwnDataRecord(preparation.identity, 'SMS identity', ['id', 'dedupeKey', 'bodyHash']);
+  const identity = readOwnDataRecord(preparation.identity, 'SMS identity', ['id', 'dedupeKey', 'bodyHash', 'weakDedupeKey']);
   if (typeof identity.dedupeKey !== 'string' || !/^(upi|body):[a-f0-9]{64}$/.test(identity.dedupeKey) ||
-      identity.id !== `paste:${identity.dedupeKey}` || typeof identity.bodyHash !== 'string' || !/^[a-f0-9]{64}$/.test(identity.bodyHash)) {
+      identity.id !== `paste:${identity.dedupeKey}` || typeof identity.bodyHash !== 'string' || !/^[a-f0-9]{64}$/.test(identity.bodyHash) ||
+      typeof identity.weakDedupeKey !== 'string' || !/^body:[a-f0-9]{64}$/.test(identity.weakDedupeKey) ||
+      (identity.dedupeKey.startsWith('body:') && identity.dedupeKey !== identity.weakDedupeKey)) {
     throw new TypeError('SMS identity is invalid');
   }
 
@@ -784,7 +786,7 @@ function smsReviewSnapshot(referenceId: string, value: unknown): string {
 
   const snapshot = JSON.stringify([
     expected.kind, expected.referenceId, expected.platformId, expected.receivedAt, preparation.kind, candidateSnapshot, preparation.ruleId, preparation.ruleVersion,
-    identity.id, identity.dedupeKey, identity.bodyHash, preparation.fingerprintKeyId,
+    identity.id, identity.dedupeKey, identity.bodyHash, identity.weakDedupeKey, preparation.fingerprintKeyId,
     preparation.duplicateReviewRequired, collisionSnapshot,
   ]);
   if (snapshot === undefined || snapshot.length > 32_768) throw new RangeError('SMS review preparation is too large');
@@ -1067,6 +1069,7 @@ export function createSmsIngestion(
             .where(isWeak ? eq(transactions.dedupeKey, reviewed.dedupeKey) : or(
               eq(transactions.dedupeKey, reviewed.dedupeKey),
               and(eq(transactions.bodyHash, reviewed.bodyHash), like(transactions.dedupeKey, 'upi:%')),
+              and(eq(transactions.bodyHash, reviewed.bodyHash), eq(transactions.source, 'paste'), like(transactions.dedupeKey, 'body:%')),
             )).all();
           if (isWeak) {
             if (overlaps.length > 0 && !checkedOptions.separatePayment) {
@@ -1081,7 +1084,9 @@ export function createSmsIngestion(
 
           if (!isWeak && overlaps.length > 0) {
             const existing = overlaps[0]!;
+            const weakPasteOverlap = existing.source === 'paste' && existing.dedupeKey?.startsWith('body:');
             const coherent = overlaps.length === 1 &&
+              (!weakPasteOverlap || existing.dedupeKey === preparation.identity.weakDedupeKey) &&
               (existing.bodyHash === reviewed.bodyHash || sameTransactionEvidence(existing, reviewed));
             if (!coherent) {
               result = unavailable('ambiguous_overlap');
@@ -1355,10 +1360,13 @@ export function createSmsIngestion(
                 .where(or(
                   eq(transactions.dedupeKey, preparation.identity.dedupeKey),
                   and(eq(transactions.bodyHash, preparation.identity.bodyHash), like(transactions.dedupeKey, 'upi:%')),
+                  and(eq(transactions.bodyHash, preparation.identity.bodyHash), eq(transactions.source, 'paste'), like(transactions.dedupeKey, 'body:%')),
                 )).all();
               if (matches.length > 0) {
+                const weakPasteOverlap = matches[0]!.source === 'paste' && matches[0]!.dedupeKey?.startsWith('body:');
                 const coherent = matches.length === 1 && candidate !== null && candidate.status === 'posted' &&
                   Number.isSafeInteger(candidate.amountPaise) && candidate.amountPaise > 0 &&
+                  (!weakPasteOverlap || matches[0]!.dedupeKey === preparation.identity.weakDedupeKey) &&
                   (matches[0]!.bodyHash === preparation.identity.bodyHash || matchingEvidence(matches[0]!, candidate, accountId));
                 if (coherent) {
                   await writeReference(ledger, referenceId, row, fingerprinter, senderHash, preparation, 'duplicate', null, matches[0]!.id);

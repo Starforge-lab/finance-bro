@@ -190,11 +190,14 @@ timestamp or changed body is treated as a separate source and gets its own
 reference. Non-financial ignored rows still need no durable reference. Any newly
 accepted transaction derives its identity from its source reference. Existing
 transaction IDs, corrections, tombstones and links are not rewritten. Keyed
-identities are shared with paste imports in both
-directions; strong coherent overlap preserves existing edits and deletion
-markers, while conflicting or weak evidence requires review. Body fingerprints
-are not globally unique: two genuine identical purchases must remain
-distinguishable. Amount/time similarity alone never merges transactions.
+identities are shared with paste imports in both directions. A parser upgrade
+from weak paste identity to strong UPI identity preserves an existing paste
+only for one exact keyed sender-and-body match; sender mismatches, multiple weak
+matches and other conflicting evidence require review. Body fingerprints are
+not globally unique: two genuine identical purchases must remain
+distinguishable. Amount/time similarity alone never merges transactions. The
+body-hash overlap lookup has no dedicated index; issue #71's 10k/50k history
+performance gate remains open.
 
 The main cursor remains `(receivedAt, platformId)`, separate from each
 catch-up's durable page continuation. The bounded newest-first query makes

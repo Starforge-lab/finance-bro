@@ -681,6 +681,64 @@ describe('selected Android SMS review confirmation', () => {
     } finally { ambiguous.sqlite.close(); }
   });
 
+  for (const deleted of [false, true]) {
+    it(`links a parser-upgraded SMS to its weak-identity paste without changing it (deleted=${deleted})`, async () => {
+      const row = { ...strongSms, platformId: '76' };
+      const test = await fixture([row]);
+      try {
+        const expected = await ready(test.api, row);
+        const preparation = expected.preparation;
+        const weakKey = `body:${await test.key.fingerprint(JSON.stringify([
+          'sms', row.sender.trim().toUpperCase(), row.body,
+        ]))}`;
+        const legacy = {
+          ...preparation,
+          identity: { ...preparation.identity, id: `paste:${weakKey}`, dedupeKey: weakKey },
+        };
+        await saveReviewedPaste(test.ledger, legacy, { amountPaise: 44_999, note: 'Fictional corrected paste' });
+        if (deleted) await test.ledger.softDeleteTransaction(legacy.identity.id);
+
+        const result = await confirm(test.api, expected.referenceId, expected, async () => ({ ...row }));
+        assert.deepEqual(result, {
+          kind: 'duplicate', referenceId: expected.referenceId, platformId: row.platformId, transactionId: legacy.identity.id,
+        });
+        const stored = test.sqlite.prepare('SELECT amount_paise, note, deleted_at FROM transactions WHERE id = ?')
+          .get(legacy.identity.id) as { amount_paise: number; note: string | null; deleted_at: number | null };
+        assert.equal(stored.amount_paise, 44_999);
+        assert.equal(stored.note, 'Fictional corrected paste');
+        assert.equal(stored.deleted_at !== null, deleted);
+        assert.equal((test.sqlite.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 1);
+      } finally { test.sqlite.close(); }
+    });
+  }
+
+  it('leaves a body-identical weak paste from another sender pending for explicit review', async () => {
+    const row = { ...strongSms, platformId: '77' };
+    const test = await fixture([row]);
+    try {
+      const expected = await ready(test.api, row);
+      const otherSenderKey = `body:${await test.key.fingerprint(JSON.stringify([
+        'sms', 'AD-HDFCBK-S', row.body,
+      ]))}`;
+      const legacy = {
+        ...expected.preparation,
+        identity: {
+          ...expected.preparation.identity,
+          id: `paste:${otherSenderKey}`,
+          dedupeKey: otherSenderKey,
+          weakDedupeKey: otherSenderKey,
+        },
+      };
+      await saveReviewedPaste(test.ledger, legacy, { amountPaise: 44_999 });
+
+      assert.deepEqual(await confirm(test.api, expected.referenceId, expected, async () => ({ ...row })), {
+        kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'ambiguous_overlap',
+      });
+      assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get('77') as { status: string }).status, 'review');
+      assert.equal((test.sqlite.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 1);
+    } finally { test.sqlite.close(); }
+  });
+
   it('preserves a corrected tombstone committed after preflight while SMS waits for its writer', async () => {
     const temp = temporaryFile();
     const smsFixture = openTestLedger(temp.filename);

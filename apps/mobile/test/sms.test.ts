@@ -431,6 +431,126 @@ describe('Android SMS ingestion storage seam', () => {
     } finally { fixture.sqlite.close(); }
   });
 
+  for (const deleted of [false, true]) {
+    it(`preserves a legacy weak-identity paste when catch-up gains a UPI reference (deleted=${deleted})`, async () => {
+      const fixture = openTestLedger();
+      try {
+        const key = fingerprinter('fictional-sms-key');
+        const api = createApi(fixture, key);
+        await api.migrateLedger();
+        await addHdfcSettingsBankAccount(api);
+        const prepared = await api.preparePaste(hdfcCreditSms);
+        if (prepared.kind !== 'needs-review' || !prepared.identity.dedupeKey.startsWith('upi:')) {
+          throw new Error('Fictional HDFC credit should have a strong current identity');
+        }
+        const legacyWeakKey = `body:${await key.fingerprint(JSON.stringify([
+          'sms', hdfcCreditSms.sender.trim().toUpperCase(), hdfcCreditSms.body,
+        ]))}`;
+        const legacy = {
+          ...prepared,
+          identity: { ...prepared.identity, id: `paste:${legacyWeakKey}`, dedupeKey: legacyWeakKey },
+        };
+        assert.equal(await api.saveReviewedPaste(legacy, { accountId: 'hdfc-settings-1234', amountPaise: 24_999 }), 'inserted');
+        if (deleted) await api.softDeleteTransaction(legacy.identity.id);
+
+        const imported = await api.importSmsBatch([smsRow('367', hdfcCreditSms)], null);
+        const reference = await fixture.ledger.db.select().from(smsImportRefs)
+          .where(eq(smsImportRefs.platformId, '367')).get();
+        const stored = fixture.sqlite.prepare('SELECT amount_paise, deleted_at FROM transactions WHERE id = ?')
+          .get(legacy.identity.id) as { amount_paise: number; deleted_at: number | null } | undefined;
+
+        assert.equal(imported.duplicate, 1);
+        assert.equal(imported.inserted, 0);
+        assert.equal(imported.review, 0);
+        assert.equal(reference?.status, 'duplicate');
+        assert.equal(reference?.transactionId, legacy.identity.id);
+        assert.equal(stored?.amount_paise, 24_999);
+        assert.equal(stored?.deleted_at !== null, deleted);
+        assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+      } finally { fixture.sqlite.close(); }
+    });
+  }
+
+  it('keeps same-body weak pastes with different sender identity in review', async () => {
+    const fixture = openTestLedger();
+    try {
+      const key = fingerprinter('fictional-sms-key');
+      const api = createApi(fixture, key);
+      await api.migrateLedger();
+      await addHdfcSettingsBankAccount(api);
+      const prepared = await api.preparePaste(hdfcCreditSms);
+      if (prepared.kind !== 'needs-review' || !prepared.identity.dedupeKey.startsWith('upi:')) {
+        throw new Error('Fictional HDFC credit should have a strong current identity');
+      }
+      const otherSenderWeakKey = `body:${await key.fingerprint(JSON.stringify([
+        'sms', 'AD-HDFCBK-S', hdfcCreditSms.body,
+      ]))}`;
+      const legacy = {
+        ...prepared,
+        identity: {
+          ...prepared.identity,
+          id: `paste:${otherSenderWeakKey}`,
+          dedupeKey: otherSenderWeakKey,
+          weakDedupeKey: otherSenderWeakKey,
+        },
+      };
+      assert.equal(await api.saveReviewedPaste(legacy, { accountId: 'hdfc-settings-1234' }), 'inserted');
+
+      const imported = await api.importSmsBatch([smsRow('368', hdfcCreditSms)], null);
+      const reference = await fixture.ledger.db.select().from(smsImportRefs)
+        .where(eq(smsImportRefs.platformId, '368')).get();
+
+      assert.equal(imported.duplicate, 0);
+      assert.equal(imported.inserted, 0);
+      assert.equal(imported.review, 1);
+      assert.equal(reference?.status, 'review');
+      assert.equal(reference?.reason, 'inconsistent_evidence');
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it('keeps intentionally separated weak paste purchases distinct after a parser upgrade', async () => {
+    const fixture = openTestLedger();
+    try {
+      const key = fingerprinter('fictional-sms-key');
+      const api = createApi(fixture, key);
+      await api.migrateLedger();
+      await addHdfcSettingsBankAccount(api);
+      const prepared = await api.preparePaste(hdfcCreditSms);
+      if (prepared.kind !== 'needs-review' || !prepared.candidate?.upiRef) {
+        throw new Error('Fictional HDFC credit should have a strong current identity');
+      }
+      const legacyWeakKey = `body:${await key.fingerprint(JSON.stringify([
+        'sms', hdfcCreditSms.sender.trim().toUpperCase(), hdfcCreditSms.body,
+      ]))}`;
+      const legacy = {
+        ...prepared,
+        candidate: { ...prepared.candidate, upiRef: null },
+        identity: { ...prepared.identity, id: `paste:${legacyWeakKey}`, dedupeKey: legacyWeakKey },
+      };
+      assert.equal(await api.saveReviewedPaste(legacy, { accountId: 'hdfc-settings-1234' }), 'inserted');
+      const separateAt = new Date(prepared.candidate.occurredAt + 60_000);
+      assert.equal(await api.saveReviewedPaste(legacy, { accountId: 'hdfc-settings-1234' }, { separatePaymentAt: separateAt },), 'inserted');
+
+      const imported = await api.importSmsBatch([smsRow('369', hdfcCreditSms)], null);
+      const reference = await fixture.ledger.db.select().from(smsImportRefs)
+        .where(eq(smsImportRefs.platformId, '369')).get();
+      const rows = await fixture.ledger.db.select().from(transactions).all();
+
+      assert.equal(imported.duplicate, 0);
+      assert.equal(imported.inserted, 0);
+      assert.equal(imported.review, 1);
+      assert.equal(reference?.status, 'review');
+      assert.equal(reference?.reason, 'ambiguous_evidence');
+      assert.equal(rows.length, 2);
+      assert.equal(new Set(rows.map((row) => row.id)).size, 2);
+      assert.deepEqual(rows.map((row) => row.occurredAt.getTime()).sort((a, b) => a - b), [
+        prepared.candidate.occurredAt,
+        separateAt.getTime(),
+      ]);
+    } finally { fixture.sqlite.close(); }
+  });
+
   it('keeps a prior HDFC auto-import when the matching paste arrives later', async () => {
     const fixture = openTestLedger();
     try {
@@ -1556,7 +1676,7 @@ describe('Android SMS ingestion storage seam', () => {
           ? { receivedAt: strongSms.receivedAt + 2_000, platformId: '252' }
           : first.cursor);
         assert.equal((await firstFixture.ledger.db.select().from(smsImportRefs).all()).length, scenario === 'cursor-changed' ? 2 : 1);
-        if (scenario === 'cancelled') assert.equal(fingerprintCalls, 4, 'the canceled preflight must not fingerprint the next row');
+        if (scenario === 'cancelled') assert.equal(fingerprintCalls, 5, 'the canceled preflight must not fingerprint the next row');
         assert.equal((await firstApi.getSmsImportHealth()).lastSuccessfulCatchupAt, null);
       } finally {
         releaseFingerprint();
