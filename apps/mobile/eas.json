@@ -18,6 +18,7 @@
     },
     "friends": {
       "extends": "preview",
+      "autoIncrement": true,
       "env": { "APP_VARIANT": "preview" },
       "android": { "buildType": "apk" }
     },

@@ -37,6 +37,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   android: {
     package: IS_SMS_PROBE ? `${BASE_ID}.smsqa.dev` : IS_PREVIEW ? `${BASE_ID}.preview` : IS_DEV ? `${BASE_ID}.dev` : BASE_ID,
+    allowBackup: false,
     adaptiveIcon: {
       backgroundColor: '#E6F4FE',
       foregroundImage: './assets/images/android-icon-foreground.png',
@@ -56,7 +57,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       },
     }],
     'expo-sqlite',
-    'expo-secure-store',
+    ['expo-secure-store', { configureAndroidBackup: false }],
+    './plugins/withLocalOnlyAndroidBackup.cjs',
     'expo-image',
     [
       'expo-splash-screen',
