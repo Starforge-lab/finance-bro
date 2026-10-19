@@ -59,7 +59,7 @@ export interface ParsedTxn {
   vpa: string | null;
   upiRef: string | null;
   balancePaise: number | null;
-  /** Epoch ms. The SMS arrival time; body dates are not trusted yet. */
+  /** Epoch ms. A validated institutional body date with the receipt's India clock, or the SMS arrival time. */
   occurredAt: number;
 }
 
