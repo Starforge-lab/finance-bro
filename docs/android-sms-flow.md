@@ -11,7 +11,7 @@ initial Settings consent/permission flow, revoked-permission recovery and a
 device-reproduced consent-status fix. It does not close live-delivery or release
 gates.
 
-## Parser upgrade compatibility — 2026-10-18
+## Parser upgrade compatibility — 2026-10-19
 
 The failure-wording fix for #93 advances `hdfc.upi.credit` to version 2 and
 `generic.keyword` to version 4. Failure words inside recognised VPAs no longer
@@ -22,20 +22,25 @@ has a posted candidate and `weak_identity` review reason, not `non_posted`.
 The automatic-save allowlist advances to HDFC version 2 only after revalidating
 that corpus. No additional institution or message format is enabled.
 
-Reference-based duplicate checks also match an identical keyed source body
-across parser identity changes. Catch-up, selected-SMS review approval and paste
-save preserve existing corrections and tombstones across paste/SMS paths.
-Multiple conflicting matches remain in review; no-reference separate-payment
-handling and genuinely different failed/posted source messages are unchanged.
+When a parser upgrades a pasted SMS from a weak body identity to a UPI identity,
+matching now requires a unique paste with the same keyed sender-and-body
+identity. Catch-up, selected-SMS review approval and paste save preserve that
+row's corrections and tombstone. A sender mismatch or multiple weak paste rows,
+including user-separated identical purchases, stays in review; weak-only
+identity and genuinely different failed/posted source messages are unchanged.
+The overlap check reuses the unindexed body-hash lookup; issue #71's 10k/50k
+history performance gate remains open, with no schema or migration change.
 
-The combined source passed typecheck/lint, 277 mobile/data tests and 142 parser
-tests, including four legacy cross-source regressions and the unchanged corpus
-dispositions. Independent review passed 127 focused mobile tests and 142 parser
-tests. These are Node/SQLite observations, not new native acceptance. The browser
-check was attempted but blocked by the browser client before localhost opened;
-no end-to-end browser or new device result is claimed for this upgrade. Native
-inputs, dependencies and migrations are unchanged. The remaining device,
-accessibility, performance and distribution gates below still apply.
+The parser upgrade compatibility fix passes `pnpm check`: typecheck, lint, 288
+mobile/data tests and 142 parser tests. The 11 added regressions cover weak-to-
+UPI paste replay, corrections, tombstones, sender mismatch, multiple matching
+records and separated identical purchases. These are Node/SQLite observations,
+not new native acceptance. The earlier independent review passed 127 focused
+mobile tests and 142 parser tests. The browser check was blocked by the browser
+client before localhost opened; no end-to-end browser or new device result is
+claimed for this upgrade. Native inputs, dependencies and migrations are
+unchanged. The remaining device, accessibility, performance and distribution
+gates below still apply.
 
 Frozen install, the installed-SDK dependency check, Expo Doctor (20/20),
 Android/iOS/web bundle exports and diff whitespace validation also passed.

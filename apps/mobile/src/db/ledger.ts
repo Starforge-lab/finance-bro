@@ -62,7 +62,7 @@ export type ReviewedPasteTransaction = Pick<
   | 'upiRef'
   | 'linkedTxnId'
   | 'excludeFromStats'
->>;
+>> & { weakDedupeKey: string };
 export type NewTransaction = Omit<
   TransactionInsert,
   | 'createdAt'
@@ -235,6 +235,10 @@ function assertValidReviewedPaste(input: ReviewedPasteTransaction): void {
   assertValidProvenance(input);
   assertText(input.dedupeKey, 'dedupeKey', { nonEmpty: true });
   assertText(input.bodyHash, 'bodyHash', { nonEmpty: true });
+  assertText(input.weakDedupeKey, 'weakDedupeKey', { nonEmpty: true });
+  if (!/^body:[a-f0-9]{64}$/.test(input.weakDedupeKey)) {
+    throw new TypeError('Invalid weak paste identity');
+  }
 }
 
 function assertValidAccount(input: unknown): asserts input is NewAccount {
@@ -615,9 +619,17 @@ export function createLedger(client: LedgerSQLiteClient, migrations: LedgerMigra
         .where(dedupeKey.startsWith('upi:') ? or(
           eq(transactions.dedupeKey, dedupeKey),
           and(eq(transactions.bodyHash, bodyHash), like(transactions.dedupeKey, 'upi:%')),
+          and(eq(transactions.bodyHash, bodyHash), eq(transactions.source, 'paste'), like(transactions.dedupeKey, 'body:%')),
         ) : eq(transactions.dedupeKey, dedupeKey)).all();
       if (overlaps.length > 0) {
         if (dedupeKey.startsWith('upi:')) {
+          const weakOverlaps = overlaps.filter((row) => row.source === 'paste' && row.dedupeKey?.startsWith('body:'));
+          if (weakOverlaps.length > 0) {
+            if (overlaps.length !== 1 || weakOverlaps.length !== 1 || weakOverlaps[0]!.dedupeKey !== input.weakDedupeKey) {
+              throw new Error('A matching weak-identity paste requires review before saving');
+            }
+            return false;
+          }
           const existing = overlaps[0]!;
           const sameSource = existing.bodyHash === bodyHash;
           const coherentEvidence = existing.amountPaise === input.amountPaise &&
