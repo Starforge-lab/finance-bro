@@ -42,12 +42,13 @@ function reviewLookalike(sms: NormalisedSms): RuleMatch | null {
 
 export const hdfcUpiCreditRule: Rule = {
   id: 'hdfc.upi.credit',
-  version: 1,
+  version: 2,
   institutions: ['hdfc'],
   match(sms) {
     const { senderInfo, text, receivedAt } = sms;
     if (senderInfo.header !== 'HDFCBK' || senderInfo.dltSuffix !== 'S') return null;
     if (!text.startsWith('Credit Alert!')) return null;
+    // Keep unverified identifier variants in review even when their candidate is posted.
     if (FAILED.test(text)) return reviewLookalike(sms);
 
     const match = CREDIT_ALERT.exec(text);
