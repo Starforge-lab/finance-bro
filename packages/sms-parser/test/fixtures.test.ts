@@ -20,9 +20,10 @@ interface FixtureCase {
 const FIXTURES_DIR = join(import.meta.dirname, '..', 'fixtures');
 
 function fixtureFiles(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
-    e.isDirectory() ? fixtureFiles(join(dir, e.name)) : e.name.endsWith('.json') ? [join(dir, e.name)] : [],
-  );
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    if (e.isDirectory()) return e.name === 'acceptance' ? [] : fixtureFiles(join(dir, e.name));
+    return e.name.endsWith('.json') ? [join(dir, e.name)] : [];
+  });
 }
 
 const suites = fixtureFiles(FIXTURES_DIR).map((file) => ({

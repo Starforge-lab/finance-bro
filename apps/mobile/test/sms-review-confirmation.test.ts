@@ -1,0 +1,844 @@
+/// <reference types="node" />
+
+import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
+import { rmSync, rmdirSync } from 'node:fs';
+import type { DatabaseSync } from 'node:sqlite';
+import { describe, it } from 'node:test';
+import { createDataLayer } from '../src/db/service';
+import { preparePastedSms, saveReviewedPaste } from '../src/imports/paste';
+import type { LedgerSQLiteClient, LedgerSQLiteTransactionRunner } from '../src/db/ledger';
+import { FingerprintKeyUnavailableError } from '../src/imports/fingerprint';
+import type { FingerprintKeyPolicy, FingerprintKeyProvider, Fingerprinter } from '../src/imports/fingerprint';
+import type { ReviewCorrections } from '../src/imports/paste';
+import type { SmsInboxRow, SmsReviewPreparation } from '../src/imports/sms';
+import { ledgerMigrations, openTestLedger, temporaryFile } from './helpers/ledger';
+
+const strongSms = {
+  sender: 'VM-HDFCBK-S',
+  body: 'INR 450.00 debited from A/c XX1234 to VPA fictional@axisbank (UPI Ref No 612345678901).',
+  receivedAt: Date.parse('2026-10-07T10:00:00.000Z'),
+};
+const weakSms = {
+  sender: 'VM-HDFCBK-S',
+  body: 'INR 450.00 debited from A/c XX1234 at a fictional shop.',
+  receivedAt: Date.parse('2026-10-07T10:00:00.000Z'),
+};
+const fixtureSecret = 'fictional-sms-confirmation-key';
+
+function fingerprinter(secret = fixtureSecret): Fingerprinter {
+  return {
+    keyId: createHmac('sha256', secret).update('fictional-key-id').digest('hex'),
+    async fingerprint(value) { return createHmac('sha256', secret).update(value).digest('hex'); },
+  };
+}
+
+function transactionRunner(sqlite: DatabaseSync, client: LedgerSQLiteClient): LedgerSQLiteTransactionRunner {
+  let tail = Promise.resolve();
+  return async (task) => {
+    const previous = tail;
+    let release!: () => void;
+    tail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      sqlite.exec('BEGIN IMMEDIATE');
+      try { await task(client); sqlite.exec('COMMIT'); }
+      catch (error) { sqlite.exec('ROLLBACK'); throw error; }
+    } finally { release(); }
+  };
+}
+
+async function fixture(rows: SmsInboxRow[] = [{ ...strongSms, platformId: '72' }], key = fingerprinter()) {
+  const test = openTestLedger();
+  const policies: FingerprintKeyPolicy[] = [];
+  const provider: FingerprintKeyProvider = async (policy) => {
+    if (policy) policies.push(policy);
+    return key;
+  };
+  const runner = transactionRunner(test.sqlite, test.client);
+  const api = createDataLayer(test.client, ledgerMigrations, provider, runner);
+  await api.migrateLedger();
+  await api.importSmsBatch(rows, null);
+  return { ...test, api, key, policies, provider, runner };
+}
+
+async function ready(api: ReturnType<typeof createDataLayer>, row: SmsInboxRow): Promise<Extract<SmsReviewPreparation, { kind: 'ready' }>> {
+  const selected = (await api.getSmsReviewPage()).rows.find((item) => item.platformId === row.platformId && item.receivedAt === row.receivedAt);
+  if (!selected) throw new Error('Expected the SMS source to appear in review');
+  const result = await api.prepareSmsReview(selected.referenceId, async (id) => {
+    assert.equal(id, row.platformId);
+    return { ...row };
+  });
+  assert.equal(result.kind, 'ready');
+  if (result.kind !== 'ready') throw new Error('Expected a fresh selected-SMS preparation');
+  return result;
+}
+
+function confirm(
+  api: ReturnType<typeof createDataLayer>,
+  referenceId: string,
+  expected: Extract<SmsReviewPreparation, { kind: 'ready' }>,
+  readOriginal: (id: string) => Promise<SmsInboxRow | null>,
+  corrections: ReviewCorrections = {},
+  options?: { separatePayment?: boolean },
+): Promise<unknown> {
+  const method = Reflect.get(api, 'confirmSmsReview') as (...args: unknown[]) => Promise<unknown>;
+  assert.equal(typeof method, 'function', 'DataLayer must expose confirmSmsReview');
+  return method.call(api, referenceId, expected, readOriginal, corrections, options);
+}
+
+function totalChanges(sqlite: DatabaseSync): number {
+  return (sqlite.prepare('SELECT total_changes() AS count').get() as { count: number }).count;
+}
+
+describe('selected Android SMS review confirmation', () => {
+  for (const deleted of [false, true]) {
+    it(`preserves a legacy paste after parser status changes during SMS review (deleted=${deleted})`, async () => {
+      const row = { ...strongSms, platformId: '72', body: strongSms.body.replace('fictional@axisbank', 'merchant.failed@examplebank') };
+      const test = await fixture([row]);
+      try {
+        const expected = await ready(test.api, row);
+        const prepared = expected.preparation;
+        if (!prepared.candidate?.upiRef) throw new Error('Expected a reference-based candidate');
+        const legacyKey = `upi:${await test.key.fingerprint(JSON.stringify(['upi', prepared.candidate.upiRef, 'debit', 'failed', 'expense']))}`;
+        const legacy = {
+          ...prepared,
+          candidate: { ...prepared.candidate, status: 'failed' as const },
+          ruleVersion: 3,
+          identity: { ...prepared.identity, id: `paste:${legacyKey}`, dedupeKey: legacyKey },
+        };
+        assert.equal(await saveReviewedPaste(test.ledger, legacy, { status: 'posted', amountPaise: 12_345 }), 'inserted');
+        if (deleted) await test.ledger.softDeleteTransaction(legacy.identity.id);
+
+        assert.deepEqual(await confirm(test.api, expected.referenceId, expected, async () => ({ ...row })), {
+          kind: 'duplicate', referenceId: expected.referenceId, platformId: row.platformId, transactionId: legacy.identity.id,
+        });
+        const stored = test.sqlite.prepare('SELECT amount_paise, deleted_at FROM transactions WHERE id = ?').get(legacy.identity.id) as { amount_paise: number; deleted_at: number | null };
+        assert.equal(stored.amount_paise, 12_345);
+        assert.equal(stored.deleted_at !== null, deleted);
+        assert.equal((test.sqlite.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 1);
+      } finally { test.sqlite.close(); }
+    });
+  }
+
+  it('recognises an existing legacy paste during SMS catch-up after parser status changes', async () => {
+    const row = { ...strongSms, platformId: '72', body: strongSms.body.replace('fictional@axisbank', 'merchant.failed@examplebank') };
+    const test = await fixture([]);
+    try {
+      const prepared = await preparePastedSms(row, test.key);
+      if (prepared.kind !== 'needs-review' || !prepared.candidate?.upiRef) throw new Error('Expected a reference-based candidate');
+      const legacyKey = `upi:${await test.key.fingerprint(JSON.stringify(['upi', prepared.candidate.upiRef, 'debit', 'failed', 'expense']))}`;
+      const legacy = {
+        ...prepared,
+        candidate: { ...prepared.candidate, status: 'failed' as const },
+        ruleVersion: 3,
+        identity: { ...prepared.identity, id: `paste:${legacyKey}`, dedupeKey: legacyKey },
+      };
+      await saveReviewedPaste(test.ledger, legacy, { status: 'posted', amountPaise: 12_345 });
+      await test.ledger.softDeleteTransaction(legacy.identity.id);
+      const result = await test.api.importSmsBatch([row], null);
+      assert.equal(result.duplicate, 1);
+      assert.equal(result.inserted, 0);
+      assert.equal(result.review, 0);
+      assert.ok((test.sqlite.prepare('SELECT deleted_at FROM transactions WHERE id = ?').get(legacy.identity.id) as { deleted_at: number | null }).deleted_at);
+      assert.equal((test.sqlite.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 1);
+    } finally { test.sqlite.close(); }
+  });
+
+  it('preserves a corrected and deleted legacy SMS when the same source is pasted after a parser update', async () => {
+    const row = { ...strongSms, platformId: '72', body: strongSms.body.replace('fictional@axisbank', 'merchant.failed@examplebank') };
+    const test = await fixture([]);
+    try {
+      const prepared = await preparePastedSms(row, test.key);
+      if (prepared.kind !== 'needs-review' || !prepared.candidate?.upiRef) throw new Error('Expected a reference-based candidate');
+      const legacyKey = `upi:${await test.key.fingerprint(JSON.stringify(['upi', prepared.candidate.upiRef, 'debit', 'failed', 'expense']))}`;
+      const legacy = {
+        ...prepared,
+        candidate: { ...prepared.candidate, status: 'failed' as const },
+        ruleVersion: 3,
+        identity: { ...prepared.identity, id: `paste:${legacyKey}`, dedupeKey: legacyKey },
+      };
+      await saveReviewedPaste(test.ledger, legacy, { status: 'posted', amountPaise: 12_345 });
+      // Seed a prior-version reviewed SMS without relying on the current parser's identity.
+      test.sqlite.prepare("UPDATE transactions SET id = ?, source = 'sms', sms_ref_id = ? WHERE id = ?")
+        .run('sms:fictional-legacy', 'android-sms:fictional-legacy', legacy.identity.id);
+      assert.equal(await saveReviewedPaste(test.ledger, prepared), 'duplicate');
+      await test.ledger.softDeleteTransaction('sms:fictional-legacy');
+      assert.equal(await saveReviewedPaste(test.ledger, prepared), 'duplicate');
+      const stored = test.sqlite.prepare('SELECT amount_paise, deleted_at FROM transactions WHERE id = ?')
+        .get('sms:fictional-legacy') as { amount_paise: number; deleted_at: number | null };
+      assert.equal(stored.amount_paise, 12_345);
+      assert.ok(stored.deleted_at);
+      assert.equal((test.sqlite.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 1);
+    } finally { test.sqlite.close(); }
+  });
+
+  it('keeps the SQLite writer available while the source and fingerprint preflight are pending', async () => {
+    const temp = temporaryFile();
+    const importFixture = openTestLedger(temp.filename);
+    const manualFixture = openTestLedger(temp.filename);
+    let releaseSource!: () => void;
+    let releaseFingerprint!: () => void;
+    const sourceGate = new Promise<void>((resolve) => { releaseSource = resolve; });
+    const fingerprintGate = new Promise<void>((resolve) => { releaseFingerprint = resolve; });
+    let notifySourceStarted!: () => void;
+    let notifyFingerprintStarted!: () => void;
+    const sourceStarted = new Promise<void>((resolve) => { notifySourceStarted = resolve; });
+    const fingerprintStarted = new Promise<void>((resolve) => { notifyFingerprintStarted = resolve; });
+    let pending: Promise<unknown> | undefined;
+    try {
+      const row = { ...strongSms, platformId: '72' };
+      const key = fingerprinter('fictional-sms-confirmation-preflight-key');
+      const initialApi = createDataLayer(
+        importFixture.client, ledgerMigrations, async () => key,
+        transactionRunner(importFixture.sqlite, importFixture.client),
+      );
+      const manualApi = createDataLayer(manualFixture.client, ledgerMigrations);
+      await initialApi.migrateLedger();
+      await manualApi.migrateLedger();
+      await initialApi.importSmsBatch([row], null);
+      const expected = await ready(initialApi, row);
+      const blockedKey: Fingerprinter = {
+        keyId: key.keyId,
+        async fingerprint(value) {
+          notifyFingerprintStarted();
+          await fingerprintGate;
+          return key.fingerprint(value);
+        },
+      };
+      const api = createDataLayer(
+        importFixture.client, ledgerMigrations, async () => blockedKey,
+        transactionRunner(importFixture.sqlite, importFixture.client),
+      );
+      let sourceReads = 0;
+      pending = confirm(api, expected.referenceId, expected, async (id) => {
+        assert.equal(id, row.platformId);
+        sourceReads += 1;
+        if (sourceReads === 1) {
+          notifySourceStarted();
+          await sourceGate;
+        }
+        return { ...row };
+      });
+
+      await sourceStarted;
+      await manualApi.saveManualEntry({
+        id: 'manual-during-sms-review-source-read', amountInr: '1.25', direction: 'debit',
+        occurredAt: new Date(row.receivedAt + 1_000),
+      });
+      assert.ok(await manualApi.getTransaction('manual-during-sms-review-source-read'));
+      releaseSource();
+
+      await fingerprintStarted;
+      await manualApi.saveManualEntry({
+        id: 'manual-during-sms-review-fingerprint', amountInr: '2.50', direction: 'debit',
+        occurredAt: new Date(row.receivedAt + 2_000),
+      });
+      assert.ok(await manualApi.getTransaction('manual-during-sms-review-fingerprint'));
+      releaseFingerprint();
+
+      assert.deepEqual(await pending, {
+        kind: 'saved', referenceId: expected.referenceId, platformId: row.platformId, transactionId: `sms:${expected.referenceId}`,
+      });
+      assert.equal(sourceReads, 2, 'confirmation checks the exact inbox row both before and inside the writer');
+    } finally {
+      releaseSource();
+      releaseFingerprint();
+      await pending?.catch(() => {});
+      importFixture.sqlite.close();
+      manualFixture.sqlite.close();
+      rmSync(temp.filename, { force: true });
+      rmdirSync(temp.directory);
+    }
+  });
+
+  it('applies validated corrections and resolves the reference atomically without moving the cursor', async () => {
+    const row = { ...strongSms, platformId: '72' };
+    const test = await fixture([row]);
+    try {
+      const expected = await ready(test.api, row);
+      test.policies.length = 0;
+      const initialCursor = await test.api.getSmsImportCursor();
+      test.sqlite.exec(`CREATE TRIGGER fail_confirmation_link BEFORE UPDATE OF status ON sms_import_refs
+        WHEN OLD.platform_id = '72' AND NEW.status = 'saved'
+        BEGIN SELECT RAISE(ABORT, 'FICTIONAL_PRIVATE_WRITE_FAILURE'); END`);
+
+      const failed = await confirm(test.api, expected.referenceId, expected, async () => ({ ...row }), {
+        amountPaise: 46_000,
+        note: 'Fictional correction',
+      });
+      assert.deepEqual(failed, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'storage_unavailable' });
+      assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
+      assert.equal((test.sqlite.prepare('SELECT status, transaction_id FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string; transaction_id: string | null }).status, 'review');
+      assert.deepEqual(await test.api.getSmsImportCursor(), initialCursor);
+      assert.equal(JSON.stringify(failed).includes('FICTIONAL_PRIVATE_WRITE_FAILURE'), false);
+
+      test.sqlite.exec('DROP TRIGGER fail_confirmation_link');
+      const privateDbError = new TypeError('FICTIONAL_PRIVATE_SQLITE_DETAIL');
+      const failingClient: LedgerSQLiteClient = {
+        ...test.client,
+        prepareAsync: (query) => {
+          if (/^\s*update\s+"?sms_import_refs"?/i.test(query)) return Promise.reject(privateDbError);
+          return test.client.prepareAsync(query);
+        },
+      };
+      const failingDbApi = createDataLayer(
+        failingClient,
+        ledgerMigrations,
+        test.provider,
+        transactionRunner(test.sqlite, failingClient),
+      );
+      const typedFailure = await confirm(failingDbApi, expected.referenceId, expected, async () => ({ ...row }), {
+        amountPaise: 46_000,
+      });
+      assert.deepEqual(typedFailure, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'storage_unavailable' });
+      assert.equal(JSON.stringify(typedFailure).includes(privateDbError.message), false);
+      assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
+      assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
+      assert.deepEqual(await test.api.getSmsImportCursor(), initialCursor);
+
+      let sourceReads = 0;
+      const read = async (id: string) => {
+        sourceReads += 1;
+        assert.equal(id, row.platformId);
+        return { ...row };
+      };
+      const results = await Promise.all([
+        confirm(test.api, expected.referenceId, expected, read, { amountPaise: 46_000, note: 'Fictional correction' }),
+        confirm(test.api, expected.referenceId, expected, read, { amountPaise: 46_000, note: 'Fictional correction' }),
+      ]);
+      assert.equal(results.filter((result) => (result as { kind: string }).kind === 'saved').length, 1);
+      assert.equal(results.filter((result) => (result as { kind: string }).kind === 'unavailable').length, 1);
+      assert.deepEqual(results.find((result) => (result as { kind: string }).kind === 'unavailable'), {
+        kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'not_pending',
+      });
+      assert.equal(sourceReads, 3, 'both preflights read the selected source; only the winner rereads it inside the writer');
+      const saved = await test.api.getTransaction(`sms:${expected.referenceId}`);
+      assert.equal(saved?.amountPaise, 46_000);
+      assert.equal(saved?.note, 'Fictional correction');
+      assert.equal(saved?.source, 'sms');
+      assert.equal(saved?.userEdited, true);
+      const reference = test.sqlite.prepare('SELECT status, transaction_id FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string; transaction_id: string | null };
+      assert.deepEqual({ ...reference }, { status: 'saved', transaction_id: `sms:${expected.referenceId}` });
+      assert.deepEqual(await test.api.getSmsImportCursor(), initialCursor);
+      assert.equal(test.policies.every((policy) => policy.allowCreate === false), true);
+      for (const result of results) {
+        const serialized = JSON.stringify(result);
+        for (const privateValue of [row.body, row.sender, fixtureSecret]) assert.equal(serialized.includes(privateValue), false);
+      }
+    } finally { test.sqlite.close(); }
+  });
+
+  it('rejects a changed preparation, changed source or unavailable/swapped key before any write', async () => {
+    const row = { ...strongSms, platformId: '72' };
+    const test = await fixture([row]);
+    try {
+      const expected = await ready(test.api, row);
+      const before = totalChanges(test.sqlite);
+      const changedPreparation = structuredClone(expected);
+      changedPreparation.preparation.candidate!.amountPaise += 100;
+      const altered = await confirm(test.api, expected.referenceId, changedPreparation, async () => ({ ...row }));
+      assert.deepEqual(altered, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'stale_preparation' });
+
+      let changedSourceReads = 0;
+      const changedSource = await confirm(test.api, expected.referenceId, expected, async () => {
+        changedSourceReads += 1;
+        return changedSourceReads === 2 ? { ...row, body: `${row.body} changed` } : { ...row };
+      });
+      assert.deepEqual(changedSource, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'source_changed' });
+      assert.equal(changedSourceReads, 2, 'the final source read rejects changes after preflight');
+
+      let failedSourceReads = 0;
+      const privateSourceError = new TypeError('FICTIONAL_PRIVATE_SOURCE_DETAIL');
+      const failedSource = await confirm(test.api, expected.referenceId, expected, async () => {
+        failedSourceReads += 1;
+        if (failedSourceReads === 2) throw privateSourceError;
+        return { ...row };
+      });
+      assert.deepEqual(failedSource, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'source_unavailable' });
+      assert.equal(JSON.stringify(failedSource).includes(privateSourceError.message), false);
+      assert.equal(failedSourceReads, 2, 'the final source read sanitizes provider failures');
+
+      let readerCalls = 0;
+      const unavailableApi = createDataLayer(test.client, ledgerMigrations, async () => { throw new FingerprintKeyUnavailableError(); }, test.runner);
+      const unavailable = await confirm(unavailableApi, expected.referenceId, expected, async () => {
+        readerCalls += 1;
+        return { ...row };
+      });
+      assert.deepEqual(unavailable, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
+
+      const swappedApi = createDataLayer(test.client, ledgerMigrations, async () => fingerprinter('different-fictional-key'), test.runner);
+      const swapped = await confirm(swappedApi, expected.referenceId, expected, async () => {
+        readerCalls += 1;
+        return { ...row };
+      });
+      assert.deepEqual(swapped, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
+
+      const privateKeyError = new TypeError('FICTIONAL_PRIVATE_KEY_DETAIL');
+      const errorKeyApi = createDataLayer(test.client, ledgerMigrations, async () => { throw privateKeyError; }, test.runner);
+      const failedKey = await confirm(errorKeyApi, expected.referenceId, expected, async () => {
+        readerCalls += 1;
+        return { ...row };
+      });
+      assert.deepEqual(failedKey, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
+      assert.equal(JSON.stringify(failedKey).includes(privateKeyError.message), false);
+
+      const noRunnerApi = createDataLayer(test.client, ledgerMigrations, test.provider);
+      const noRunner = await confirm(noRunnerApi, expected.referenceId, expected, async () => {
+        readerCalls += 1;
+        return { ...row };
+      });
+      assert.deepEqual(noRunner, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'transaction_unavailable' });
+      assert.equal(readerCalls, 0, 'an unavailable platform runner is rejected before source access');
+
+      for (const error of [new TypeError('FICTIONAL_PRIVATE_DB_TYPE'), new RangeError('FICTIONAL_PRIVATE_DB_RANGE')]) {
+        const failedRunner: LedgerSQLiteTransactionRunner = async () => { throw error; };
+        const failedDbApi = createDataLayer(test.client, ledgerMigrations, test.provider, failedRunner);
+        const failedDb = await confirm(failedDbApi, expected.referenceId, expected, async () => {
+          readerCalls += 1;
+          return { ...row };
+        });
+        assert.deepEqual(failedDb, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'storage_unavailable' });
+        assert.equal(JSON.stringify(failedDb).includes(error.message), false);
+      }
+      assert.equal(readerCalls, 2, 'a transaction acquisition failure can follow the read-only preflight');
+      assert.equal(totalChanges(test.sqlite), before);
+      assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
+      assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
+    } finally { test.sqlite.close(); }
+  });
+
+  it('copies corrections before either source read and ignores later caller mutation', async () => {
+    const row = { ...strongSms, platformId: '72' };
+    const test = await fixture([row]);
+    try {
+      const expected = await ready(test.api, row);
+      let markReaderStarted!: () => void;
+      let releaseReader!: () => void;
+      const readerStarted = new Promise<void>((resolve) => { markReaderStarted = resolve; });
+      const readerGate = new Promise<void>((resolve) => { releaseReader = resolve; });
+      const corrections: ReviewCorrections = { amountPaise: 46_000, note: 'Fictional original correction' };
+      const pending = confirm(test.api, expected.referenceId, expected, async () => {
+        markReaderStarted();
+        await readerGate;
+        return { ...row };
+      }, corrections);
+      await readerStarted;
+      corrections.amountPaise = 99_000;
+      corrections.note = 'Fictional late mutation';
+      releaseReader();
+
+      assert.deepEqual(await pending, { kind: 'saved', referenceId: expected.referenceId, platformId: row.platformId, transactionId: `sms:${expected.referenceId}` });
+      const saved = await test.api.getTransaction(`sms:${expected.referenceId}`);
+      assert.equal(saved?.amountPaise, 46_000);
+      assert.equal(saved?.note, 'Fictional original correction');
+    } finally { test.sqlite.close(); }
+  });
+
+  it('rechecks the protected key and history after the final inbox read without creating a key', async () => {
+    const row = { ...strongSms, platformId: '72' };
+    const test = await fixture([row]);
+    try {
+      let activeKey: Fingerprinter | null = test.key;
+      const policies: FingerprintKeyPolicy[] = [];
+      const api = createDataLayer(test.client, ledgerMigrations, async (policy) => {
+        policies.push(policy!);
+        if (!activeKey) throw new FingerprintKeyUnavailableError();
+        return activeKey;
+      }, test.runner);
+      const expected = await ready(api, row);
+      const before = totalChanges(test.sqlite);
+
+      let readerCalls = 0;
+      activeKey = test.key;
+      const lost = await confirm(api, expected.referenceId, expected, async () => {
+        readerCalls += 1;
+        if (readerCalls === 2) activeKey = null;
+        return { ...row };
+      });
+      assert.deepEqual(lost, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
+      assert.equal(JSON.stringify(lost).includes(row.body), false);
+      assert.equal(await api.getTransaction(`sms:${expected.referenceId}`), undefined);
+      assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
+      assert.equal(totalChanges(test.sqlite), before);
+      assert.equal(readerCalls, 2, 'the key is rechecked after the final exact-source read');
+
+      readerCalls = 0;
+      activeKey = test.key;
+      const swapped = await confirm(api, expected.referenceId, expected, async () => {
+        readerCalls += 1;
+        if (readerCalls === 2) activeKey = fingerprinter('fictional-replacement-key');
+        return { ...row };
+      });
+      assert.deepEqual(swapped, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
+      assert.equal(await api.getTransaction(`sms:${expected.referenceId}`), undefined);
+      assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
+      assert.equal(totalChanges(test.sqlite), before);
+      assert.equal(readerCalls, 2);
+
+      readerCalls = 0;
+      activeKey = test.key;
+      const historyMismatch = await confirm(api, expected.referenceId, expected, async () => {
+        readerCalls += 1;
+        if (readerCalls === 2) {
+          test.sqlite.prepare('UPDATE import_key_state SET key_id = ? WHERE id = 1').run('a'.repeat(64));
+        }
+        return { ...row };
+      });
+      assert.deepEqual(historyMismatch, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'key_unavailable' });
+      assert.equal(await api.getTransaction(`sms:${expected.referenceId}`), undefined);
+      assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
+      assert.equal(readerCalls, 2);
+      test.sqlite.prepare('UPDATE import_key_state SET key_id = ? WHERE id = 1').run(test.key.keyId);
+      assert.equal(policies.every((policy) => policy.allowCreate === false), true);
+    } finally { test.sqlite.close(); }
+  });
+
+  it('requires a complete correction for an unknown format and stores paired null rule provenance', async () => {
+    const row = {
+      platformId: '75',
+      sender: 'VM-HDFCBK-S',
+      body: 'Your A/c XX1234 INR 750 txn 612345678901',
+      receivedAt: strongSms.receivedAt,
+    };
+    const test = await fixture([row]);
+    try {
+      const expected = await ready(test.api, row);
+      assert.equal(expected.preparation.candidate, null);
+      assert.equal(expected.preparation.ruleId, null);
+      assert.equal(expected.preparation.ruleVersion, null);
+      let sourceReads = 0;
+      const read = async () => {
+        sourceReads += 1;
+        return { ...row };
+      };
+      await assert.rejects(confirm(test.api, expected.referenceId, expected, read), /amountPaise is required/);
+      assert.equal(sourceReads, 0, 'incomplete human input must fail before reading the source');
+      assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
+
+      const initialCursor = await test.api.getSmsImportCursor();
+      const corrections: ReviewCorrections = {
+        amountPaise: 75_000,
+        direction: 'debit',
+        kind: 'expense',
+        status: 'posted',
+        occurredAt: new Date(row.receivedAt),
+      };
+      for (const invalid of [
+        { ...corrections, amountPaise: Number.NaN },
+        { ...corrections, direction: 'sideways' },
+        { ...corrections, occurredAt: new Date(Number.NaN) },
+      ]) {
+        await assert.rejects(confirm(test.api, expected.referenceId, expected, read, invalid as ReviewCorrections));
+      }
+      assert.equal(sourceReads, 0, 'invalid money, enum and date input must fail before the source read');
+
+      const invalidReference = await confirm(test.api, expected.referenceId, expected, read, { ...corrections, accountId: 'missing-account' });
+      assert.deepEqual(invalidReference, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'invalid_correction' });
+      assert.equal(JSON.stringify(invalidReference).includes('missing-account'), false);
+      assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
+      assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
+
+      const result = await confirm(test.api, expected.referenceId, expected, read, corrections);
+      assert.deepEqual(result, { kind: 'saved', referenceId: expected.referenceId, platformId: row.platformId, transactionId: `sms:${expected.referenceId}` });
+      const stored = test.sqlite.prepare('SELECT source, sms_ref_id, rule_id, rule_version, amount_paise FROM transactions WHERE id = ?').get(`sms:${expected.referenceId}`) as {
+        source: string;
+        sms_ref_id: string;
+        rule_id: string | null;
+        rule_version: number | null;
+        amount_paise: number;
+      };
+      assert.deepEqual({ ...stored }, {
+        source: 'sms', sms_ref_id: `android-sms:${expected.referenceId}`, rule_id: null, rule_version: null, amount_paise: 75_000,
+      });
+      assert.deepEqual(await test.api.getSmsImportCursor(), initialCursor);
+      const serialized = JSON.stringify(result);
+      assert.equal(serialized.includes(row.body), false);
+      assert.equal(serialized.includes(row.sender), false);
+    } finally { test.sqlite.close(); }
+  });
+
+  it('keeps weak body-key collisions pending unless the human confirms a distinct purchase', async () => {
+    const rows = [
+      { ...weakSms, platformId: '73' },
+      { ...weakSms, platformId: '74', receivedAt: weakSms.receivedAt + 1 },
+    ];
+    const test = await fixture(rows);
+    try {
+      const first = await ready(test.api, rows[0]!);
+      const second = await ready(test.api, rows[1]!);
+      const firstResult = await confirm(test.api, first.referenceId, first, async () => ({ ...rows[0]! }));
+      assert.equal((firstResult as { kind: string }).kind, 'saved');
+
+      const before = totalChanges(test.sqlite);
+      const blocked = await confirm(test.api, second.referenceId, second, async () => ({ ...rows[1]! }));
+      assert.deepEqual(blocked, { kind: 'unavailable', referenceId: second.referenceId, platformId: '74', reason: 'ambiguous_overlap' });
+      assert.equal(totalChanges(test.sqlite), before);
+      assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get('74') as { status: string }).status, 'review');
+
+      const separate = await confirm(test.api, second.referenceId, second, async () => ({ ...rows[1]! }), {}, { separatePayment: true });
+      assert.equal((separate as { kind: string }).kind, 'saved');
+      assert.equal(await test.api.getTransaction(`sms:${first.referenceId}`) !== null, true);
+      assert.equal(await test.api.getTransaction(`sms:${second.referenceId}`) !== null, true);
+      assert.equal((test.sqlite.prepare("SELECT count(*) AS count FROM transactions WHERE dedupe_key = ?").get(first.preparation.identity.dedupeKey) as { count: number }).count, 2);
+    } finally { test.sqlite.close(); }
+
+    const pastedOverlap = await fixture([{ ...weakSms, platformId: '75' }]);
+    try {
+      const paste = await pastedOverlap.api.preparePaste(weakSms);
+      if (paste.kind !== 'needs-review') throw new Error('Fictional weak SMS paste should reach review');
+      assert.equal(await pastedOverlap.api.saveReviewedPaste(paste), 'inserted');
+      const row = { ...weakSms, platformId: '75' };
+      const expected = await ready(pastedOverlap.api, row);
+      const blocked = await confirm(pastedOverlap.api, expected.referenceId, expected, async () => ({ ...row }));
+      assert.deepEqual(blocked, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'ambiguous_overlap' });
+      const separate = await confirm(pastedOverlap.api, expected.referenceId, expected, async () => ({ ...row }), {}, { separatePayment: true });
+      assert.deepEqual(separate, { kind: 'saved', referenceId: expected.referenceId, platformId: row.platformId, transactionId: `sms:${expected.referenceId}` });
+      assert.ok(await pastedOverlap.api.getTransaction(paste.identity.id));
+    } finally { pastedOverlap.sqlite.close(); }
+  });
+
+  it('links a single strong overlap without changing an edited tombstone and leaves ambiguous strong matches pending', async () => {
+    const row = { ...strongSms, platformId: '72' };
+    const test = await fixture([row]);
+    try {
+      const expected = await ready(test.api, row);
+      const candidate = expected.preparation.candidate!;
+      const existing = {
+        id: 'paste-existing',
+        amountPaise: candidate.amountPaise,
+        direction: candidate.direction,
+        kind: candidate.kind,
+        status: candidate.status,
+        accountId: null,
+        counterparty: candidate.counterparty ?? null,
+        merchantId: null,
+        categoryId: null,
+        occurredAt: new Date(candidate.occurredAt),
+        note: null,
+        source: 'paste' as const,
+        smsRefId: null,
+        upiRef: candidate.upiRef ?? null,
+        dedupeKey: expected.preparation.identity.dedupeKey,
+        bodyHash: expected.preparation.identity.bodyHash,
+        ruleId: expected.preparation.ruleId,
+        ruleVersion: expected.preparation.ruleVersion,
+        linkedTxnId: null,
+        excludeFromStats: false,
+      };
+      await test.ledger.upsertImportedTransaction(existing);
+      await test.ledger.editTransaction(existing.id, { amountPaise: 47_000, note: 'Fictional saved correction' });
+      await test.ledger.softDeleteTransaction(existing.id);
+
+      const duplicate = await confirm(test.api, expected.referenceId, expected, async () => ({ ...row }), { amountPaise: 46_000 });
+      assert.deepEqual(duplicate, { kind: 'duplicate', referenceId: expected.referenceId, platformId: row.platformId, transactionId: existing.id });
+      const untouched = test.sqlite.prepare('SELECT amount_paise, note, deleted_at FROM transactions WHERE id = ?').get(existing.id) as {
+        amount_paise: number;
+        note: string | null;
+        deleted_at: number | null;
+      };
+      assert.equal(untouched.amount_paise, 47_000);
+      assert.equal(untouched.note, 'Fictional saved correction');
+      assert.notEqual(untouched.deleted_at, null);
+      assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
+      const linked = test.sqlite.prepare('SELECT status, transaction_id FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string; transaction_id: string | null };
+      assert.deepEqual({ ...linked }, { status: 'duplicate', transaction_id: existing.id });
+    } finally { test.sqlite.close(); }
+
+    const ambiguous = await fixture([row]);
+    try {
+      const expected = await ready(ambiguous.api, row);
+      const candidate = expected.preparation.candidate!;
+      const base = {
+        amountPaise: candidate.amountPaise,
+        direction: candidate.direction,
+        kind: candidate.kind,
+        status: candidate.status,
+        accountId: null,
+        counterparty: candidate.counterparty ?? null,
+        merchantId: null,
+        categoryId: null,
+        occurredAt: new Date(candidate.occurredAt),
+        note: null,
+        source: 'paste' as const,
+        smsRefId: null,
+        upiRef: candidate.upiRef ?? null,
+        dedupeKey: expected.preparation.identity.dedupeKey,
+        bodyHash: expected.preparation.identity.bodyHash,
+        ruleId: expected.preparation.ruleId,
+        ruleVersion: expected.preparation.ruleVersion,
+        linkedTxnId: null,
+        excludeFromStats: false,
+      };
+      await ambiguous.ledger.upsertImportedTransaction({ ...base, id: 'paste-one' });
+      await ambiguous.ledger.upsertImportedTransaction({ ...base, id: 'paste-two', bodyHash: `${'a'.repeat(63)}b` });
+      const before = totalChanges(ambiguous.sqlite);
+      const result = await confirm(ambiguous.api, expected.referenceId, expected, async () => ({ ...row }));
+      assert.deepEqual(result, { kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'ambiguous_overlap' });
+      assert.equal(totalChanges(ambiguous.sqlite), before);
+      assert.equal((ambiguous.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
+      assert.equal(await ambiguous.api.getTransaction(`sms:${expected.referenceId}`), undefined);
+    } finally { ambiguous.sqlite.close(); }
+  });
+
+  for (const deleted of [false, true]) {
+    it(`links a parser-upgraded SMS to its weak-identity paste without changing it (deleted=${deleted})`, async () => {
+      const row = { ...strongSms, platformId: '76' };
+      const test = await fixture([row]);
+      try {
+        const expected = await ready(test.api, row);
+        const preparation = expected.preparation;
+        const weakKey = `body:${await test.key.fingerprint(JSON.stringify([
+          'sms', row.sender.trim().toUpperCase(), row.body,
+        ]))}`;
+        const legacy = {
+          ...preparation,
+          identity: { ...preparation.identity, id: `paste:${weakKey}`, dedupeKey: weakKey },
+        };
+        await saveReviewedPaste(test.ledger, legacy, { amountPaise: 44_999, note: 'Fictional corrected paste' });
+        if (deleted) await test.ledger.softDeleteTransaction(legacy.identity.id);
+
+        const result = await confirm(test.api, expected.referenceId, expected, async () => ({ ...row }));
+        assert.deepEqual(result, {
+          kind: 'duplicate', referenceId: expected.referenceId, platformId: row.platformId, transactionId: legacy.identity.id,
+        });
+        const stored = test.sqlite.prepare('SELECT amount_paise, note, deleted_at FROM transactions WHERE id = ?')
+          .get(legacy.identity.id) as { amount_paise: number; note: string | null; deleted_at: number | null };
+        assert.equal(stored.amount_paise, 44_999);
+        assert.equal(stored.note, 'Fictional corrected paste');
+        assert.equal(stored.deleted_at !== null, deleted);
+        assert.equal((test.sqlite.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 1);
+      } finally { test.sqlite.close(); }
+    });
+  }
+
+  it('leaves a body-identical weak paste from another sender pending for explicit review', async () => {
+    const row = { ...strongSms, platformId: '77' };
+    const test = await fixture([row]);
+    try {
+      const expected = await ready(test.api, row);
+      const otherSenderKey = `body:${await test.key.fingerprint(JSON.stringify([
+        'sms', 'AD-HDFCBK-S', row.body,
+      ]))}`;
+      const legacy = {
+        ...expected.preparation,
+        identity: {
+          ...expected.preparation.identity,
+          id: `paste:${otherSenderKey}`,
+          dedupeKey: otherSenderKey,
+          weakDedupeKey: otherSenderKey,
+        },
+      };
+      await saveReviewedPaste(test.ledger, legacy, { amountPaise: 44_999 });
+
+      assert.deepEqual(await confirm(test.api, expected.referenceId, expected, async () => ({ ...row })), {
+        kind: 'unavailable', referenceId: expected.referenceId, platformId: row.platformId, reason: 'ambiguous_overlap',
+      });
+      assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get('77') as { status: string }).status, 'review');
+      assert.equal((test.sqlite.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 1);
+    } finally { test.sqlite.close(); }
+  });
+
+  it('preserves a corrected tombstone committed after preflight while SMS waits for its writer', async () => {
+    const temp = temporaryFile();
+    const smsFixture = openTestLedger(temp.filename);
+    const otherFixture = openTestLedger(temp.filename);
+    let releaseWriter!: () => void;
+    let notifyWriterWaiting!: () => void;
+    const writerGate = new Promise<void>((resolve) => { releaseWriter = resolve; });
+    const writerWaiting = new Promise<void>((resolve) => { notifyWriterWaiting = resolve; });
+    let pending: Promise<unknown> | undefined;
+    try {
+      const row = { ...strongSms, platformId: '72' };
+      const key = fingerprinter('fictional-sms-concurrent-tombstone-key');
+      const smsApi = createDataLayer(
+        smsFixture.client, ledgerMigrations, async () => key,
+        transactionRunner(smsFixture.sqlite, smsFixture.client),
+      );
+      const otherApi = createDataLayer(
+        otherFixture.client, ledgerMigrations, async () => key,
+        transactionRunner(otherFixture.sqlite, otherFixture.client),
+      );
+      await smsApi.migrateLedger();
+      await otherApi.migrateLedger();
+      await smsApi.importSmsBatch([row], null);
+      const expected = await ready(smsApi, row);
+      const candidate = expected.preparation.candidate!;
+      const existing = {
+        id: 'paste-concurrent-existing',
+        amountPaise: candidate.amountPaise,
+        direction: candidate.direction,
+        kind: candidate.kind,
+        status: candidate.status,
+        accountId: null,
+        counterparty: candidate.counterparty ?? null,
+        merchantId: null,
+        categoryId: null,
+        occurredAt: new Date(candidate.occurredAt),
+        note: null,
+        source: 'paste' as const,
+        smsRefId: null,
+        upiRef: candidate.upiRef ?? null,
+        dedupeKey: expected.preparation.identity.dedupeKey,
+        bodyHash: expected.preparation.identity.bodyHash,
+        ruleId: expected.preparation.ruleId,
+        ruleVersion: expected.preparation.ruleVersion,
+        linkedTxnId: null,
+        excludeFromStats: false,
+      };
+      const normalRunner = transactionRunner(smsFixture.sqlite, smsFixture.client);
+      const delayedRunner: LedgerSQLiteTransactionRunner = async (task) => {
+        notifyWriterWaiting();
+        await writerGate;
+        return normalRunner(task);
+      };
+      const confirmingApi = createDataLayer(smsFixture.client, ledgerMigrations, async () => key, delayedRunner);
+      pending = confirm(confirmingApi, expected.referenceId, expected, async () => ({ ...row }), { amountPaise: 46_000 });
+      await writerWaiting;
+
+      await otherFixture.ledger.upsertImportedTransaction(existing);
+      await otherFixture.ledger.editTransaction(existing.id, { amountPaise: 47_000, note: 'Fictional concurrent correction' });
+      await otherFixture.ledger.softDeleteTransaction(existing.id);
+      releaseWriter();
+
+      assert.deepEqual(await pending, {
+        kind: 'duplicate', referenceId: expected.referenceId, platformId: row.platformId, transactionId: existing.id,
+      });
+      const untouched = smsFixture.sqlite.prepare('SELECT amount_paise, note, deleted_at FROM transactions WHERE id = ?').get(existing.id) as {
+        amount_paise: number;
+        note: string | null;
+        deleted_at: number | null;
+      };
+      assert.equal(untouched.amount_paise, 47_000);
+      assert.equal(untouched.note, 'Fictional concurrent correction');
+      assert.notEqual(untouched.deleted_at, null);
+      assert.equal(await smsApi.getTransaction(`sms:${expected.referenceId}`), undefined);
+    } finally {
+      releaseWriter();
+      await pending?.catch(() => {});
+      smsFixture.sqlite.close();
+      otherFixture.sqlite.close();
+      rmSync(temp.filename, { force: true });
+      rmdirSync(temp.directory);
+    }
+  });
+
+  it('propagates reader cancellation without writing', async () => {
+    const row = { ...strongSms, platformId: '72' };
+    const test = await fixture([row]);
+    try {
+      const expected = await ready(test.api, row);
+      const cancelled = Object.assign(new Error('cancelled'), { name: 'AbortError' });
+      let sourceReads = 0;
+      await assert.rejects(confirm(test.api, expected.referenceId, expected, async () => {
+        sourceReads += 1;
+        if (sourceReads === 2) throw cancelled;
+        return { ...row };
+      }), (error) => error === cancelled);
+      assert.equal(sourceReads, 2, 'the exact in-writer source reread preserves cancellation');
+      assert.equal((test.sqlite.prepare('SELECT status FROM sms_import_refs WHERE platform_id = ?').get(row.platformId) as { status: string }).status, 'review');
+      assert.equal(await test.api.getTransaction(`sms:${expected.referenceId}`), undefined);
+      assert.equal(test.sqlite.prepare('SELECT 1 AS active').get()?.active, 1);
+    } finally { test.sqlite.close(); }
+  });
+});

@@ -168,6 +168,123 @@ describe('ledger', () => {
     }
   });
 
+  for (const deleted of [false, true]) {
+    it(`preserves a weak-identity paste when a parser update adds its UPI reference (deleted=${deleted})`, async () => {
+      const fixture = openLedger(':memory:');
+      try {
+        await fixture.ledger.migrateLedger();
+        const raw = {
+          sender: 'VM-HDFCBK-S',
+          body: 'Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 123456789012)',
+          receivedAt: Date.parse('2026-09-27T10:00:00+05:30'),
+        };
+        const prepared = await preparePastedSms(raw, testFingerprinter);
+        if (prepared.kind !== 'needs-review' || !prepared.identity.dedupeKey.startsWith('upi:')) {
+          throw new Error('Expected the current parser to extract a UPI reference');
+        }
+        const legacyWeakKey = `body:${await testFingerprinter.fingerprint(JSON.stringify([
+          'sms', raw.sender.trim().toUpperCase(), raw.body,
+        ]))}`;
+        const legacy = {
+          ...prepared,
+          identity: { ...prepared.identity, id: `paste:${legacyWeakKey}`, dedupeKey: legacyWeakKey },
+        };
+        assert.equal(await saveReviewedPaste(fixture.ledger, legacy, { amountPaise: 24_999 }), 'inserted');
+        if (deleted) await fixture.ledger.softDeleteTransaction(legacy.identity.id);
+
+        assert.equal(await saveReviewedPaste(fixture.ledger, prepared), 'duplicate');
+        const stored = await findTransaction(fixture.ledger, legacy.identity.id);
+        assert.equal(stored?.amountPaise, 24_999);
+        assert.equal(Boolean(stored?.deletedAt), deleted);
+        assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+      } finally {
+        fixture.sqlite.close();
+      }
+    });
+  }
+
+  it('requires review for a body-identical weak paste from another sender', async () => {
+    const fixture = openLedger(':memory:');
+    try {
+      await fixture.ledger.migrateLedger();
+      const raw = {
+        sender: 'VM-HDFCBK-S',
+        body: 'Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 123456789012)',
+        receivedAt: Date.parse('2026-09-27T10:00:00+05:30'),
+      };
+      const prepared = await preparePastedSms(raw, testFingerprinter);
+      if (prepared.kind !== 'needs-review' || !prepared.identity.dedupeKey.startsWith('upi:')) {
+        throw new Error('Expected the current parser to extract a UPI reference');
+      }
+      const otherSenderWeakKey = `body:${await testFingerprinter.fingerprint(JSON.stringify([
+        'sms', 'AD-HDFCBK-S', raw.body,
+      ]))}`;
+      const legacy = {
+        ...prepared,
+        identity: {
+          ...prepared.identity,
+          id: `paste:${otherSenderWeakKey}`,
+          dedupeKey: otherSenderWeakKey,
+          weakDedupeKey: otherSenderWeakKey,
+        },
+      };
+      assert.equal(await saveReviewedPaste(fixture.ledger, legacy), 'inserted');
+
+      await assert.rejects(saveReviewedPaste(fixture.ledger, prepared), /weak-identity paste requires review/);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 1);
+      assert.ok(await findTransaction(fixture.ledger, legacy.identity.id));
+    } finally {
+      fixture.sqlite.close();
+    }
+  });
+
+  it('requires review when a weak paste and a strong UPI transaction both match', async () => {
+    const fixture = openLedger(':memory:');
+    try {
+      await fixture.ledger.migrateLedger();
+      const raw = {
+        sender: 'VM-HDFCBK-S',
+        body: 'Credit Alert! Rs.250.75 credited to HDFC Bank A/c XX1234 on 27-09-26 from VPA payer@examplebank (UPI 123456789012)',
+        receivedAt: Date.parse('2026-09-27T10:00:00+05:30'),
+      };
+      const prepared = await preparePastedSms(raw, testFingerprinter);
+      if (prepared.kind !== 'needs-review' || !prepared.candidate?.upiRef || !prepared.ruleId || !prepared.ruleVersion) {
+        throw new Error('Expected the current parser to extract a UPI reference');
+      }
+      const weakKey = `body:${await testFingerprinter.fingerprint(JSON.stringify([
+        'sms', raw.sender.trim().toUpperCase(), raw.body,
+      ]))}`;
+      const legacy = {
+        ...prepared,
+        identity: { ...prepared.identity, id: `paste:${weakKey}`, dedupeKey: weakKey },
+      };
+      assert.equal(await saveReviewedPaste(fixture.ledger, legacy, { amountPaise: 24_999 }), 'inserted');
+      await fixture.ledger.db.insert(transactions).values({
+        id: 'sms:strong-match',
+        amountPaise: prepared.candidate.amountPaise,
+        direction: prepared.candidate.direction,
+        kind: prepared.candidate.kind,
+        status: prepared.candidate.status,
+        occurredAt: new Date(prepared.candidate.occurredAt),
+        source: 'sms',
+        smsRefId: 'reference:strong-match',
+        upiRef: prepared.candidate.upiRef,
+        dedupeKey: prepared.identity.dedupeKey,
+        bodyHash: prepared.identity.bodyHash,
+        ruleId: prepared.ruleId,
+        ruleVersion: prepared.ruleVersion,
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+      }).run();
+
+      await assert.rejects(saveReviewedPaste(fixture.ledger, prepared), /weak-identity paste requires review/);
+      assert.equal((await findTransaction(fixture.ledger, legacy.identity.id))?.amountPaise, 24_999);
+      assert.equal((await fixture.ledger.db.select().from(transactions).all()).length, 2);
+    } finally {
+      fixture.sqlite.close();
+    }
+  });
+
   it('keeps distinct failed and posted source alerts with the same UPI reference separate', async () => {
     const fixture = openLedger(':memory:');
     try {
@@ -237,7 +354,7 @@ describe('ledger', () => {
       const replay = await preparePastedSms({ ...sms, receivedAt: sms.receivedAt + 86_400_000 }, testFingerprinter);
       assert.equal(await saveReviewedPaste(fixture.ledger, replay, {}), 'duplicate');
       const alternateAlert = await preparePastedSms({ ...sms, sender: 'AD-ICICIB-S', body: sms.body.replace('450.00', '450') }, testFingerprinter);
-      assert.equal(await saveReviewedPaste(fixture.ledger, alternateAlert, {}), 'duplicate');
+      await assert.rejects(saveReviewedPaste(fixture.ledger, alternateAlert, {}), /conflicting details; review it/);
       assert.equal((await findTransaction(fixture.ledger, prepared.identity.id))?.amountPaise, 47000);
       await fixture.ledger.editTransaction(prepared.identity.id, { amountPaise: 49000 });
       assert.equal(await saveReviewedPaste(fixture.ledger, replay, {}), 'duplicate');
@@ -517,6 +634,7 @@ describe('ledger', () => {
         occurredAt: new Date('2026-10-06T12:00:00.000Z'),
         dedupeKey: 'review-dedupe',
         bodyHash: 'review-body',
+        weakDedupeKey: `body:${'a'.repeat(64)}`,
         ruleId: null,
         ruleVersion: null,
       };

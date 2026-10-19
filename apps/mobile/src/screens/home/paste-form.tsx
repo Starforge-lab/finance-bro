@@ -16,6 +16,8 @@ import { useColorScheme } from '@/hooks/appearance';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { DuplicateReviewRequiredError, type DataLayer } from '@/db';
+import { createAndroidSmsOriginalReader, type AndroidSmsReviewSelection } from '@/imports/android-sms-flow';
+import { getSmsReader } from '../../../modules/sms-reader';
 import { transactionDirections, transactionKinds, transactionStatuses } from '@/db/schema';
 import type { PastePreparation, ReviewCorrections } from '@/imports/paste';
 import { amountInput, exactMoney, indiaDate, indiaTime, parseIndiaDate, parseIndiaDateTime } from '@/utils/display';
@@ -122,38 +124,51 @@ export function PasteForm({
   ledger,
   onSaved,
   onCancel,
+  smsReview,
 }: {
   ledger: DataLayer;
   onSaved: () => void;
   onCancel: () => void;
+  smsReview?: AndroidSmsReviewSelection;
 }) {
   const colors = useTheme();
   const dark = useColorScheme() === 'dark';
+  const [smsReader] = useState(() => getSmsReader());
+  const smsCandidate = smsReview?.expectedPreparation.preparation.candidate;
+  const smsTransactionAt = smsCandidate?.occurredAt ?? smsReview?.receivedAt;
+  const smsDate = smsReview ? safeDateText(smsTransactionAt) : '';
+  const smsTime = smsReview ? safeTimeText(smsTransactionAt) : '';
+  const smsCandidateComplete = Boolean(smsCandidate?.direction && smsCandidate.kind && smsCandidate.status &&
+    safeAmountText(smsCandidate.amountPaise) && smsDate &&
+    (smsCandidate.kind !== 'expense' || smsCandidate.direction === 'debit') &&
+    (smsCandidate.kind !== 'income' || smsCandidate.direction === 'credit'));
   const [sender, setSender] = useState('');
   const [senderOpen, setSenderOpen] = useState(false);
   const [body, setBody] = useState('');
-  const [prepared, setPrepared] = useState<PastePreparation | null>(null);
+  const [prepared, setPrepared] = useState<PastePreparation | null>(smsReview?.expectedPreparation.preparation ?? null);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [accounts, setAccounts] = useState<AccountOption[]>([]);
-  const [amountText, setAmountText] = useState('');
-  const [direction, setDirection] = useState<Direction | ''>('');
-  const [kind, setKind] = useState<Kind | ''>('');
-  const [status, setStatus] = useState<Status | ''>('');
-  const [dateText, setDateText] = useState('');
-  const [timeText, setTimeText] = useState('');
+  const [amountText, setAmountText] = useState(() => safeAmountText(smsCandidate?.amountPaise));
+  const [direction, setDirection] = useState<Direction | ''>(smsCandidate?.direction ?? '');
+  const [kind, setKind] = useState<Kind | ''>(smsCandidate?.kind ?? '');
+  const [status, setStatus] = useState<Status | ''>(smsCandidate?.status ?? '');
+  const [dateText, setDateText] = useState(smsDate);
+  const [timeText, setTimeText] = useState(smsTime);
   const [separatePayment, setSeparatePayment] = useState(false);
-  const [merchant, setMerchant] = useState('');
-  const [reference, setReference] = useState('');
+  const [merchant, setMerchant] = useState(smsCandidate?.counterparty ?? smsCandidate?.vpa ?? '');
+  const [reference, setReference] = useState(smsCandidate?.upiRef ?? '');
   const [note, setNote] = useState('');
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [accountId, setAccountId] = useState<string | null>(null);
   const [excludeFromStats, setExcludeFromStats] = useState(false);
   const [riskAcknowledged, setRiskAcknowledged] = useState(false);
   const [riskRequiredAfterError, setRiskRequiredAfterError] = useState(false);
+  const [smsAmbiguousOverlap, setSmsAmbiguousOverlap] = useState(false);
+  const [smsResolutionBlocked, setSmsResolutionBlocked] = useState(false);
   const [outcome, setOutcome] = useState<SaveOutcome | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(() => Boolean(smsReview && !smsCandidateComplete));
   const [discardPromptOpen, setDiscardPromptOpen] = useState(false);
   const busyRef = useRef(false);
   const mountedRef = useRef(true);
@@ -200,8 +215,10 @@ export function PasteForm({
 
   const duplicateReviewRequired = prepared?.kind === 'needs-review' &&
     (prepared.duplicateReviewRequired || riskRequiredAfterError);
-  const canOfferSeparatePayment = prepared?.kind === 'needs-review' && prepared.collision !== null &&
-    prepared.identity.dedupeKey.startsWith('body:') && !prepared.candidate?.upiRef && !reference.trim();
+  const canOfferSeparatePayment = prepared?.kind === 'needs-review' && (
+    (prepared.collision !== null && prepared.identity.dedupeKey.startsWith('body:') && !prepared.candidate?.upiRef && !reference.trim()) ||
+    (smsReview !== undefined && smsAmbiguousOverlap && prepared.identity.dedupeKey.startsWith('body:') && !prepared.candidate?.upiRef && !reference.trim())
+  );
   const sameCollisionSecond = Boolean(
     separatePayment && prepared?.kind === 'needs-review' && prepared.collision && separatePaymentAt &&
     Math.floor(prepared.collision.occurredAt / 1_000) === Math.floor(separatePaymentAt.getTime() / 1_000),
@@ -214,7 +231,8 @@ export function PasteForm({
     direction && kind && status && parsedDate && consistentKind && consistentIncome && selectedCategoryIsValid);
   const detailsVisible = separatePayment || detailsOpen || !reviewFieldsValid;
   const canSave = reviewFieldsValid && (!duplicateReviewRequired || riskAcknowledged) &&
-    (!separatePayment || (canOfferSeparatePayment && separatePaymentAt !== null && !sameCollisionSecond)) && !busy;
+    (!separatePayment || (canOfferSeparatePayment && separatePaymentAt !== null && !sameCollisionSecond)) &&
+    (!smsReview || (!smsResolutionBlocked && (!smsAmbiguousOverlap || separatePayment) && smsReader !== null)) && !busy;
   const dirty = !outcome && (body.length > 0 || sender.length > 0 || prepared?.kind === 'needs-review');
 
   function resetReview() {
@@ -238,10 +256,23 @@ export function PasteForm({
     setExcludeFromStats(false);
     setRiskAcknowledged(false);
     setRiskRequiredAfterError(false);
+    setSmsAmbiguousOverlap(false);
+    setSmsResolutionBlocked(false);
     setDetailsOpen(false);
     setSenderOpen(false);
     setDiscardPromptOpen(false);
   }
+
+  useEffect(() => {
+    if (!smsReview) return;
+    let current = true;
+    void Promise.all([ledger.listCategories(), ledger.listAccounts()]).then(([nextCategories, nextAccounts]) => {
+      if (current) { setCategories(nextCategories); setAccounts(nextAccounts); }
+    }).catch(() => {
+      if (current) setError('Could not load categories and accounts. You can leave them blank and try again.');
+    });
+    return () => { current = false; };
+  }, [ledger, smsDate, smsReview]);
 
   async function prepare() {
     if (busyRef.current || !body.trim()) return;
@@ -318,7 +349,9 @@ export function PasteForm({
     let occurredAt: Date;
     try {
       amountPaise = parseInrAmount(amountText);
-      const candidateTime = prepared.candidate ? new Date(prepared.candidate.occurredAt) : undefined;
+      const candidateTime = prepared.candidate
+        ? new Date(prepared.candidate.occurredAt)
+        : smsReview ? new Date(smsReview.receivedAt) : undefined;
       const preserveTimeFrom = candidateTime && Number.isFinite(candidateTime.getTime()) ? candidateTime : undefined;
       occurredAt = separatePayment
         ? separatePaymentAt ?? parseIndiaDateTime(dateText, timeText)
@@ -354,15 +387,54 @@ export function PasteForm({
     setBusy(true);
     setError('');
     try {
-      const result = await ledger.saveReviewedPaste(prepared, corrections, {
-        acknowledgeDuplicateRisk: riskAcknowledged,
-        ...(separatePaymentAt ? { separatePaymentAt } : {}),
-      });
-      if (result === 'duplicate' && separatePayment) {
+      let result: SaveOutcome;
+      if (smsReview) {
+        if (!smsReader) {
+          setError('SMS access is unavailable. Add the payment manually or paste it from Home.');
+          return;
+        }
+        const confirmed = await ledger.confirmSmsReview(
+          smsReview.referenceId,
+          smsReview.expectedPreparation,
+          createAndroidSmsOriginalReader(smsReader),
+          corrections,
+          { separatePayment },
+        );
+        if (confirmed.kind === 'unavailable') {
+          if (confirmed.reason === 'ambiguous_overlap') {
+            const canSeparate = prepared.identity.dedupeKey.startsWith('body:') &&
+              !prepared.candidate?.upiRef && !reference.trim();
+            setSmsAmbiguousOverlap(canSeparate && !separatePayment);
+            setSmsResolutionBlocked(!canSeparate || separatePayment);
+            setSeparatePayment(false);
+            setError(canSeparate && !separatePayment
+              ? 'A possible matching entry already exists. If this was another payment, choose Separate payment and enter its actual date and time.'
+              : 'This message overlaps existing ledger data and cannot be safely resolved here. Cancel and check the existing entry before adding anything manually.');
+          } else if (confirmed.reason === 'missing_original' || confirmed.reason === 'source_changed' || confirmed.reason === 'not_pending') {
+            setError('This message is no longer available to review. Add the payment manually or paste it from Home.');
+          } else if (confirmed.reason === 'key_unavailable') {
+            setError('The saved import key is unavailable. Restore access or add the payment manually.');
+          } else if (confirmed.reason === 'source_unavailable') {
+            setError('Could not reread this message. Retry, or add the payment manually.');
+          } else if (confirmed.reason === 'stale_preparation') {
+            setError('This message changed since review. Return to the list and reopen it.');
+          } else {
+            setError('Could not save this SMS review. Your corrections are still here; try again or use paste.');
+          }
+          return;
+        }
+        result = confirmed.kind === 'saved' ? 'inserted' : 'duplicate';
+      } else {
+        result = await ledger.saveReviewedPaste(prepared, corrections, {
+          acknowledgeDuplicateRisk: riskAcknowledged,
+          ...(separatePaymentAt ? { separatePaymentAt } : {}),
+        });
+      }
+      if (!smsReview && result === 'duplicate' && separatePayment) {
         setError('This exact date and second is already handled. If this is another purchase, choose its actual different time or enter it manually.');
         return;
       }
-      if (result === 'duplicate' && prepared.collision === null &&
+      if (!smsReview && result === 'duplicate' && prepared.collision === null &&
           prepared.identity.dedupeKey.startsWith('body:') && !prepared.candidate?.upiRef) {
         const collision = await ledger.getPasteCollision(prepared.identity.id);
         if (collision && mountedRef.current) {
@@ -384,7 +456,9 @@ export function PasteForm({
       } else if (cause instanceof RangeError && cause.message.includes('different actual time')) {
         setError('Choose a different actual time. Purchases in the same second must be entered manually.');
       } else {
-        setError('Could not save this review. Your corrections are still here; try again.');
+        setError(smsReview
+          ? 'Could not save this SMS review. Your corrections are still here; try again or use paste.'
+          : 'Could not save this review. Your corrections are still here; try again.');
       }
     } finally {
       busyRef.current = false;
@@ -410,11 +484,11 @@ export function PasteForm({
       setDiscardPromptOpen(true);
       return;
     }
-    Alert.alert('Discard this paste?', 'Your message and review will be lost.', [
+    Alert.alert(smsReview ? 'Discard this review?' : 'Discard this paste?', smsReview ? 'Your corrections will be lost.' : 'Your message and review will be lost.', [
       { text: 'Keep editing', style: 'cancel' },
       { text: 'Discard', style: 'destructive', onPress: discard },
     ]);
-  }, [dirty, discard]);
+  }, [dirty, discard, smsReview]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
@@ -445,7 +519,7 @@ export function PasteForm({
 
   function complete() {
     resetReview();
-    if (outcome === 'inserted') onSaved();
+    if (outcome === 'inserted' || smsReview) onSaved();
     else onCancel();
   }
 
@@ -468,7 +542,7 @@ export function PasteForm({
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag">
           <View style={styles.header}>
-            <Text accessibilityRole="header" style={[styles.title, { color: colors.text }]}>Paste a bank message</Text>
+            <Text accessibilityRole="header" style={[styles.title, { color: colors.text }]}>{smsReview ? 'Review SMS message' : 'Paste a bank message'}</Text>
           </View>
 
           {!prepared ? (
@@ -527,8 +601,8 @@ export function PasteForm({
               </Text>
               <Text style={[styles.bodyCopy, { color: colors.textSecondary }]}>
                 {outcome === 'inserted'
-                  ? 'Saved in your ledger. Message text cleared.'
-                  : 'This paste was saved or deleted before. Nothing was added or changed.'}
+                  ? smsReview ? 'Saved in your ledger. Original message text is not stored.' : 'Saved in your ledger. Message text cleared.'
+                  : smsReview ? 'This message was already handled. Nothing was added or changed.' : 'This paste was saved or deleted before. Nothing was added or changed.'}
               </Text>
             </View>
           ) : (
@@ -552,17 +626,19 @@ export function PasteForm({
 
               {canOfferSeparatePayment ? (
                 <View style={[styles.warning, { borderTopColor: colors.rule }]}>
-                  <Text style={[styles.warningTitle, { color: colors.text }]}>Same message or separate payment?</Text>
+                  <Text style={[styles.warningTitle, { color: colors.text }]}>{smsReview ? 'Possible matching entry' : 'Same message or separate payment?'}</Text>
                   <Text style={[styles.bodyCopy, { color: colors.textSecondary }]}>
-                    {prepared.collision?.deleted
+                    {smsReview
+                      ? 'If this was another payment, choose Separate payment and enter its actual India date and time.'
+                      : prepared.collision?.deleted
                       ? 'This message matches a saved paste that was later deleted. It stays handled unless you deliberately choose another purchase.'
                       : 'An identical message is already recorded. It stays the same message unless you deliberately choose another purchase.'}
                   </Text>
-                  <View style={styles.choices} accessibilityRole="radiogroup" accessibilityLabel="Resolve identical paste">
-                    <Choice label="Same message" selected={!separatePayment} disabled={busy} onPress={() => { setSeparatePayment(false); setError(''); }} />
+                  <View style={styles.choices} accessibilityRole="radiogroup" accessibilityLabel={smsReview ? 'Resolve possible matching SMS transaction' : 'Resolve identical paste'}>
+                    {!smsReview ? <Choice label="Same message" selected={!separatePayment} disabled={busy} onPress={() => { setSeparatePayment(false); setError(''); }} /> : null}
                     <Choice label="Separate payment" selected={separatePayment} disabled={busy} onPress={() => { setSeparatePayment(true); setDetailsOpen(true); setError(''); }} />
                   </View>
-                  {separatePayment ? <Text style={[styles.hint, { color: colors.textSecondary }]}>The existing India date and time are filled in below. Set this purchase’s actual time; entries in the same second must be added manually.</Text> : null}
+                  {separatePayment ? <Text style={[styles.hint, { color: colors.textSecondary }]}>{smsReview ? 'The message’s received date and time are filled in below. Set this payment’s actual time.' : 'The existing India date and time are filled in below. Set this purchase’s actual time; entries in the same second must be added manually.'}</Text> : null}
                 </View>
               ) : null}
 
@@ -713,7 +789,7 @@ export function PasteForm({
           {error ? <Text accessibilityRole="alert" style={[styles.error, { color: colors.over }]}>{error}</Text> : null}
           {discardPromptOpen ? (
             <View style={styles.actions}>
-              <Text style={[styles.bodyCopy, { color: colors.text }]}>Discard this paste?</Text>
+              <Text style={[styles.bodyCopy, { color: colors.text }]}>{smsReview ? 'Discard this review?' : 'Discard this paste?'}</Text>
               <View style={styles.actionRow}>
                 <Pressable accessibilityRole="button" onPress={() => setDiscardPromptOpen(false)} style={({ pressed }) => [styles.secondaryButton, styles.actionButton, { borderColor: colors.border, opacity: pressed ? 0.7 : 1 }]}>
                   <Text style={[styles.secondaryLabel, { color: colors.text }]}>Keep editing</Text>
