@@ -33,10 +33,12 @@ function parsePermissions(output) {
   if (typeof output !== 'string') fail('Malformed manifest permissions output.');
   const text = output.trim();
   if (!text) return [];
-  const permissions = text.split(/\r?\n/);
-  if (permissions.some((permission) => !/^[A-Za-z_][A-Za-z0-9_.]*$/.test(permission))) {
-    fail('Malformed manifest permissions output.');
-  }
+  const permissions = text.split(/\r?\n/).map((line) => {
+    // apkanalyzer carries aapt's maxSdkVersion suffix into the permission name.
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_.]*)(?:' maxSdkVersion='([1-9][0-9]{0,2}))?$/);
+    if (!match) fail('Malformed manifest permissions output.');
+    return match[2] ? `${match[1]} (maxSdkVersion=${match[2]})` : match[1];
+  });
   return [...new Set(permissions)].sort();
 }
 

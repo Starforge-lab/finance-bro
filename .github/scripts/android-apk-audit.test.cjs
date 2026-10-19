@@ -56,6 +56,23 @@ test('rejects malformed SDK metadata and inconsistent SDK bounds', () => {
   assert.throws(() => validateMetadata({ ...validMetadata, targetSdk: '23\n' }), /below its minimum SDK/);
 });
 
+test('preserves max SDK caps emitted by apkanalyzer permissions and rejects unknown suffixes', () => {
+  const metadata = validateMetadata({
+    ...validMetadata,
+    permissions: "android.permission.INTERNET\nandroid.permission.READ_EXTERNAL_STORAGE' maxSdkVersion='32\nandroid.permission.WRITE_EXTERNAL_STORAGE' maxSdkVersion='32\n",
+  });
+  assert.deepEqual(metadata.permissions, [
+    'android.permission.INTERNET',
+    'android.permission.READ_EXTERNAL_STORAGE (maxSdkVersion=32)',
+    'android.permission.WRITE_EXTERNAL_STORAGE (maxSdkVersion=32)',
+  ]);
+  for (const suffix of ["' maxSdkVersion='0", "' maxSdkVersion='1000", "' unknown='32", "' maxSdkVersion='32' extra='1"]) {
+    assert.throws(() => validateMetadata({
+      ...validMetadata, permissions: `android.permission.READ_EXTERNAL_STORAGE${suffix}\n`,
+    }), /Malformed manifest permissions/);
+  }
+});
+
 test('scans defined class names by exact namespace boundary', () => {
   const packageTree = [
     'P d 2 2 160 com.google.firebaseish',
