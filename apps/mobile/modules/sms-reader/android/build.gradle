@@ -8,6 +8,9 @@ version = '0.1.0'
 
 android {
   namespace 'expo.modules.smsreader'
+  defaultConfig {
+    consumerProguardFiles 'consumer-rules.pro'
+  }
 }
 
 dependencies {
