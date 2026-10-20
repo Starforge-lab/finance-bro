@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useRootNavigationState, useRouter } from 'expo-router';
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Crypto from 'expo-crypto';
@@ -17,6 +18,10 @@ import { useTheme } from '@/hooks/use-theme';
 import { indiaDate } from '@/utils/display';
 import { saveCsv } from '@/exports/save-csv';
 import { ExportCleanupError } from '@/exports/save-csv-write';
+import { SmsImportPanel } from './sms-import-panel';
+import { FinanceSetupPanel } from './finance-setup-panel';
+import type { AndroidSmsReviewSelection } from '@/imports/android-sms-flow';
+import { PasteForm } from '@/screens/home/paste-form';
 
 type Account = Awaited<ReturnType<DataLayer['listAccounts']>>[number];
 type Category = Awaited<ReturnType<DataLayer['listCategories']>>[number];
@@ -40,10 +45,16 @@ const costLabels: Record<typeof costTypes[number], string> = { flexible: 'Change
 
 export default function SettingsScreen() {
   const theme = useTheme();
+  const router = useRouter();
+  const navigationState = useRootNavigationState();
   const { preference: themePreference, setPreference: setThemePreference } = useThemePreference();
   const dark = theme.background === Colors.dark.background;
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [ledgerForSms, setLedgerForSms] = useState<DataLayer | null>(null);
+  const [smsReviewSession, setSmsReviewSession] = useState<{ ledger: DataLayer; review: AndroidSmsReviewSelection } | null>(null);
+  const [smsPasteOpen, setSmsPasteOpen] = useState(false);
+  const smsEntryOpen = Boolean(smsReviewSession || smsPasteOpen);
   const [entryCount, setEntryCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -61,6 +72,11 @@ export default function SettingsScreen() {
   const [confirmRemoveDemo, setConfirmRemoveDemo] = useState(false);
   const operationGuard = useRef(false);
 
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !navigationState?.key) return;
+    router.setParams({ _entryOpen: smsEntryOpen ? '1' : '0' });
+  }, [navigationState?.key, router, smsEntryOpen]);
+
   const refresh = useCallback(async (isCurrent: () => boolean = () => true) => {
     try {
       const ledger = await getLedger();
@@ -70,6 +86,7 @@ export default function SettingsScreen() {
         ledger.listTransactions(),
       ]);
       if (!isCurrent()) return;
+      setLedgerForSms(ledger);
       setAccounts(nextAccounts);
       setCategories(nextCategories);
       setEntryCount(entries.length);
@@ -118,20 +135,20 @@ export default function SettingsScreen() {
     }
   }, [refresh]);
 
-  const archiveAccount = useCallback(async (id: string) => {
+  const archiveAccount = useCallback(async (id: string, restore = false) => {
     if (operationGuard.current) return;
     operationGuard.current = true;
     setPending(`archive:${id}`);
     setNotice(null);
     try {
       const ledger = await getLedger();
-      if (!await ledger.archiveAccount(id)) throw new Error('Account unavailable');
+      if (!await (restore ? ledger.restoreAccount(id) : ledger.archiveAccount(id))) throw new Error('Account unavailable');
       setConfirmArchive(null);
       setExpandedAccount(null);
-      setNotice({ text: 'Account archived. Existing entries keep their account link.' });
+      setNotice({ text: restore ? 'Account restored. Reconcile its balance in your spending plan.' : 'Account archived. Existing entries and card liabilities remain linked.' });
       await refresh();
     } catch {
-      setNotice({ text: 'Could not archive this account. Your entries are unchanged; try again.', error: true });
+      setNotice({ text: 'Could not update this account. Your entries are unchanged; try again.', error: true });
     } finally {
       setPending(null);
       operationGuard.current = false;
@@ -261,9 +278,24 @@ export default function SettingsScreen() {
 
   return (
     <ThemedView style={styles.fill}>
-      <SafeAreaView edges={['top']} style={styles.fill}>
+      {smsReviewSession || (smsPasteOpen && ledgerForSms) ? (
+        <PasteForm
+          ledger={smsReviewSession?.ledger ?? ledgerForSms!}
+          {...(smsReviewSession ? { smsReview: smsReviewSession.review } : {})}
+          onSaved={() => { setSmsReviewSession(null); setSmsPasteOpen(false); }}
+          onCancel={() => { setSmsReviewSession(null); setSmsPasteOpen(false); }}
+        />
+      ) : <SafeAreaView edges={['top']} style={styles.fill}>
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
           <ThemedText style={Type.screenTitle}>Settings</ThemedText>
+
+          {Platform.OS === 'android' && ledgerForSms ? <View style={styles.section}>
+            <SmsImportPanel
+              ledger={ledgerForSms}
+              onReview={(review) => setSmsReviewSession({ ledger: ledgerForSms, review })}
+              onPaste={() => setSmsPasteOpen(true)}
+            />
+          </View> : null}
 
           <View style={[styles.hero, {
             backgroundColor: theme.heroBackground,
@@ -348,6 +380,7 @@ export default function SettingsScreen() {
                     onAskArchive={() => {}}
                     onCancelArchive={() => {}}
                     onArchive={() => {}}
+                    onRestore={() => { void archiveAccount(account.id, true); }}
                   />
                 ))}
                 <ThemedText style={[Type.note, styles.archivedNote]}>Past entries keep their account link. Archived accounts are hidden from new entries.</ThemedText>
@@ -358,6 +391,7 @@ export default function SettingsScreen() {
             </SettingsGroup>
           </View>
 
+          {ledgerForSms ? <FinanceSetupPanel ledger={ledgerForSms} version={version} /> : null}
           <View style={styles.section}>
             <SectionHeading title="Ledger" theme={theme} />
             <SettingsGroup theme={theme}>
@@ -466,7 +500,7 @@ export default function SettingsScreen() {
             </SettingsGroup>
           </View> : null}
         </ScrollView>
-      </SafeAreaView>
+      </SafeAreaView>}
     </ThemedView>
   );
 }
@@ -532,9 +566,9 @@ function GroupAction({ children, theme, last = false }: { children: ReactNode; t
   return <View style={[styles.groupAction, !last && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.rule }]}>{children}</View>;
 }
 
-function AccountRow({ account, theme, archived = false, expanded, editing, confirmingArchive, pending, disabled = false, last = false, onToggle, onEdit, onCancelEdit, onSave, onAskArchive, onCancelArchive, onArchive }: {
+function AccountRow({ account, theme, archived = false, expanded, editing, confirmingArchive, pending, disabled = false, last = false, onToggle, onEdit, onCancelEdit, onSave, onAskArchive, onCancelArchive, onArchive, onRestore }: {
   account: Account; theme: Theme; archived?: boolean; expanded: boolean; editing: boolean; confirmingArchive: boolean; pending: boolean; disabled?: boolean; last?: boolean;
-  onToggle: () => void; onEdit: () => void; onCancelEdit: () => void; onSave: (fields: AccountFields) => Promise<string | null>; onAskArchive: () => void; onCancelArchive: () => void; onArchive: () => void;
+  onToggle: () => void; onEdit: () => void; onCancelEdit: () => void; onSave: (fields: AccountFields) => Promise<string | null>; onAskArchive: () => void; onCancelArchive: () => void; onArchive: () => void; onRestore?: () => void;
 }) {
   const info = [accountLabels[account.type], account.institution, account.last4 ? `•••• ${account.last4}` : null].filter(Boolean).join(' · ');
   return <View>
@@ -556,6 +590,7 @@ function AccountRow({ account, theme, archived = false, expanded, editing, confi
     </Pressable>
     {expanded && !editing && !confirmingArchive ? <View style={styles.rowActions}>
       <LedgerButton label="Edit" icon="edit" disabled={disabled} onPress={onEdit} />
+      {archived && onRestore ? <LedgerButton label={`Restore ${account.name}`} disabled={disabled} onPress={onRestore} /> : null}
       {!archived ? <DestructiveButton label="Archive" disabled={disabled} theme={theme} onPress={onAskArchive} /> : null}
     </View> : null}
     {confirmingArchive ? <View style={styles.inlinePanel}>

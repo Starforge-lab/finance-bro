@@ -1,5 +1,6 @@
 import { hasAmount } from './extract/amount';
 import { VPA } from './extract/upi';
+import { matchHdfcUpiCardAlert } from './extract/hdfc-card';
 import type { Classification, NormalisedSms } from './types';
 
 const TXN_VERB =
@@ -40,7 +41,7 @@ export function classify(sms: NormalisedSms): Classification {
   if (amount && hasFailureWording(text)) return 'transaction';
   if ((FUTURE_VERB.test(text) || REMINDER.test(text)) && !moneyMoved) return 'reminder';
   if (PROMO.test(text) && !moneyMoved) return 'promo';
-  if (amount && TXN_VERB.test(presentTense)) return 'transaction';
+  if (amount && (TXN_VERB.test(presentTense) || matchHdfcUpiCardAlert(sms))) return 'transaction';
   if (amount && BALANCE.test(text)) return 'balance_info';
   if (amount) return 'unknown';
   return 'other';

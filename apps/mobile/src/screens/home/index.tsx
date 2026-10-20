@@ -19,6 +19,7 @@ import { buildMonthPace, shiftMonth, topCategoryBars } from '@/utils/month-pace'
 import { ease, fadeIn } from '@/utils/motion';
 import { EntryForm } from './entry-form';
 import { PasteForm } from './paste-form';
+import { FinanceOverview } from './finance-overview';
 
 type Row = Awaited<ReturnType<DataLayer['listTransactions']>>[number];
 type Summary = Awaited<ReturnType<DataLayer['getMonthlySummary']>>;
@@ -155,12 +156,19 @@ export function Home() {
             </Pressable>
           </View>
         </View>
+        {Platform.OS === 'android' ? <View style={styles.section}>
+          <ThemedText style={Type.sectionTitle} accessibilityRole="header">Track spending from SMS</ThemedText>
+          <ThemedText style={Type.body}>Preview bank messages on this phone. Confirm imports, then review anything uncertain.</ThemedText>
+          <LedgerButton label="Open SMS imports" primary onPress={() => router.push('/settings')} />
+          <ThemedText themeColor="textSecondary" style={Type.note}>Optional · message text is never saved · manual entry always works</ThemedText>
+        </View> : null}
         {summary && loaded ? <Animated.View key={`hero-${month}`} entering={fadeIn()} style={styles.hero}>
           <ThemedText style={styles.heroAmount} adjustsFontSizeToFit numberOfLines={1}>{money(summary.expensePaise)}</ThemedText>
           <ThemedText themeColor="textSecondary" style={Type.note}>
             spent{budgetTotal ? ` of ${money(budgetTotal)}` : ''} · <Text style={{ fontFamily: Fonts.monoBold }}>{rows.length}</Text> {rows.length === 1 ? 'entry' : 'entries'}
           </ThemedText>
         </Animated.View> : null}
+        {ledger && isCurrentMonth ? <FinanceOverview ledger={ledger} version={version} /> : null}
         {error && !loaded ? <View style={styles.section}><ThemedText accessibilityRole="alert">{error}</ThemedText><LedgerButton label="Retry" onPress={() => setRevision((value) => value + 1)} /></View> : null}
         {error && loaded ? <Pressable accessibilityRole="button" accessibilityLabel="Couldn’t refresh. Retry" onPress={() => setRevision((value) => value + 1)} style={styles.textAction}>
           <ThemedText themeColor="textSecondary" style={Type.note}>Couldn’t refresh · <ThemedText style={[Type.note, { textDecorationLine: 'underline' }]}>Retry</ThemedText></ThemedText>

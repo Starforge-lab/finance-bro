@@ -36,6 +36,20 @@ The corrected source build passed at `b3f94cd7ff316a4ea518af217a1ef30d42ae7228` 
 
 The resolved `releaseRuntimeClasspath` report contains no `com.google.android.gms`, `com.google.mlkit`, Firebase, Play Billing or licensing coordinates searched during the preliminary audit. Expo development-launcher 58.0.12 declares Google code-scanner and ML Kit dependencies as `debugOnly`; the release report supports their exclusion from this resolved configuration. The packaged audit adds a defined-class prefix scan, but neither check is a complete dependency or license audit. Keep #27 open until all acceptance criteria have evidence.
 
+The frozen SDK/SMS candidate at `066b788eda519e339b77fbae747aa4e2e85e3af4`
+also passed the production unsigned ARM64 source-build check in
+[run 38945344874](https://github.com/Starforge-lab/finance-bro/actions/runs/38945344874).
+Its 113,507-byte report records production variant, probe disabled, unsigned APK
+generation, Node 22.23.3, pnpm 12.9.1, Java 17.0.20.1 and Gradle 9.4.1.
+Report SHA-256:
+`4d85251f5d8d5207583ea1b9cdf38b5b133b1e6063940ef44f8132b0bcae4757`.
+The dependency report ends normally without a truncation marker. Searches for
+Google Play services, ML Kit, Firebase, Play Billing and vending coordinates
+returned no matches. This refreshes clean-build evidence for the frozen SMS
+candidate; packaged-artifact inspection, transitive license/provenance review
+and intended-installer SMS permission behavior remain unverified. Gradle reports
+deprecated features incompatible with Gradle 10; the tested wrapper remains 9.4.1.
+
 Forcing Expo modules to build from source does not prove that every transitive native library or tool was source-built or freely licensed. The [current F-Droid inclusion policy](https://f-droid.org/en/docs/Inclusion_Policy/) permits some trusted FLOSS binary sources and requires dependency, toolchain and license review. Audit the resolved Gradle graph, npm packages and bundled assets separately; repository or package names alone are insufficient.
 
 `expo-notifications` is absent from this candidate's package and lock files. Its Firebase warning remains relevant if it is introduced later; absence from those files alone is not a complete native dependency audit. No notification provider, recovery feature, store variant or import source is added by this check.

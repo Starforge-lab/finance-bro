@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   check,
+  index,
   integer,
   sqliteTable,
   text,
@@ -136,6 +137,7 @@ export const transactions = sqliteTable(
     deletedAt: integer('deleted_at', { mode: 'timestamp_ms' }),
   },
   (table) => [
+    index('transactions_dedupe_key_idx').on(table.dedupeKey),
     check(
       'transactions_amount_paise_check',
       sql`typeof(${table.amountPaise}) = 'integer' and ${table.amountPaise} between 1 and 9007199254740991`,
@@ -157,6 +159,52 @@ export const transactions = sqliteTable(
   ],
 );
 
+export const smsImportState = sqliteTable(
+  'sms_import_state',
+  {
+    id: integer('id').primaryKey(),
+    cursorReceivedAt: integer('cursor_received_at'),
+    cursorPlatformId: text('cursor_platform_id'),
+    keyId: text('key_id').notNull(),
+  },
+  (table) => [
+    check('sms_import_state_singleton', sql`${table.id} = 1`),
+    check(
+      'sms_import_state_cursor_pair',
+      sql`(${table.cursorReceivedAt} is null and ${table.cursorPlatformId} is null) or (${table.cursorReceivedAt} is not null and ${table.cursorPlatformId} is not null)`,
+    ),
+  ],
+);
+
+export const smsImportRefs = sqliteTable(
+  'sms_import_refs',
+  {
+    referenceId: text('reference_id').primaryKey(),
+    platformId: text('platform_id').notNull(),
+    receivedAt: integer('received_at').notNull(),
+    senderHash: text('sender_hash').notNull(),
+    dedupeKey: text('dedupe_key').notNull(),
+    bodyHash: text('body_hash').notNull(),
+    keyId: text('key_id').notNull(),
+    status: text('status', { enum: ['review', 'saved', 'duplicate'] }).notNull(),
+    reason: text('reason'),
+    ruleId: text('rule_id'),
+    ruleVersion: integer('rule_version'),
+    transactionId: text('transaction_id').references(() => transactions.id),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    unique('sms_import_refs_source_unique').on(table.platformId, table.receivedAt, table.bodyHash),
+    index('sms_import_refs_dedupe_key_idx').on(table.dedupeKey),
+    check('sms_import_refs_status_check', sql`${table.status} in ('review', 'saved', 'duplicate')`),
+    check('sms_import_refs_received_at_check', sql`typeof(${table.receivedAt}) = 'integer'`),
+    check('sms_import_refs_created_at_check', sql`typeof(${table.createdAt}) = 'integer'`),
+    check(
+      'sms_import_refs_rule_pair',
+      sql`(${table.ruleId} is null and ${table.ruleVersion} is null) or (${table.ruleId} is not null and ${table.ruleVersion} is not null)`,
+    ),
+  ],
+);
 export const themePreferences = ['system', 'light', 'dark'] as const;
 
 /** Small app settings as key/value text; the ledger file stays the one place app state lives. */
@@ -164,3 +212,32 @@ export const preferences = sqliteTable('preferences', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
 });
+
+export const accountBalanceCheckpoints = sqliteTable('account_balance_checkpoints', {
+  accountId: text('account_id').primaryKey().references(() => accounts.id, { onDelete: 'cascade' }),
+  accountType: text('account_type', { enum: accountTypes }).notNull(),
+  balancePaise: integer('balance_paise').notNull(),
+  asOf: integer('as_of', { mode: 'timestamp_ms' }).notNull(),
+  confirmedAt: integer('confirmed_at', { mode: 'timestamp_ms' }).notNull(),
+  reconciliationDeltaPaise: integer('reconciliation_delta_paise'),
+}, (table) => [
+  check('balance_checkpoint_type_check', sql`${table.accountType} in ('bank', 'credit_card', 'wallet', 'upi_lite', 'cash')`),
+  check('balance_checkpoint_money_check', sql`typeof(${table.balancePaise}) = 'integer' and ${table.balancePaise} between -9007199254740991 and 9007199254740991`),
+  check('balance_checkpoint_delta_check', sql`${table.reconciliationDeltaPaise} is null or (typeof(${table.reconciliationDeltaPaise}) = 'integer' and ${table.reconciliationDeltaPaise} between -9007199254740991 and 9007199254740991)`),
+  check('balance_checkpoint_date_check', sql`typeof(${table.asOf}) = 'integer' and ${table.asOf} between -8640000000000000 and 8640000000000000 and typeof(${table.confirmedAt}) = 'integer' and ${table.confirmedAt} between ${table.asOf} and 8640000000000000`),
+]);
+
+export const recurringSchedules = sqliteTable('recurring_schedules', {
+  id: text('id').primaryKey(),
+  label: text('label').notNull(),
+  amountPaise: integer('amount_paise').notNull(),
+  dayOfMonth: integer('day_of_month').notNull(),
+  kind: text('kind', { enum: ['bill', 'card_payment'] }).notNull(),
+  paused: integer('paused', { mode: 'boolean' }).notNull().default(false),
+}, (table) => [
+  check('recurring_schedules_label_check', sql`length(trim(${table.label})) > 0`),
+  check('recurring_schedules_amount_check', sql`typeof(${table.amountPaise}) = 'integer' and ${table.amountPaise} between 1 and 9007199254740991`),
+  check('recurring_schedules_day_check', sql`typeof(${table.dayOfMonth}) = 'integer' and ${table.dayOfMonth} between 1 and 31`),
+  check('recurring_schedules_kind_check', sql`${table.kind} in ('bill', 'card_payment')`),
+  check('recurring_schedules_paused_check', sql`typeof(${table.paused}) = 'integer' and ${table.paused} in (0, 1)`),
+]);

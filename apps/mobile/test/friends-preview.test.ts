@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { test } from 'node:test';
+import vm from 'node:vm';
+import ts from 'typescript';
+import type { ExpoConfig } from 'expo/config';
+
+test('friends APK uses an isolated identity with SMS enabled and QA probes off', () => {
+  const source = readFileSync(new URL('../app.config.ts', import.meta.url), 'utf8');
+  const script = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  const context = { exports: {} as { default: (input: { config: object }) => ExpoConfig }, process: { env: { APP_VARIANT: 'preview', ANDROID_SMS_PROBE: '1' } } };
+  vm.runInNewContext(script, context);
+  const config = context.exports.default({ config: {} });
+  assert.equal(config.name, 'Finance Bro Preview');
+  assert.equal(config.android?.package, 'com.rohangupta.financebro.preview');
+  assert.equal(config.android?.allowBackup, false);
+  assert.equal(config.scheme, 'financebropreview');
+  assert.equal(config.extra?.androidSmsProbe, false);
+  assert.equal(config.extra?.androidBackgroundProbe, false);
+  assert.ok(config.plugins?.some((plugin: unknown) => Array.isArray(plugin) && plugin[0] === './modules/sms-reader/app.plugin.js' && plugin[1].enabled === true));
+  assert.ok(!config.plugins?.includes('./plugins/withUnsignedAndroidRelease.cjs'));
+  assert.ok(config.plugins?.includes('./plugins/withLocalOnlyAndroidBackup.cjs'));
+  const eas = JSON.parse(readFileSync(new URL('../eas.json', import.meta.url), 'utf8'));
+  assert.equal(eas.build.friends.extends, 'preview');
+  assert.equal(eas.build.friends.autoIncrement, true);
+  assert.equal(eas.build.friends.env.APP_VARIANT, 'preview');
+  assert.equal(eas.build.preview.distribution, 'internal');
+  assert.notEqual(eas.build.preview.developmentClient, true);
+  assert.equal(eas.build.friends.android.buildType, 'apk');
+});

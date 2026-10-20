@@ -154,6 +154,7 @@ export function Budgets() {
   const [editBillAmount, setEditBillAmount] = useState('');
   const [editBillDueDate, setEditBillDueDate] = useState('');
   const [confirmBillDelete, setConfirmBillDelete] = useState('');
+  const [confirmBillPaid, setConfirmBillPaid] = useState('');
 
   const requestId = useRef(0);
   const mounted = useRef(false);
@@ -362,11 +363,13 @@ export function Budgets() {
     setEditBillAmount(amountInput(bill.amountPaise));
     setEditBillDueDate(bill.dueDate);
     setConfirmBillDelete('');
+    setConfirmBillPaid('');
   };
 
   const closeBillEditor = () => {
     setEditingBill('');
     setConfirmBillDelete('');
+    setConfirmBillPaid('');
     setEditBillLabel('');
     setEditBillAmount('');
     setEditBillDueDate('');
@@ -603,9 +606,16 @@ export function Budgets() {
                     </View>
                     <View style={styles.actions}>
                       <LedgerButton label={pending === `bill-edit-${bill.id}` ? 'Saving…' : 'Save bill'} primary disabled={writesDisabled} onPress={() => void editBill(bill.id)} />
-                      <LedgerButton label={bill.status === 'paid' ? 'Mark unpaid' : 'Mark paid'} disabled={writesDisabled} onPress={() => void runWrite('bill', `bill-paid-${bill.id}`, (ledger) => ledger.setBillPaid(bill.id, bill.status !== 'paid'))} />
+                      <LedgerButton label={bill.status === 'paid' ? 'Mark unpaid' : 'Mark paid'} disabled={writesDisabled} onPress={() => {
+                        if (bill.status !== 'paid') { setConfirmBillPaid(bill.id); return; }
+                        void runWrite('bill', `bill-paid-${bill.id}`, (ledger) => ledger.setBillPaid(bill.id, false));
+                      }} />
                     </View>
-                    <ThemedText themeColor="textSecondary" style={Type.note}>Marked paid? Add the expense in Home too.</ThemedText>
+                    {confirmBillPaid === bill.id && bill.status !== 'paid' ? <>
+                      <ThemedText style={Type.note}>Record the payment entry or reconcile the paying account first. Clearing this reminder releases its reserve; it does not move money.</ThemedText>
+                      <LedgerButton label="Payment recorded; clear reminder" disabled={writesDisabled} onPress={() => void runWrite('bill', `bill-paid-${bill.id}`, (ledger) => ledger.setBillPaid(bill.id, true)).then((saved) => { if (saved) setConfirmBillPaid(''); })} />
+                      <LedgerButton label="Keep payment reminder" disabled={writesDisabled} onPress={() => setConfirmBillPaid('')} />
+                    </> : null}
                     {deleting ? <>
                       <ThemedText style={Type.note}>Remove “{bill.label}”?</ThemedText>
                       <View style={styles.actions}>
