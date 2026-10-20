@@ -1,7 +1,7 @@
 # Personal automation: outcome and acceptance contract
 
-Confirmed direction: 2026-10-17. This document records the next product outcome,
-not implemented capability or release readiness. The existing Android SMS-only
+Confirmed direction: 2026-10-17; reserve policy confirmed 2026-10-18. This document records the product outcome
+and its acceptance gates, not release readiness. The existing Android SMS-only
 [2.0 milestone](v2-roadmap.md) remains the immediate delivery milestone. This
 contract prioritises subsequent work already tracked in the backlog; it does
 not silently add that work to 2.0.
@@ -19,6 +19,49 @@ Occasional review of uncertain transactions is acceptable. Automatic capture,
 categorisation and payment matching must preserve explicit user corrections.
 Raw personal messages, account identifiers, balances and salary details belong
 in the consenting user's local setup, never in repository examples or issues.
+
+## Implemented draft slice: balances and payment planning
+
+The local SQLite implementation now provides dated account checkpoints, signed
+bank balances/card liabilities, reconciliation differences without fake income,
+monthly bill/card-payment reminders, and private salary/reserve configuration.
+Home explains the current estimate and upcoming payments; Settings collects the
+missing values. Existing Budgets supports correcting, paying or removing an
+individual reminder. Pausing a schedule preserves already generated bills.
+
+Confirmed equation: liquid balances minus **full positive card outstanding**
+minus unpaid bills due on or before the next expected payday minus the explicit
+cash reserve. Card-payment reminders are displayed without subtracting the
+liability twice. Card overpayment is not liquid cash. Future salary is never
+added. The unattended conservative choice includes same-day bills because they
+may debit before salary arrives. Payday is clamped to the month's last day; on
+payday, no daily allowance is shown or salary receipt assumed.
+
+Every active own account needs a verified checkpoint. Relevant unassigned
+entries or pending import reviews withhold the estimate. Recorded posted account
+movements update projections after each checkpoint, including transfers and
+entries excluded from spending totals. A verified checkpoint includes all
+activity through its timestamp; missing alerts still require reconciliation.
+Before showing an allowance, the user separately confirms that every account
+and card affecting the estimate is included; this is a user attestation, not an
+automatic completeness check. Saved setups without this confirmation remain
+incomplete until the user confirms it. Home shows the oldest tracked account
+checkpoint and explains that recorded posted movements since each account's
+checkpoint are included. Settings shows the calculated balance, last verified
+amount and date, and last reconciliation difference. Checkpoints have no
+automatic age cutoff; missing alerts still require reconciliation.
+Marking a reminder paid only clears planning state: record the payment or
+reconcile the paying account first. Generated reminders do not create expenses.
+Archived assets are excluded, while archived overdrafts and card debts remain
+reserved. Unknown archived balances block the estimate; restore the account and
+reconcile it. Card reminders do not yet link to an individual card: complete
+coverage of every owned card remains an explicit setup confirmation.
+
+This slice depends on draft Android SMS integration #89. It does not enable
+additional bank formats, promise complete capture, infer transfer counterparts,
+automatically match payments, implement merchant rules or supply encrypted
+backup. Those acceptance gates remain open under the existing issues. Private
+account values must be entered locally; no personal setup is committed.
 
 ## Capability map and delivery order
 
@@ -85,8 +128,8 @@ Reuse these issues and existing modules rather than creating a parallel roadmap.
   date. Show its inputs, reserves, obligations and balance freshness. If a
   required input or material account coverage is missing, request it and show
   the limitation instead of a trustworthy-looking spendable amount.
-- Agree the exact equation before implementation, including which card
-  liabilities and flexible spending are reserved. The same obligation must not
+- Use the confirmed full-outstanding equation above. Flexible future spending
+  uses the remaining daily allowance; it is not a fabricated bill. The same obligation must not
   be subtracted both as a liability and as a scheduled payment.
 - Keep projected total assets, remaining income and safe-to-spend distinct.
   Label negative headroom as a shortfall, not zero or an available allowance.
@@ -126,7 +169,7 @@ needs them; do not block independent fictional-data verification on them:
 - Each card's statement/due dates, payment practice, current statement due and
   outstanding balance; whether cards share a limit or statement.
 - Any material cash, savings or obligations outside the captured accounts.
-- The agreed overspending baseline and forecast/reservation policy.
+- The agreed overspending baseline; full-outstanding reservation is confirmed.
 - Anonymised format evidence before enabling additional automatic-save rules.
 
 ## Verification and boundaries

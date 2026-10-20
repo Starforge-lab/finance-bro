@@ -1,10 +1,29 @@
 export type Sha256 = (bytes: Uint8Array) => Promise<Uint8Array>;
 export type FingerprintSigner = (bytes: Uint8Array) => Promise<Uint8Array>;
-export type FingerprintKeyManager = () => Promise<FingerprintSigner>;
+export type FingerprintKeyPolicy = Readonly<{ allowCreate: boolean }>;
+export type FingerprintKeyManager = (policy: FingerprintKeyPolicy) => Promise<FingerprintSigner>;
+export type FingerprintKeyProvider = (policy?: FingerprintKeyPolicy) => Promise<Fingerprinter>;
 export type Fingerprinter = {
   keyId: string;
   fingerprint(text: string): Promise<string>;
 };
+
+const defaultFingerprintKeyPolicy: FingerprintKeyPolicy = Object.freeze({ allowCreate: false });
+
+export function resolveFingerprintKeyPolicy(policy?: FingerprintKeyPolicy): FingerprintKeyPolicy {
+  if (policy === undefined) return defaultFingerprintKeyPolicy;
+  if (!policy || typeof policy !== 'object' || typeof policy.allowCreate !== 'boolean') {
+    throw new TypeError('Fingerprint key policy must specify allowCreate');
+  }
+  return { allowCreate: policy.allowCreate };
+}
+
+export class FingerprintKeyUnavailableError extends Error {
+  constructor() {
+    super('The saved fingerprint key is unavailable. Restore access to this device key before importing or saving; creating a new key could break duplicate protection.');
+    this.name = 'FingerprintKeyUnavailableError';
+  }
+}
 
 const hmacBlockSize = 64;
 const textEncoder = new TextEncoder();
@@ -47,11 +66,15 @@ function hex(bytes: Uint8Array): string {
   return encodeKeyHex(bytes);
 }
 
-export function createFingerprinter(loadSigner: FingerprintKeyManager): () => Promise<Fingerprinter> {
-  let loading: Promise<Fingerprinter> | undefined;
-  return () => {
-    loading ??= (async () => {
-      const sign = await loadSigner();
+export function createFingerprinter(loadSigner: FingerprintKeyManager): FingerprintKeyProvider {
+  const loading = new Map<boolean, Promise<Fingerprinter>>();
+  return (requestedPolicy) => {
+    const policy = resolveFingerprintKeyPolicy(requestedPolicy);
+    const existing = loading.get(policy.allowCreate);
+    if (existing) return existing;
+
+    let pending!: Promise<Fingerprinter>;
+    pending = Promise.resolve().then(() => loadSigner(policy)).then(async (sign) => {
       return {
         keyId: hex(await sign(keyIdDomain)),
         async fingerprint(text: string): Promise<string> {
@@ -59,10 +82,10 @@ export function createFingerprinter(loadSigner: FingerprintKeyManager): () => Pr
           return hex(await sign(message));
         },
       };
-    })().catch((error: unknown) => {
-      loading = undefined;
-      throw error;
+    }).finally(() => {
+      if (loading.get(policy.allowCreate) === pending) loading.delete(policy.allowCreate);
     });
-    return loading;
+    loading.set(policy.allowCreate, pending);
+    return pending;
   };
 }

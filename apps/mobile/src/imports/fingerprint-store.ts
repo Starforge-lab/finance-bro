@@ -1,5 +1,5 @@
-import type { Fingerprinter } from './fingerprint';
+import type { FingerprintKeyPolicy, FingerprintKeyProvider } from './fingerprint';
 
-export async function getFingerprinter(): Promise<Fingerprinter> {
+export const getFingerprinter: FingerprintKeyProvider = async (_policy?: FingerprintKeyPolicy) => {
   throw new Error('Fingerprinting is unavailable on this platform');
-}
+};

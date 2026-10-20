@@ -39,6 +39,8 @@ The `Android development APK` workflow builds an ARM64 debug client (`com.rohang
 
 Download the `finance-bro-dev-arm64` artifact from the successful run within one day, install its APK on an ARM64 Android phone, and start Metro with `pnpm dev`. This development client needs Metro; it is not a store release. Standard runner compute is free for this public repository; artifacts still count toward the organization's storage allowance. The workflow retains one APK for one day and uses no paid runner. Generated `android/` and `ios/` directories remain uncommitted.
 
+For the isolated Android SMS feasibility client, dispatch the workflow with `android_sms_probe=true`. This uses a separate package and test flags. Android builds declare the SMS permissions and consent-gated receiver; the user must start the Settings preview before any OS request, and separately confirm before enabling import. Manifest declarations and a permission grant alone are not import consent. Follow [the foreground flow](docs/android-sms-flow.md) and [the probe contract](docs/android-sms-probe.md); device tests need separate explicit consent before any real inbox access.
+
 ## Workflow
 
 1. Open or pick an issue. Follow [the manual-first roadmap](docs/mvp-roadmap.md) and confirm the issue's acceptance criteria. For parser work, use an anonymised SMS sample.
