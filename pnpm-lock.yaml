@@ -212,8 +212,8 @@ importers:
         specifier: 58.0.8
         version: 58.0.8(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       expo-glass-effect:
-        specifier: 58.0.3
-        version: 58.0.3(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
+        specifier: 58.0.4
+        version: 58.0.4(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       expo-haptics:
         specifier: 58.0.6
         version: 58.0.6(expo@58.0.8)
@@ -3017,8 +3017,8 @@ packages:
       react: '*'
       react-native: '*'
 
-  expo-glass-effect@58.0.3:
-    resolution: {integrity: sha512-NoFT5j2uZecNsiDAd47z37PWYTxNJnJMrVYiAU+SggiV9K91Sc0IuIcMsuOM4sUuPBQdSTs8/I9KXk5M0Z2O/w==}
+  expo-glass-effect@58.0.4:
+    resolution: {integrity: sha512-PrxU1FINOpqpnjtZMXHAC/APLq3T3fDforMqQ+JRqRtIrlQ8wntrX8IztLxJBKD9s8cJJ8V9MAoI89aYRK8j9Q==}
     peerDependencies:
       expo: '*'
       react: '*'
@@ -7831,7 +7831,7 @@ snapshots:
       react: 19.3.0
       react-native: 0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1)
 
-  expo-glass-effect@58.0.3(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0):
+  expo-glass-effect@58.0.4(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0):
     dependencies:
       expo: 58.0.8(@babel/core@7.29.7(supports-color@8.1.1))(@expo/metro-runtime@58.0.14)(expo-router@58.0.18)(react-dom@19.3.0(react@19.3.0))(react-native-web@0.21.4(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-native-worklets@0.13.0(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1)(typescript@6.0.3)
       react: 19.3.0
@@ -7919,7 +7919,7 @@ snapshots:
       client-only: 0.0.1
       expo: 58.0.8(@babel/core@7.29.7(supports-color@8.1.1))(@expo/metro-runtime@58.0.14)(expo-router@58.0.18)(react-dom@19.3.0(react@19.3.0))(react-native-web@0.21.4(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-native-worklets@0.13.0(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1)(typescript@6.0.3)
       expo-constants: 58.0.11(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@6.0.3)
-      expo-glass-effect: 58.0.3(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
+      expo-glass-effect: 58.0.4(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       expo-linking: 58.0.12(expo@58.0.8)(react-native@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.0-rc.4(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1)(typescript@6.0.3)
       expo-server: 58.0.5
       nanoid: 3.3.20
