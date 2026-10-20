@@ -2,6 +2,8 @@
 
 Target: a standalone, shareable APK by 20 October 2026, 23:00 IST. SMS is the primary first-use flow, with explicit opt-in and review for uncertain formats. This is an experimental personal preview, not completion of the stable 2.0 acceptance gates.
 
+The signed version-code-2 APK and its bounded device checks are recorded in [the 20 October preview checkpoint](friends-preview-20261020.md). Use that artifact; the earlier baseline crashes on startup.
+
 The `friends` EAS profile builds an internal APK with embedded JavaScript. It uses `com.rohangupta.financebro.preview`, the name **Finance Bro Preview**, and the `financebropreview` scheme. Its local ledger is separate from production, development and SMS QA installs. QA probes are disabled. It needs no Metro server. The original `preview` profile retains its existing production identity.
 
 Android automatic backup is disabled. Explicit Android 11-and-earlier backup rules and Android 12+ cloud/device-transfer rules exclude all app storage domains, including SMS consent preferences and device-protected storage. This replaces SecureStore's preference-only backup rules, which excluded the ledger and key but could transfer opt-in settings. Keep records local until an explicitly approved recovery mechanism is implemented. See [Android backup behavior](https://developer.android.com/identity/data/autobackup); OEM backup/transfer behavior still needs separate device-transfer acceptance.
