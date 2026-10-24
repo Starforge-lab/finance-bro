@@ -7,6 +7,9 @@ Private vulnerability reporting is enabled. Use **Security → Report a vulnerab
 ## Known development-tooling advisories
 
 The SDK 58.0.8 / React Native 0.88.0-rc.4 refresh was checked on 2026-10-13.
+The 2026-10-24 freeze exception to Expo 58.0.19 / React Native 0.88.0 was checked
+the same day: Expo's compatibility check passes and `pnpm audit` reports three
+transitive advisories (two high, one moderate); no override or suppression was added.
 Expo's compatibility check passes. The full-workspace `pnpm audit` still reports
 four transitive advisories (two high, two moderate); no forced override or
 advisory suppression was added. `expo-modules-core@58.0.16` still declares

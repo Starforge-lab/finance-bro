@@ -14,7 +14,7 @@ The check starts from a clean checkout, uses the pinned pnpm version and frozen 
 
 `ANDROID_RELEASE_SOURCE_CHECK=1` enables a guarded config plugin that removes release signing from the generated Gradle configuration. Development signing and normal production configuration are unchanged. Unexpected native template contents fail the check; no signing key, EAS account, signing secret or publication is involved.
 
-The standard Ubuntu 24.04 runner uses Node 22, Java 17 and Gradle's ARM64 release variant with two workers. Current package pins include Expo 58.0.8 and React Native 0.88.0-rc.4. The generated Gradle wrapper and Android toolchain inputs remain authoritative; inspect the run's recorded versions and resolved release dependencies when reviewing the result.
+The standard Ubuntu 24.04 runner uses Node 22, Java 17 and Gradle's ARM64 release variant with two workers. Current package pins include Expo 58.0.19 and React Native 0.88.0. The generated Gradle wrapper and Android toolchain inputs remain authoritative; inspect the run's recorded versions and resolved release dependencies when reviewing the result.
 
 The job retains build, dependency and bounded packaged-APK metadata for one day. It does not upload an APK. Generated Android/iOS projects remain outside Git.
 
