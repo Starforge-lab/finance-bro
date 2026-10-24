@@ -65,7 +65,7 @@ EXPO_OFFLINE=1 pnpm dlx expo-doctor
 
 In PowerShell, set `$env:EXPO_OFFLINE = "1"` before the two Expo checks. In bash, prefix each Expo command with `EXPO_OFFLINE=1`.
 
-The workspace intentionally sets `minimumReleaseAge: 0` so newly published SDK beta dependencies can be installed when explicitly approved. Use `pnpm --dir apps/mobile exec expo install <package>` for Expo or React Native dependencies, review lockfile changes, and run the checks above. Keep the tested SDK/native graph at Expo 58.0.8 and React Native 0.88.0-rc.4 until Android SMS 2.0 acceptance; security and necessary bug-fix updates require explicit review. Dependabot changes are proposals; review and test them before merging.
+The workspace intentionally sets `minimumReleaseAge: 0` so newly published SDK beta dependencies can be installed when explicitly approved. Use `pnpm --dir apps/mobile exec expo install <package>` for Expo or React Native dependencies, review lockfile changes, and run the checks above. Keep the tested SDK/native graph at Expo 58.0.19 and React Native 0.88.0 until Android SMS 2.0 acceptance; security and necessary bug-fix updates require explicit review. Dependabot changes are proposals; review and test them before merging.
 
 GitHub's [Dependabot ecosystem reference](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference) currently lists pnpm support through v10, so compatibility with this repo's pnpm 12 toolchain is unconfirmed. The npm/pnpm entry remains configured; check Dependabot's update logs before relying on JavaScript dependency update PRs. GitHub Actions updates use a separate supported entry.
 

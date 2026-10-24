@@ -18,7 +18,7 @@
 
 Use the pnpm version in package.json and commit pnpm-lock.yaml. For Expo dependencies, run pnpm --dir apps/mobile exec expo install <package> and consult the docs for the installed SDK major at https://docs.expo.dev/versions/v58.0.0/.
 
-Freeze the tested Expo SDK/native dependency graph for 2.0 at Expo 58.0.8 and React Native 0.88.0-rc.4 until Android SMS 2.0 acceptance. Security fixes and necessary bug fixes are explicit, separately reviewed exceptions; do not take routine SDK/native patch updates. Read SECURITY.md and issue #3 before any toolchain exception: some newer compiler/lint APIs are not yet supported. Review lockfile and build-script approval changes; preserve the explicit allowBuilds list instead of approving all dependencies.
+Freeze the tested Expo SDK/native dependency graph for 2.0 at Expo 58.0.19 and React Native 0.88.0 until Android SMS 2.0 acceptance. Security fixes and necessary bug fixes are explicit, separately reviewed exceptions; do not take routine SDK/native patch updates. Read SECURITY.md and issue #3 before any toolchain exception: some newer compiler/lint APIs are not yet supported. Review lockfile and build-script approval changes; preserve the explicit allowBuilds list instead of approving all dependencies.
 
 F-Droid dependency changes: read CLAUDE.md's clean source-build and transitive dependency gates before adding packages.
 
